@@ -38,7 +38,7 @@ import wandb
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-from nla.utils import critic_predict, register_karvonen_hook
+from nla.utils import critic_predict, register_embed_replace_hook, register_karvonen_hook
 from nla.utils.run_config import add_config_arg, apply_config_defaults, save_resolved_config
 from nla.config import load_nla_config
 from nla.injection import karvonen_inject_in_residual
@@ -484,6 +484,19 @@ def main():
     p = argparse.ArgumentParser()
     add_config_arg(p)
     p.add_argument("--mode", required=True, choices=["av", "ar"])
+    p.add_argument("--injection-method", choices=["karvonen", "embed_replace"],
+                   default="karvonen",
+                   help="AV mode only. karvonen (default) = additive norm-matched "
+                        "injection at the layer-1 residual (raw vectors, no scale "
+                        "knob). embed_replace = classic NLA: overwrite the "
+                        "embedding output at the marker with the activation "
+                        "rescaled to --injection-scale.")
+    p.add_argument("--injection-scale", default=None,
+                   help="embed_replace only: L2 norm the activation is rescaled "
+                        "to before replacement. A float, 'sqrt_d_model', or 'raw' "
+                        "(inject unscaled). Falls back to the sidecar's "
+                        "extraction.injection_scale; required here when the "
+                        "sidecar (like the Qwen3-8B warmstart data) has none.")
     p.add_argument("--base-ckpt", required=True,
                    help="HF dir for AV (base model) or AR (base model to truncate, "
                         "OR an already-prepared NLACriticModel checkpoint).")
@@ -666,12 +679,36 @@ def main():
             ))
             model.print_trainable_parameters()
         vectors_ref = [None]
-        register_karvonen_hook(
-            model, vectors_ref,
-            cfg.injection_token_id,
-            cfg.injection_left_neighbor_id,
-            cfg.injection_right_neighbor_id,
-        )
+        if args.injection_method == "embed_replace":
+            if args.injection_scale is not None:
+                resolved_injection_scale = resolve_target_scale(
+                    args.injection_scale, cfg.d_model)
+            else:
+                resolved_injection_scale = cfg.injection_scale
+                assert resolved_injection_scale is not None, (
+                    "--injection-method embed_replace needs an explicit scale: "
+                    "the sidecar has no extraction.injection_scale, so pass "
+                    "--injection-scale {float|sqrt_d_model|raw} ('raw' injects "
+                    "the unscaled vector)."
+                )
+            register_embed_replace_hook(
+                model, vectors_ref,
+                cfg.injection_token_id,
+                cfg.injection_left_neighbor_id,
+                cfg.injection_right_neighbor_id,
+                resolved_injection_scale,
+            )
+            print(f"[av] injection: embed_replace "
+                  f"(scale={resolved_injection_scale})")
+        else:
+            resolved_injection_scale = None  # karvonen norm-matches per position
+            register_karvonen_hook(
+                model, vectors_ref,
+                cfg.injection_token_id,
+                cfg.injection_left_neighbor_id,
+                cfg.injection_right_neighbor_id,
+            )
+            print("[av] injection: karvonen (layer-1 additive, norm-matched)")
         model._nla_vectors_ref = vectors_ref  # av_generate_samples reaches it here
         if args.gradient_checkpointing:
             model.gradient_checkpointing_enable()
@@ -1077,11 +1114,24 @@ def main():
                 tokenizer.save_pretrained(str(out_dir))
             # Copy the sidecar so the RL trainer can find injection_token_id etc.
             import shutil
+            import yaml
             sidecar_src = Path(args.sidecar)
             if sidecar_src.is_file() and sidecar_src.suffix == ".parquet":
                 sidecar_yaml = sidecar_src.with_suffix(".parquet.nla_meta.yaml")
                 if sidecar_yaml.exists():
                     shutil.copy2(sidecar_yaml, out_dir / "nla_meta.yaml")
+                    if args.mode == "av":
+                        # Record HOW this AV reads vectors — downstream eval/RL
+                        # must attach the same hook (and, for embed_replace, the
+                        # same scale) or injection silently mismatches training.
+                        meta_path = out_dir / "nla_meta.yaml"
+                        meta = yaml.safe_load(meta_path.read_text())
+                        meta["injection_method"] = args.injection_method
+                        if args.injection_method == "embed_replace":
+                            meta.setdefault("extraction", {})[
+                                "injection_scale"] = resolved_injection_scale
+                        meta_path.write_text(yaml.safe_dump(
+                            meta, sort_keys=False, allow_unicode=True))
 
     print("done.", flush=True)
     if not args.no_wandb:
