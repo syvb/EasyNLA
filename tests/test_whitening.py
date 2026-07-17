@@ -315,6 +315,28 @@ def t_wrong_stats_rejected():
         assert "stats were computed on" in (r.stdout + r.stderr)
 
 
+def t_tiny_split_not_falsely_rejected():
+    """Correct stats give ‖mean(x̃)‖/√d ≈ 1/√n — a legitimately tiny split
+    must pass the (n-aware) distribution gate, not be misdiagnosed as a
+    wrong stats file."""
+    from nla.whitening import compute_stats_from_array, save_stats
+
+    n, d = 800, 16
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        big, tiny = td / "big.parquet", td / "tiny.parquet"
+        x = _write_synthetic_avsft_parquet(big, n, d)
+        _write_synthetic_avsft_parquet(tiny, 10, d)  # same distribution (same seed → same cov/mean)
+        stats = compute_stats_from_array(x)
+        save_stats(stats, str(td / "stats.npz"))
+        r = subprocess.run(
+            [sys.executable, str(REPO / "scripts/whiten_dataset.py"),
+             "--parquet", str(tiny), "--stats", str(td / "stats.npz"),
+             "--out", str(td / "tiny_w.parquet")],
+            capture_output=True, text=True)
+        assert r.returncode == 0, f"tiny legitimate split rejected:\n{r.stdout}\n{r.stderr}"
+
+
 def t_config_asserts_norm_consistency():
     # load_nla_config needs a live tokenizer (not available CPU-side), so test
     # the norm/whitening consistency logic the same way it runs there.

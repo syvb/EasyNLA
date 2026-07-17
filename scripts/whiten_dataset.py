@@ -52,7 +52,7 @@ TRANSFORM_ROWS = 65_536
 # Distribution-gate tolerances (first batch, same distribution as the stats'
 # train split — val-split sampling noise at ≥1k rows is ≪ these):
 VAR_RATIO_BOUNDS = (0.5, 2.0)  # measured / expected per-element variance
-MEAN_NORM_MAX = 0.25  # ‖mean(x̃)‖ / √d — exact stats give ~1/√n
+MEAN_NORM_MAX = 0.25  # ‖mean(x̃)‖ / √d — exact stats give ~1/√n, see gate
 
 
 def _rebuild_activation_column(flat_f32: np.ndarray, n: int, av_type: pa.DataType) -> pa.Array:
@@ -75,14 +75,19 @@ def _distribution_gate(xw: np.ndarray, stats) -> None:
     """Whitened first batch must look like the stats' training distribution.
     unwhiten(whiten(x)) == x for ANY valid (μ, W) pair, so a round-trip can
     never catch wrong stats — this check does."""
+    n = xw.shape[0]
+    assert n >= 2, f"cannot gate a {n}-row batch — file too small to sanity-check"
     expected = stats.expected_whitened_variance()
     var = float(xw.var(axis=0, ddof=1).mean())
     mean_norm = float(np.linalg.norm(xw.mean(axis=0))) / stats.d_model**0.5
+    # Correct stats give ‖mean(x̃)‖/√d ≈ 1/√n — for a tiny (but legitimate)
+    # file the fixed bound would false-trip, so allow a 4σ sampling margin.
+    mean_max = max(MEAN_NORM_MAX, 4.0 / n**0.5)
     ratio = var / expected
-    assert VAR_RATIO_BOUNDS[0] < ratio < VAR_RATIO_BOUNDS[1] and mean_norm < MEAN_NORM_MAX, (
+    assert VAR_RATIO_BOUNDS[0] < ratio < VAR_RATIO_BOUNDS[1] and mean_norm < mean_max, (
         f"whitened data does not match the stats' distribution: per-element "
         f"variance {var:.3f} vs expected {expected:.3f} (ratio {ratio:.2f}, "
-        f"allowed {VAR_RATIO_BOUNDS}), ‖mean‖/√d {mean_norm:.3f} (max {MEAN_NORM_MAX}). "
+        f"allowed {VAR_RATIO_BOUNDS}), ‖mean‖/√d {mean_norm:.3f} (max {mean_max:.3f} at n={n}). "
         f"Wrong stats file? (different run / layer / model — provenance: "
         f"{stats.base_model or 'unset'} L{stats.layer_index}, {stats.source})"
     )

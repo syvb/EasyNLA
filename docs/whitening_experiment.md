@@ -98,20 +98,27 @@ ceiling, the experiment's interesting outcome disappears — find out for $0.
 ### 0c · Regenerate the RL split (GPU extraction, no API cost)
 
 The RL split never touches the paid stage-2 explanations (stage-1 `rl_raw`
-goes straight to stage-3 build). Re-run datagen with the **original**
-`configs/datagen/qwen3_8b_finefineweb_100k.yaml` (same corpus slice +
-seeds), stages 0, 1, 3, shuffle only:
+goes straight to stage-3 build). NB `run_pipeline --stages 0,1,3,shuffle`
+does NOT work — its stage 3 unconditionally builds the av/ar splits from
+stage-2 outputs first and crashes. Run stages 0–1 through the orchestrator,
+then build + shuffle the RL split manually:
 
 ```bash
 python -m nla.datagen.run_pipeline --config configs/datagen/qwen3_8b_finefineweb_100k.yaml \
-    --stages 0,1,3,shuffle
+    --stages 0,1
+python -m nla.datagen.stage3_build   --input <out>/splits/rl_raw.parquet --stage rl \
+    --output <out>/rl.parquet
+python -m nla.datagen.stage_shuffle  --input <out>/rl.parquet --output <out>/rl_shuf.parquet --seed 42
 ```
 
 Then **verify doc-disjointness** of the regenerated `rl_shuf.parquet`
-against the HF val splits (`doc_id` intersection must be empty — stage-1
-seeding should reproduce the original split; trust but verify). Extraction
-is the dominant cost: ~45 min on 8×H100 for the full 100k docs (from the
-stage-0 war story in `nla/storage.py`), so ~6 GPU-hours.
+against the HF val splits — `doc_id` intersection must be empty. This
+check is mandatory, not paranoia: the repo config names the HF corpus
+(`m-a-p/FineFineWeb`) while the original data's sidecar records a local
+snapshot parquet, so stage-1 split reproduction is NOT guaranteed even
+with identical seeds. Extraction is the dominant cost: ~45 min on 8×H100
+for the full 100k docs (from the stage-0 war story in `nla/storage.py`),
+so ~6 GPU-hours.
 
 ### 1 · Whiten every split
 

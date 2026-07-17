@@ -257,6 +257,13 @@ def save_stats(stats: WhiteningStats, path: str) -> None:
 
 def load_stats(path: str) -> WhiteningStats:
     z = np.load(path, allow_pickle=False)
+    missing = {"mean", "w", "w_inv", "eigenvalues", "eigenvalues_raw", "shrinkage",
+               "floor_quantile", "n_samples", "source", "base_model", "layer_index",
+               "sha256"} - set(z.files)
+    assert not missing, (
+        f"{path} is missing {sorted(missing)} — stats from an older format. "
+        f"Regenerate with scripts/compute_whitening_stats.py."
+    )
     layer = int(z["layer_index"])
     stats = WhiteningStats(
         mean=z["mean"],
