@@ -67,6 +67,35 @@ class TestPatcherBaselines(unittest.TestCase):
                           f"hunk {i} not applied to installed vllm-lens — "
                           f"re-run utils/patch_vllm_lens.py")
 
+    def test_pristine_wheel_applies_sequentially(self):
+        """Regression (setup_box hunk-9 incident): on a REAL pristine wheel,
+        dependent hunks' OLD text (e.g. OLD_STEERLOG_GLOBAL) does not exist
+        until an earlier hunk's NEW introduces it — a pristine-scan refuses
+        every fresh install. Reconstruct a pristine-like baseline by EXCLUDING
+        any hunk whose OLD is produced by another hunk's NEW, then assert
+        sequential application succeeds with zero refusals."""
+        mod = _load_patcher()
+        baseline_parts = []
+        for i, hunk in enumerate(mod.HUNKS):
+            old = hunk[0]
+            sat = hunk[2] if len(hunk) > 2 else []
+            # dependent = an EARLIER hunk's NEW introduces this OLD text; a
+            # real pristine wheel does not contain it yet
+            dependent = any(old in mod.HUNKS[j][1] for j in range(i))
+            if dependent:
+                continue
+            baseline_parts.append(sat[0] if sat else old)
+        src = "\n\n".join(dict.fromkeys(baseline_parts))
+        patched, n_applied, refused = mod.apply_hunks(src)
+        self.assertIsNone(refused,
+                          f"hunk {refused} refused on a pristine-like baseline")
+        self.assertGreater(n_applied, 0)
+        # idempotency: a second pass applies nothing and refuses nothing
+        again, n2, refused2 = mod.apply_hunks(patched)
+        self.assertIsNone(refused2)
+        self.assertEqual(n2, 0)
+        self.assertEqual(again, patched)
+
     def test_seqlens_fix_semantics(self):
         """The fixed seq_lens lookup on a vLLM-v1-style DICT attn_metadata:
         getattr on the dict yields None (the bug — abs_start=0 fallback for

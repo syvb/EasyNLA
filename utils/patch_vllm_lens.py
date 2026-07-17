@@ -387,41 +387,74 @@ HUNKS = [
 ]
 
 
+def _fully_evolved(text: str, idx: int) -> str:
+    """A hunk's NEW text as it looks after every LATER hunk has rewritten its
+    interior (e.g. STEERLOG_GLOBAL extends the count-fn that COUNT_GLOBAL's
+    NEW introduced). Fixpoint; the `nj not in text` guard terminates the
+    common old-is-substring-of-new case."""
+    changed = True
+    while changed:
+        changed = False
+        for j in range(idx + 1, len(HUNKS)):
+            oj, nj = HUNKS[j][0], HUNKS[j][1]
+            if oj in text and nj not in text:
+                text = text.replace(oj, nj, 1)
+                changed = True
+    return text
+
+
+def apply_hunks(src: str) -> tuple[str, int, int | None]:
+    """Apply HUNKS to `src` SEQUENTIALLY, returning (new_src, n_applied,
+    refused_hunk_idx_or_None).
+
+    Sequential matters: several hunks' OLD text is text an EARLIER hunk's NEW
+    introduces (e.g. OLD_STEERLOG_GLOBAL extends get_and_reset_steer_count,
+    which NEW_COUNT_GLOBAL creates) — checking every hunk against the PRISTINE
+    file refuses all fresh installs ("hunk 9 not found" on a clean pip
+    vllm-lens 1.1.0). Per-hunk idempotency: a hunk whose NEW — as written OR
+    as later hunks evolve it (_fully_evolved) — or satisfied baseline is
+    already present is skipped, so re-runs and partially-upstreamed wheels
+    work. A hunk matching nothing against the CURRENT text = genuine version
+    drift -> refuse (caller must not write the file).
+    """
+    n_applied = 0
+    for i, hunk in enumerate(HUNKS):
+        old, new = hunk[0], hunk[1]
+        satisfied = hunk[2] if len(hunk) > 2 else []
+        if (new in src or _fully_evolved(new, i) in src
+                or any(alt in src for alt in satisfied)):
+            continue
+        if old not in src:
+            return src, n_applied, i
+        src = src.replace(old, new, 1)
+        n_applied += 1
+    return src, n_applied, None
+
+
 def main() -> int:
     spec = importlib.util.find_spec("vllm_lens._worker_ext")
     assert spec and spec.origin, "vllm_lens not importable from this python"
     path = Path(spec.origin)
     src = path.read_text()
 
-    # Per-hunk idempotency: a hunk whose NEW text is already present is skipped
-    # (lets us add new hunks to an already-partially-patched file). A hunk whose
-    # OLD text is missing AND whose NEW text is absent = version drift -> refuse.
-    to_apply = []
-    for i, hunk in enumerate(HUNKS):
-        old, new = hunk[0], hunk[1]
-        satisfied = hunk[2] if len(hunk) > 2 else []
-        if new in src or any(alt in src for alt in satisfied):
-            continue
-        if old not in src:
-            print(f"[patch_vllm_lens] hunk {i} not found (neither OLD, NEW, nor a "
-                  f"satisfied baseline) — vllm_lens version drift? Refusing to patch {path}")
-            return 1
-        to_apply.append((old, new))
+    new_src, n_applied, refused = apply_hunks(src)
+    if refused is not None:
+        print(f"[patch_vllm_lens] hunk {refused} not found (neither OLD, NEW, nor a "
+              f"satisfied baseline) — vllm_lens version drift? Refusing to patch {path}")
+        return 1
 
-    if not to_apply:
+    if n_applied == 0:
         print(f"[patch_vllm_lens] already patched (all {len(HUNKS)} hunks): {path}")
         return 0
 
     _orig = path.with_suffix(".py.orig")
     if not _orig.exists():   # keep the PRISTINE original across incremental patches
         shutil.copy2(path, _orig)
-    for old, new in to_apply:
-        src = src.replace(old, new, 1)
-    path.write_text(src)
+    path.write_text(new_src)
     pycache = path.parent / "__pycache__"
     if pycache.exists():
         shutil.rmtree(pycache)
-    print(f"[patch_vllm_lens] applied {len(to_apply)} hunk(s) to {path} "
+    print(f"[patch_vllm_lens] applied {n_applied} hunk(s) to {path} "
           f"(backup: {path.name}.orig)")
     return 0
 
