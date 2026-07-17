@@ -63,15 +63,32 @@ def run_task(m: BottleneckModel, codec, task_name: str, condition: str, seed: in
           f"seed={seed}" + (f", max_new capped {cap}" if cap else ""), flush=True)
 
     batch_size = cfg.get("gen_batch_size", 192)
+    # Cohorts are ALSO capped by total prefill tokens: the prefill MLP
+    # transient is B × maxp × d_ff × 2B (192 rows × 600-token MMLU-Pro prompts
+    # ≈ 2.8GB in one allocation — OOM'd a 93GB card with vLLM resident).
+    prefill_budget = cfg.get("prefill_token_budget", 60_000)
+    all_ids = [m.build_chat_ids(p.messages) for p in problems]
+    cohort_bounds = []
+    cs = 0
+    while cs < len(problems):
+        ce, maxp = cs, 0
+        while ce < len(problems) and ce - cs < batch_size:
+            cand = max(maxp, len(all_ids[ce]))
+            if ce > cs and (ce - cs + 1) * cand > prefill_budget:
+                break
+            maxp, ce = cand, ce + 1
+        cohort_bounds.append((cs, ce))
+        cs = ce
+
     t_start = time.time()
-    for cs in range(0, len(problems), batch_size):
+    for cs, ce in cohort_bounds:
         shard = shard_dir / f"cohort_{cs:06d}.parquet"
         log_shard = shard_dir / f"cohort_{cs:06d}_steplogs.parquet"
         if shard.exists():
             print(f"[task {task_name}] cohort {cs} shard exists — skipping")
             continue
-        cohort = problems[cs:cs + batch_size]
-        prompt_ids = [m.build_chat_ids(p.messages) for p in cohort]
+        cohort = problems[cs:ce]
+        prompt_ids = all_ids[cs:ce]
         max_new = max(p.max_new_tokens for p in cohort)
         logs: list[StepLog] = []
         t0 = time.time()
@@ -111,8 +128,7 @@ def run_task(m: BottleneckModel, codec, task_name: str, condition: str, seed: in
                 log_rows.append(d)
             write_parquet(log_shard, log_rows)
         write_parquet(shard, rows)
-        done = min(cs + batch_size, len(problems))
-        print(f"[task {task_name}] {done}/{len(problems)} "
+        print(f"[task {task_name}] {ce}/{len(problems)} "
               f"({dt:.0f}s cohort, {n_tok} tokens, {n_tok/max(dt,1e-9):.1f} tok/s, "
               f"elapsed {(time.time()-t_start)/60:.1f}m)", flush=True)
 
@@ -127,6 +143,8 @@ def run_task(m: BottleneckModel, codec, task_name: str, condition: str, seed: in
         write_parquet(out_path.with_name(out_path.stem + "_steplogs.parquet"), all_logs)
     if codec is not None:
         print(f"[codec stats after {task_name}] {codec.report_stats()}", flush=True)
+    import torch
+    torch.cuda.empty_cache()   # release fragmentation between tasks
 
 
 def main():
