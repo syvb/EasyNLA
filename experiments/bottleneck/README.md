@@ -137,16 +137,38 @@ retention reported alongside.
    fluency, broad-topic knowledge, short answers fetched from clean prompt
    KV. Also expected: on-policy/chat Stage A domain worse than fineweb.
 
+## Initial run (halved) vs full design
+
+The config + run_all.sh as committed run the **initial (halved)** matrix; the
+full design is restored by deleting `task_sizes`/`mgsm_langs`/`max_new_caps`
+from config.yaml and uncommenting the extension lines in run_all.sh. Cost
+logic: a cohort runs until its slowest row finishes, so *steps* (cohorts ×
+max_new), not problem counts, are the unit — sizes are cohort-aligned to 192
+(200 problems would cost two full cohorts).
+
+Initial run keeps one benchmark per capability axis: gsm8k + gsm8k_short (the
+horizon pair, 192 each), humaneval (code, capped 384), triviaqa + popqa
+(recall, 192 each), mmlu_pro (40/cat), mgsm en/fr/zh × 64 (same-item
+cross-language contrast kept), fluency; +1 codec seed on gsm8k/triviaqa;
+Stage A at 32 seqs/domain (all 12 domains — domain breadth is the point,
+per-token n stays ~8k/domain). **Deferred to the extension run** (per-cohort
+shards make it incremental): math500, mbpp, ifeval, mgsm ru/sw + full 100/
+lang, QA n→300, codec seed 2, nla_prompt, Stage A → 64 seqs. Known trade-offs:
+per-language mgsm CIs widen to ±12pp (directional only); no dedicated
+instruction-following benchmark (format-compliance rates partially cover it);
+no hard-math point (gsm8k+short still carries the math/horizon story).
+
 ## Cost envelope (1× H200, ~$3/hr)
 
-~150-token explanations (the checkpoint's cap). Stage A ≈ 200k positions ≈
-30M AV tokens ≈ 1-2h. Stage B C1: ≈ 9k sequential cohort decode steps, each a
-synchronous vLLM generate() of ~150 tokens over the active rows (~4-6s at
-cohort 192, eager mode) → **~6-10h**; C0/C0′ ≈ 1h; pilot + seeds + nla_prompt
-+2-3h. Whole first pass incl. setup: **~15-25 GPU-h ≈ $45-75** (the earlier
-3-5h Stage-B estimate ignored per-call fixed overhead and the shrinking-batch
-tail; budget 2× regardless for first-run debugging). vLLM gets 0.35 of the
-card; HF side (M 16G + AR 11.5G) shares the rest.
+~150-token explanations (the checkpoint's cap); C1 cohort decode steps are a
+synchronous vLLM generate() over active rows, ~5-7s each at cohort 192 (eager).
+
+Initial run: setup 1-1.5h; gates 0.3-0.5h; Stage A (~100k round-trips)
+0.5-0.8h; pilot ~0.5h; C0+C0′ 0.3-0.5h; C1 ≈ 1,400 steps ≈ **2-2.7h**;
++1 seed 0.4-0.6h → **~5-7 GPU-h ≈ $14-22** clean path, **$21-30** with
+debugging reserve. Extension run (deferred set, ~6-8h more) brings the total
+to the full-design **~15-25 GPU-h ≈ $45-75**. vLLM gets 0.35 of the card; HF
+side (M 16G + AR 11.5G) shares the rest.
 
 ## Gotchas already encoded
 

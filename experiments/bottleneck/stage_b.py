@@ -49,9 +49,18 @@ def run_task(m: BottleneckModel, codec, task_name: str, condition: str, seed: in
         for old in shard_dir.glob("*.parquet"):
             old.unlink()
     n = cfg.get("task_sizes", {}).get(task_name, DEFAULT_SIZES[task_name])
-    problems = load_task(task_name, n, seed=cfg.get("data_seed", 0))
+    kw = {}
+    if task_name == "mgsm" and cfg.get("mgsm_langs"):
+        kw["mgsm_langs"] = cfg["mgsm_langs"]
+    problems = load_task(task_name, n, seed=cfg.get("data_seed", 0), **kw)
+    # optional per-task generation-budget cap (a cohort runs until its slowest
+    # row finishes, so max_new — not n below cohort size — is the cost knob)
+    cap = cfg.get("max_new_caps", {}).get(task_name)
+    if cap:
+        for p_ in problems:
+            p_.max_new_tokens = min(p_.max_new_tokens, cap)
     print(f"[task {task_name}] {len(problems)} problems, condition={condition}, "
-          f"seed={seed}", flush=True)
+          f"seed={seed}" + (f", max_new capped {cap}" if cap else ""), flush=True)
 
     batch_size = cfg.get("gen_batch_size", 192)
     t_start = time.time()

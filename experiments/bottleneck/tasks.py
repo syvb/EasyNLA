@@ -103,7 +103,8 @@ def _user(task: str, pid: str, content: str, gold: dict, max_new: int) -> Proble
                    messages=[{"role": "user", "content": content}])
 
 
-def load_task(name: str, n: int, seed: int = 0) -> list[Problem]:
+def load_task(name: str, n: int, seed: int = 0,
+              mgsm_langs: tuple[str, ...] | list[str] = MGSM_LANGS) -> list[Problem]:
     import datasets as hfd
 
     r = _rng(seed)
@@ -198,7 +199,9 @@ def load_task(name: str, n: int, seed: int = 0) -> list[Problem]:
     if name == "mgsm":
         out = []
         per_lang = n
-        for li, lang in enumerate(MGSM_LANGS):
+        for lang in mgsm_langs:
+            assert lang in MGSM_LANGS, f"unknown mgsm lang {lang}"
+            li = MGSM_LANGS.index(lang)   # seed by canonical index, not list order
             ds = hfd.load_dataset("juletxara/mgsm", lang, split="test")
             # NEVER hash() here: string hashes are salted per process, and each
             # condition runs in its own process — conditions would silently

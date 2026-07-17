@@ -17,7 +17,8 @@ av_temperature: 1.0            # as trained; z_i sampling is the stochasticity i
 # --- stage A ---
 domains_parquet: /workspace/nlabtl/domains.parquet
 stage_a_seq_len: 256
-stage_a_seqs_per_domain: 64
+stage_a_seqs_per_domain: 32    # INITIAL RUN (halved); full design: 64. Still
+                               # ~8k positions/domain — per-token stats stay tight.
 stage_a_batch_size: 8
 stage_a_seed: 0
 store_z: true                  # keep the full z corpus (deliverable)
@@ -28,7 +29,17 @@ gen_batch_size: 192            # cohort size. Each M decode step = ONE synchrono
                                # fixed cost (engine scheduling, steer-log RPCs)
                                # amortizes with batch; 64 was ~2-3x slower overall.
 data_seed: 0                   # problem subsampling seed (same set for all conditions)
-# task_sizes: {gsm8k: 200}     # optional per-task overrides of tasks.DEFAULT_SIZES
+
+# INITIAL RUN sizing (halves C1 wall time; see README "Initial run"):
+#  - sizes cohort-aligned (a 200-problem task costs TWO full cohorts; 192 costs
+#    one — steps, not problems, are the cost unit)
+#  - mgsm trimmed to en/fr/zh (same-item contrast kept; ru/sw deferred)
+#  - humaneval capped at 384 gen tokens (completions rarely need 512)
+# For the FULL design: delete task_sizes/mgsm_langs/max_new_caps below and run
+# the deferred tasks (math500, mbpp, ifeval) + seed 2 + nla_prompt.
+task_sizes: {gsm8k: 192, gsm8k_short: 192, triviaqa: 192, popqa: 192, mgsm: 64}
+mgsm_langs: [en, fr, zh]
+max_new_caps: {humaneval: 384}
 
 # --- output ---
 out_dir: /workspace/nlabtl/results

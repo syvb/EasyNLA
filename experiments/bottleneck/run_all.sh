@@ -44,15 +44,20 @@ done
 run experiments.bottleneck.score_stage_b --results /workspace/nlabtl/results_pilot/stage_b
 echo "### PILOT DONE — inspect retention above before the full matrix continues"
 
-# 5. full Stage B: C0, C0', C1 (+2 extra codec seeds on gsm8k/triviaqa).
-#    Optional afterwards: --condition nla_prompt on triviaqa to quantify the
-#    clean-prompt-KV bypass (see README caveats).
-run experiments.bottleneck.stage_b --config "$CFG" --condition clean    --seed 0
-run experiments.bottleneck.stage_b --config "$CFG" --condition identity --seed 0
-run experiments.bottleneck.stage_b --config "$CFG" --condition nla      --seed 0
+# 5. INITIAL-RUN Stage B (halved; see README "Initial run"): one benchmark per
+#    capability axis, +1 codec seed on gsm8k+triviaqa. Deferred to the
+#    extension run (shards make it incremental on the same box):
+#    math500, mbpp, ifeval, mgsm ru/sw, seed 2, nla_prompt.
+TASKS=gsm8k,gsm8k_short,humaneval,triviaqa,popqa,mmlu_pro,mgsm,fluency
+run experiments.bottleneck.stage_b --config "$CFG" --condition clean    --seed 0 --tasks "$TASKS"
+run experiments.bottleneck.stage_b --config "$CFG" --condition identity --seed 0 --tasks "$TASKS"
+run experiments.bottleneck.stage_b --config "$CFG" --condition nla      --seed 0 --tasks "$TASKS"
 run experiments.bottleneck.stage_b --config "$CFG" --condition nla --seed 1 --tasks gsm8k,triviaqa
-run experiments.bottleneck.stage_b --config "$CFG" --condition nla --seed 2 --tasks gsm8k,triviaqa
-run experiments.bottleneck.stage_b --config "$CFG" --condition nla_prompt --seed 0 --tasks triviaqa
+# extension-run extras (uncomment to run):
+# run experiments.bottleneck.stage_b --config "$CFG" --condition clean --seed 0 --tasks math500,mbpp,ifeval
+# run experiments.bottleneck.stage_b --config "$CFG" --condition nla   --seed 0 --tasks math500,mbpp,ifeval
+# run experiments.bottleneck.stage_b --config "$CFG" --condition nla --seed 2 --tasks gsm8k,triviaqa
+# run experiments.bottleneck.stage_b --config "$CFG" --condition nla_prompt --seed 0 --tasks triviaqa
 
 # 6. score
 run experiments.bottleneck.score_stage_b --results /workspace/nlabtl/results/stage_b
