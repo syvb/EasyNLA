@@ -1,0 +1,31 @@
+# Continuous-bottleneck experiment config (box paths assume /workspace layout
+# created by setup_box.sh). All scripts take --config with this file.
+
+# --- models ---
+m_ckpt: Qwen/Qwen3-8B          # target model M (loaded via HF hub cache)
+av_merged_dir: /workspace/nlabtl/av_merged   # RL LoRA merged into warmstart base (merge_av.py)
+ar_dir: /workspace/nlabtl/ar_ckpt            # NLACriticModel dir (25 layers + value_head)
+layer_index: 24                # sidecar-pinned; codec asserts agreement
+
+# --- codec (AV/AR) ---
+vllm_gpu_mem: 0.35             # fraction of TOTAL GPU mem for vLLM (H200: ~49GB).
+                               # HF side needs M(16G) + AR(11.5G) + activations.
+vllm_max_len: 1024
+av_max_tokens: 150             # the checkpoint's RL generation cap
+av_temperature: 1.0            # as trained; z_i sampling is the stochasticity in C1
+
+# --- stage A ---
+domains_parquet: /workspace/nlabtl/domains.parquet
+stage_a_seq_len: 256
+stage_a_seqs_per_domain: 64
+stage_a_batch_size: 8
+stage_a_seed: 0
+store_z: true                  # keep the full z corpus (deliverable)
+
+# --- stage B ---
+gen_batch_size: 64
+data_seed: 0                   # problem subsampling seed (same set for all conditions)
+# task_sizes: {gsm8k: 200}     # optional per-task overrides of tasks.DEFAULT_SIZES
+
+# --- output ---
+out_dir: /workspace/nlabtl/results
