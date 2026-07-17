@@ -23,7 +23,10 @@ stage_a_seed: 0
 store_z: true                  # keep the full z corpus (deliverable)
 
 # --- stage B ---
-gen_batch_size: 64
+gen_batch_size: 192            # cohort size. Each M decode step = ONE synchronous
+                               # vLLM generate() over the active rows, so per-step
+                               # fixed cost (engine scheduling, steer-log RPCs)
+                               # amortizes with batch; 64 was ~2-3x slower overall.
 data_seed: 0                   # problem subsampling seed (same set for all conditions)
 # task_sizes: {gsm8k: 200}     # optional per-task overrides of tasks.DEFAULT_SIZES
 

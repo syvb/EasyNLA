@@ -23,10 +23,43 @@ import pyarrow.parquet as pq
 
 from experiments.bottleneck.scoring import (
     bootstrap_mean_ci,
+    extract_boxed,
+    extract_letter,
     paired_retention_ci,
+    repetition_rate,
     score_ifeval,
     score_row,
 )
+
+MC_CHANCE = 0.1  # MMLU-Pro: 10 options
+
+
+def format_ok(task: str, output: str) -> float:
+    """Did the output comply with the instructed answer format? Reported per
+    condition so 'capability lost' vs 'format compliance lost' is separable —
+    a degraded model may know the answer but stop emitting ####/boxed/letters."""
+    if task in ("gsm8k", "mgsm"):
+        return float("####" in output)
+    if task == "math500":
+        return float(extract_boxed(output) is not None)
+    if task in ("humaneval", "mbpp"):
+        return float("```" in output)
+    if task == "mmlu_pro":
+        return float(extract_letter(output) is not None)
+    if task in ("triviaqa", "popqa", "gsm8k_short"):
+        return float(len(output.strip().split("\n")[0].split()) <= 12)
+    return float("nan")
+
+
+def aux_stats(task: str, rows: list[dict]) -> str:
+    n = max(len(rows), 1)
+    out_toks = np.array([r["n_output_tokens"] for r in rows], dtype=float)
+    cap = np.mean([r["hit_cap"] for r in rows])
+    rep = np.mean([repetition_rate(r["output"]) for r in rows])
+    fmt = np.array([format_ok(task, r["output"]) for r in rows], dtype=float)
+    fmt_s = f" fmt_ok={np.nanmean(fmt):.2f}" if not np.all(np.isnan(fmt)) else ""
+    return (f"len={out_toks.mean():.0f} hit_cap={cap:.2f} rep3={rep:.2f}{fmt_s}"
+            f" n={n}")
 
 
 def load_runs(results_dir: Path) -> dict:
@@ -84,11 +117,14 @@ def main():
         scored[(task, cond, seed)] = score_run(task, rows, results_dir, f"{cond}_s{seed}")
         vals = np.array([v for v in scored[(task, cond, seed)].values()
                          if not np.isnan(v)])
+        aux = aux_stats(task, list(rows.values()))
         if len(vals):
             mean, lo, hi = bootstrap_mean_ci(vals)
-            print(f"{task:10s} {cond:9s} seed{seed}: "
+            print(f"{task:12s} {cond:10s} seed{seed}: "
                   f"{'nll' if task == 'fluency' else 'score'} "
-                  f"{mean:.4f} [{lo:.4f}, {hi:.4f}] n={len(vals)}")
+                  f"{mean:.4f} [{lo:.4f}, {hi:.4f}]  | {aux}")
+        else:
+            print(f"{task:12s} {cond:10s} seed{seed}: (no inline score) | {aux}")
 
     # Retention vs clean (seed-matched to clean seed 0 — clean is deterministic).
     lines = ["| task | condition | seed | score | clean | retention [95% CI] | n |",
@@ -116,8 +152,15 @@ def main():
             continue
         ret, lo, hi = paired_retention_ci(cv, kv)
         by_task_cond[(task, cond)].append(ret)
+        extra = ""
+        if task == "mmlu_pro":
+            # raw retention has a hidden floor of chance/clean (a floored model
+            # still scores ~10% by luck); report chance-adjusted alongside
+            adj = ((cv.mean() - MC_CHANCE) / (kv.mean() - MC_CHANCE)
+                   if kv.mean() > MC_CHANCE else float("nan"))
+            extra = f" (chance-adj {adj:.3f})"
         lines.append(f"| {task} | {cond} | {seed} | {cv.mean():.3f} | {kv.mean():.3f} "
-                     f"| {ret:.3f} [{lo:.3f}, {hi:.3f}] | {len(cv)} |")
+                     f"| {ret:.3f} [{lo:.3f}, {hi:.3f}]{extra} | {len(cv)} |")
         out_rows.append({"task": task, "condition": cond, "seed": seed,
                          "score": float(cv.mean()), "clean": float(kv.mean()),
                          "retention": ret, "lo": lo, "hi": hi, "n": len(cv)})

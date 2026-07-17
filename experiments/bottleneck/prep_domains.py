@@ -23,22 +23,29 @@ import pyarrow.parquet as pq
 MIN_CHARS = 800  # ~>200 tokens; stage_a still enforces >=64 tokens post-tokenize
 
 
-def _stream_texts(spec_list, n, field="text", transform=None):
-    """Try each (dataset, config, split) spec until one loads; take n texts."""
+def _stream_texts(spec_list, n, transform=None):
+    """Try each spec dict {args: [dataset, config?], split, field} until one
+    loads AND yields texts; take n. A spec whose field never matches yields
+    nothing — cap the scan so a wrong field can't stream a multi-GB dataset."""
+    import itertools
+
     import datasets as hfd
     last_err = None
     for spec in spec_list:
         try:
-            ds = hfd.load_dataset(*spec[:-1], split=spec[-1], streaming=True)
+            ds = hfd.load_dataset(*spec["args"], split=spec["split"], streaming=True)
             out = []
-            for row in ds:
-                t = transform(row) if transform else row.get(field)
+            for row in itertools.islice(ds, 50_000):   # wrong-field scan cap
+                t = transform(row) if transform else row.get(spec["field"])
                 if t and len(t) >= MIN_CHARS:
                     out.append(t)
                 if len(out) >= n:
                     return out, spec
             if out:
                 return out, spec
+            last_err = RuntimeError(
+                f"{spec} yielded 0 usable texts in 50k rows (wrong field name?)")
+            print(f"[prep] {last_err}")
         except Exception as e:  # gated repo / renamed config → try next
             last_err = e
             print(f"[prep] {spec} failed: {e}")
@@ -85,20 +92,27 @@ def _synthetic_json(n, seed=0):
     return out
 
 
+def _d(args, split="train", field="text"):
+    return {"args": args if isinstance(args, list) else [args], "split": split,
+            "field": field}
+
+
+# NOTE: script-based loaders (e.g. codeparrot/github-code-clean) are DEAD on
+# datasets>=3 — every spec here must be parquet/data-files native. The code
+# domain uses codeparrot-clean-valid, whose text column is `content`.
 DOMAINS = {
-    "fineweb":    [("HuggingFaceFW/fineweb", "sample-10BT", "train")],
-    "wikipedia":  [("wikimedia/wikipedia", "20231101.en", "train")],
-    "code":       [("codeparrot/github-code-clean", "Python-all", "train"),
-                   ("codeparrot/codeparrot-clean-valid", "train")],
-    "math":       [("open-web-math/open-web-math", "train")],
-    "arxiv":      [("ccdv/arxiv-summarization", "document", "train")],
-    "pubmed":     [("ccdv/pubmed-summarization", "document", "train")],
-    "chat":       [("HuggingFaceH4/ultrachat_200k", "train_sft")],
-    "wiki_zh":    [("wikimedia/wikipedia", "20231101.zh", "train")],
-    "wiki_fr":    [("wikimedia/wikipedia", "20231101.fr", "train")],
-    "wiki_hi":    [("wikimedia/wikipedia", "20231101.hi", "train")],
+    "fineweb":    [_d(["HuggingFaceFW/fineweb", "sample-10BT"])],
+    "wikipedia":  [_d(["wikimedia/wikipedia", "20231101.en"])],
+    "code":       [_d("codeparrot/codeparrot-clean-valid", field="content"),
+                   _d(["bigcode/the-stack-smol", "data/python"], field="content")],
+    "math":       [_d("open-web-math/open-web-math")],
+    "arxiv":      [_d(["ccdv/arxiv-summarization", "document"], field="article")],
+    "pubmed":     [_d(["ccdv/pubmed-summarization", "document"], field="article")],
+    "chat":       [_d("HuggingFaceH4/ultrachat_200k", split="train_sft")],
+    "wiki_zh":    [_d(["wikimedia/wikipedia", "20231101.zh"])],
+    "wiki_fr":    [_d(["wikimedia/wikipedia", "20231101.fr"])],
+    "wiki_hi":    [_d(["wikimedia/wikipedia", "20231101.hi"])],
 }
-FIELDS = {"code": "code", "arxiv": "article", "pubmed": "article"}
 
 
 def main():
@@ -111,22 +125,29 @@ def main():
 
     wanted = list(DOMAINS) + ["json_struct"] if args.domains == "all" \
         else args.domains.split(",")
-    rows = []
+    rows, failed = [], []
     for domain in wanted:
-        if domain == "json_struct":
-            texts = _synthetic_json(args.n)
-            src = "synthetic"
-        else:
-            transform = _chat_transform if domain == "chat" else None
-            texts, src = _stream_texts(DOMAINS[domain], args.n,
-                                       field=FIELDS.get(domain, "text"),
-                                       transform=transform)
+        try:
+            if domain == "json_struct":
+                texts = _synthetic_json(args.n)
+                src = "synthetic"
+            else:
+                transform = _chat_transform if domain == "chat" else None
+                texts, src = _stream_texts(DOMAINS[domain], args.n, transform=transform)
+        except Exception as e:
+            # keep building the other domains; report + fail at the end
+            print(f"[prep] DOMAIN FAILED: {domain}: {e}")
+            failed.append(domain)
+            continue
         print(f"[prep] {domain}: {len(texts)} docs from {src}")
         for i, t in enumerate(texts):
             rows.append({"domain": domain, "doc_id": f"{domain}/{i}", "text": t[:20000]})
 
+    assert rows, "no domain produced any documents"
     pq.write_table(pa.Table.from_pylist(rows), args.out)
     print(f"[prep] wrote {len(rows)} rows -> {args.out}")
+    if failed:
+        print(f"[prep] FAILED domains (parquet written without them): {failed}")
 
     if args.upload:
         from huggingface_hub import HfApi
@@ -135,6 +156,8 @@ def main():
         api.upload_file(path_or_fileobj=args.out, path_in_repo="domains.parquet",
                         repo_id=args.upload, repo_type="dataset")
         print(f"[prep] uploaded -> hf://datasets/{args.upload}/domains.parquet")
+    if failed:
+        raise SystemExit(f"incomplete corpus: {failed}")
     print("PREP_DOMAINS_DONE")
 
 

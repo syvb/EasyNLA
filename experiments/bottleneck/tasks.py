@@ -26,6 +26,8 @@ class Problem:
 
 GSM_INSTR = ("Solve the following math problem. Think step by step, then write "
              "your final numeric answer on the last line in the form '#### <answer>'.")
+GSM_SHORT_INSTR = ("Solve the following math problem. Do NOT show your work — "
+                   "reply with ONLY the final numeric answer, nothing else.")
 MATH_INSTR = ("Solve the following math problem. Think step by step, then give "
               "your final answer inside \\boxed{}.")
 CODE_INSTR = ("Output only the complete solution inside a single ```python code block.")
@@ -33,8 +35,10 @@ SHORT_INSTR = ("Answer the following question directly and as briefly as possibl
                "with just the answer.")
 MC_INSTR = ("Answer with only the letter of the correct option.")
 
-# MGSM languages: two high-resource non-English + one CJK + one low-resource.
-MGSM_LANGS = ("fr", "zh", "ru", "sw")
+# MGSM: en included for a same-item cross-language contrast (MGSM languages
+# are translations of the same 250 problems), plus two high-resource
+# non-English + one CJK + one low-resource.
+MGSM_LANGS = ("en", "fr", "zh", "ru", "sw")
 
 FLUENCY_PROMPTS = [
     "Write a short story about a lighthouse keeper who discovers something unusual.",
@@ -110,6 +114,16 @@ def load_task(name: str, n: int, seed: int = 0) -> list[Problem]:
                       {"answer": ds[i]["answer"].split("####")[-1].strip()}, 256)
                 for i in idx]
 
+    if name == "gsm8k_short":
+        # Horizon control: SAME sampling seed → same problems as gsm8k, but
+        # answer-only (~16 substituted steps vs ~150-250). Separates "codec
+        # drops math content" from "long chains compound per-step damage".
+        ds = hfd.load_dataset("openai/gsm8k", "main", split="test")
+        idx = _rng(seed).sample(range(len(ds)), min(n, len(ds)))
+        return [_user("gsm8k_short", str(i), f"{GSM_SHORT_INSTR}\n\n{ds[i]['question']}",
+                      {"answer": ds[i]["answer"].split("####")[-1].strip()}, 16)
+                for i in idx]
+
     if name == "math500":
         ds = hfd.load_dataset("HuggingFaceH4/MATH-500", split="test")
         idx = r.sample(range(len(ds)), min(n, len(ds)))
@@ -129,11 +143,14 @@ def load_task(name: str, n: int, seed: int = 0) -> list[Problem]:
     if name == "mbpp":
         ds = hfd.load_dataset("google-research-datasets/mbpp", "sanitized", split="test")
         rows = list(ds)[:n]
+        # sanitized config has test_imports (list of import lines), NOT the
+        # full config's test_setup_code — dropping them auto-fails any problem
+        # whose tests need an import.
         return [_user("mbpp", str(row["task_id"]),
                       f"{row['prompt']}\nYour code should satisfy these tests:\n"
                       + "\n".join(row["test_list"]) + f"\n{CODE_INSTR}",
                       {"test_list": row["test_list"],
-                       "test_setup_code": row.get("test_setup_code", "")}, 256)
+                       "test_setup_code": "\n".join(row.get("test_imports") or [])}, 256)
                 for row in rows]
 
     if name == "triviaqa":
@@ -181,9 +198,12 @@ def load_task(name: str, n: int, seed: int = 0) -> list[Problem]:
     if name == "mgsm":
         out = []
         per_lang = n
-        for lang in MGSM_LANGS:
+        for li, lang in enumerate(MGSM_LANGS):
             ds = hfd.load_dataset("juletxara/mgsm", lang, split="test")
-            idx = _rng(seed + hash(lang) % 1000).sample(range(len(ds)), min(per_lang, len(ds)))
+            # NEVER hash() here: string hashes are salted per process, and each
+            # condition runs in its own process — conditions would silently
+            # sample different problem sets and the paired comparison collapses.
+            idx = _rng(seed * 100 + li).sample(range(len(ds)), min(per_lang, len(ds)))
             for i in idx:
                 row = ds[i]
                 out.append(_user("mgsm", f"{lang}/{i}",
@@ -207,10 +227,11 @@ def load_task(name: str, n: int, seed: int = 0) -> list[Problem]:
     raise ValueError(f"unknown task {name!r}")
 
 
-# Default first-pass sizes (plan §3). For mmlu_pro the number is PER CATEGORY.
+# Default first-pass sizes (plan §3). For mmlu_pro the number is PER CATEGORY;
+# for mgsm it is PER LANGUAGE.
 DEFAULT_SIZES = {
-    "gsm8k": 200, "math500": 150, "humaneval": 164, "mbpp": 150,
-    "triviaqa": 300, "popqa": 300, "mmlu_pro": 40, "mgsm": 100,
+    "gsm8k": 200, "gsm8k_short": 200, "math500": 150, "humaneval": 164,
+    "mbpp": 150, "triviaqa": 300, "popqa": 300, "mmlu_pro": 40, "mgsm": 100,
     "ifeval": 150, "fluency": 50,
 }
 ALL_TASKS = tuple(DEFAULT_SIZES)

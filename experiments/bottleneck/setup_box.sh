@@ -14,6 +14,9 @@
 #   /workspace/nlabtl/ar_ckpt   — AR critic dir
 #   /workspace/nlabtl/domains.parquet, av_sft_val.parquet, results/
 set -euo pipefail
+# Non-interactive SSH shells on Vast boxes don't reliably carry the image's
+# PATH — pin conda + uv locations up front or a detached run dies at `pip`.
+export PATH=/opt/conda/bin:$HOME/.local/bin:$PATH
 REPO=/workspace/nla
 WORK=/workspace/nlabtl
 VENV=$HOME/envs/vllm-lens
@@ -23,12 +26,17 @@ command -v uv >/dev/null || pip install -q uv
 
 echo "=== [1/5] vllm-lens venv (pinned; applies injection patch) ==="
 bash "$REPO/scripts/install_vllm_lens.sh" "$VENV"
+# peft pinned to the version that wrote the AV adapter config; datasets pinned
+# to the version every loader in tasks.py/prep_domains.py was verified against.
 uv pip install --python "$VENV/bin/python" \
-  datasets pyarrow pyyaml accelerate "huggingface_hub[hf_transfer]" \
-  instruction-following-eval || \
+  "peft==0.19.1" "datasets==5.0.0" pyarrow pyyaml accelerate \
+  "huggingface_hub[hf_transfer]"
+# IFEval strict scorer (pip-installable port; scoring falls back to writing
+# official-format JSONL if this is absent, so failure here is non-fatal)
 uv pip install --python "$VENV/bin/python" \
-  datasets pyarrow pyyaml accelerate "huggingface_hub[hf_transfer]"
-uv pip install --python "$VENV/bin/python" -e "$REPO" --no-deps || true
+  "git+https://github.com/josejg/instruction_following_eval" || \
+  echo "WARN: ifeval scorer install failed — score_stage_b will emit JSONL instead"
+uv pip install --python "$VENV/bin/python" -e "$REPO" --no-deps
 
 echo "=== [2/5] downloads (models + val parquet + domains) ==="
 export HF_HUB_ENABLE_HF_TRANSFER=1
@@ -54,7 +62,9 @@ print("DOWNLOADS_DONE")
 PY
 
 echo "=== [3/5] AR critic dir (tokenizer files come from the AV side) ==="
-cp -r /workspace/nlabtl/rl_ckpt/ar /workspace/nlabtl/ar_ckpt
+# -T so a re-run replaces instead of nesting ar_ckpt/ar
+rm -rf /workspace/nlabtl/ar_ckpt
+cp -rT /workspace/nlabtl/rl_ckpt/ar /workspace/nlabtl/ar_ckpt
 
 echo "=== [4/5] merge AV LoRA into warmstart base ==="
 cd "$REPO"

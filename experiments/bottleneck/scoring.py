@@ -154,8 +154,26 @@ def em_f1(pred: str, aliases: list[str]) -> tuple[float, float]:
 
 
 def extract_letter(text: str) -> str | None:
-    m = re.search(r"\b([A-J])\b", text.strip())
-    return m.group(1) if m else None
+    """Robust to a degraded model rambling: a bare first-anywhere \\b[A-J]\\b
+    would match 'I cannot...' → I and 'A quick check' → A, and those false
+    positives hit the degraded condition asymmetrically."""
+    text = text.strip()
+    first_line = text.split("\n")[0].strip()
+    m = re.fullmatch(r"\(?([A-J])\)?\.?,?", first_line)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?i)answer\s*(?:is|:)\s*\(?([A-J])\b", text)
+    if m:
+        return m.group(1).upper()
+    # bare-letter fallback, excluding 'A'/'I' used as English words
+    for m in re.finditer(r"\b([A-J])\b", text):
+        letter = m.group(1)
+        if letter in ("A", "I"):
+            rest = text[m.end():m.end() + 2]
+            if re.match(r"\s*[a-z]", rest):    # 'A quick', 'I think' → skip
+                continue
+        return letter
+    return None
 
 
 # ------------------------------------------------------------------ fluency --
@@ -169,7 +187,7 @@ def repetition_rate(text: str, n: int = 3) -> float:
 
 # ------------------------------------------------------------------- driver --
 def score_row(task: str, gold: dict, output: str) -> dict:
-    if task in ("gsm8k", "mgsm"):
+    if task in ("gsm8k", "gsm8k_short", "mgsm"):
         pred = extract_final_number(output)
         ok = pred is not None and normalize_number(pred) == normalize_number(gold["answer"])
         return {"score": float(ok)}
@@ -192,24 +210,29 @@ def score_row(task: str, gold: dict, output: str) -> dict:
 
 
 def score_ifeval(rows: list[dict]) -> list[float] | None:
-    """Strict-prompt IFEval scoring. Tries the reference implementation
-    (pip `instruction-following-eval`, module `instruction_following_eval`);
-    if unavailable, returns None — the caller then writes the official-format
+    """Strict-prompt IFEval scoring via the pip-installable port
+    (`pip install git+https://github.com/josejg/instruction_following_eval`,
+    module `instruction_following_eval.evaluation`: InputExample +
+    test_instruction_following(example, response, strict=True)). If
+    unavailable, returns None — the caller then writes the official-format
     JSONL so google-research/instruction_following_eval can be run separately."""
     try:
-        from instruction_following_eval import evaluation_lib as el  # type: ignore
+        from instruction_following_eval.evaluation import (  # type: ignore
+            InputExample,
+            test_instruction_following,
+        )
     except ImportError:
         return None
     scores = []
     for r in rows:
         gold = json.loads(r["gold"])
-        inp = el.InputExample(
+        inp = InputExample(
             key=0, instruction_id_list=gold["instruction_id_list"],
             prompt=gold["prompt"],
             kwargs=[{k: v for k, v in kw.items() if v is not None}
                     for kw in json.loads(gold["kwargs"])],
         )
-        out = el.test_instruction_following_strict(inp, {gold["prompt"]: r["output"]})
+        out = test_instruction_following(inp, r["output"], strict=True)
         scores.append(float(out.follow_all_instructions))
     return scores
 

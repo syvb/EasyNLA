@@ -9,14 +9,23 @@ nla/utils/hooks.py). Modes:
   - "capture":     stash the layer output (Stage A clean forward)
   - "replace_all": overwrite the full [B, S, d] hidden states with a provided
                    tensor at masked positions (Stage A patched forward)
-  - callable:      h_new = fn(h) applied to the LAST position of each active
-                   row during decode steps (C0′ identity / C1 codec)
+  - callable:      resid -> resid, set per-forward by generate() (C0′ / C1 /
+                   C1-prompt); the callable does its own position slicing
+
+Substitution semantics during generation: EVERY generated token must be
+sampled from a substituted stream, so the transform fires (a) at the LAST real
+prompt position during prefill — that position's stream produces the first
+generated token; without this, single-token answers (MMLU-Pro letters) would
+bypass the codec entirely — and (b) at the current position of every decode
+step. The rest of the prefill stays clean (condition "nla_prompt" additionally
+substitutes every real prompt position, to quantify the clean-prompt-KV
+bypass). Prefill codec calls are logged with step < 0.
 
 Generation is a custom batched greedy loop (left-padded prefill + DynamicCache)
 rather than model.generate(): we need per-step synchronous codec calls on the
 active rows only, per-token logging, and finished-row masking. Correctness of
-the loop is validated by sanity_checks.py (C0 == model.generate greedy; C0′
-token-identical to C0) and tests/test_bottleneck_cpu.py on a tiny model.
+the loop is validated by sanity_checks.py (C0 == batched model.generate greedy;
+C0′ token-identical to C0) and tests/test_bottleneck_cpu.py on a tiny model.
 """
 
 from __future__ import annotations
@@ -26,6 +35,8 @@ from dataclasses import dataclass
 import torch
 
 from nla.utils.arch_adapters import resolve_decoder_layers
+
+CONDITIONS = ("clean", "identity", "nla", "nla_prompt")
 
 
 def identity_transform(h: torch.Tensor) -> torch.Tensor:
@@ -38,10 +49,16 @@ def identity_transform(h: torch.Tensor) -> torch.Tensor:
 
 @dataclass
 class StepLog:
-    """One (row, step) codec application during generation."""
+    """One (row, step) codec application during generation.
+
+    step >= 0: decode step; token_id is the token FED IN at that step (the
+    position whose activation was substituted — the substitution influences
+    the NEXT sampled token). step < 0: prefill substitution at prompt position
+    P+step (step=-1 = last prompt position); token_id is that prompt token.
+    """
     row: int
     step: int
-    token_id: int          # token generated FROM the substituted stream
+    token_id: int
     cosine: float
     h_norm: float
     pred_norm: float
@@ -80,9 +97,8 @@ class BottleneckModel:
         self._captured: torch.Tensor | None = None
         self._replacement: torch.Tensor | None = None       # [B, S, d]
         self._replace_mask: torch.Tensor | None = None      # [B, S] bool
-        self._decode_transform = None                        # callable h[B,1,d]->h
-        self._hook_fired = 0
-        resolve_decoder_layers(self.model)[layer_index].register_forward_hook(self._tap)
+        self._handle = resolve_decoder_layers(self.model)[layer_index] \
+            .register_forward_hook(self._tap)
 
     # ------------------------------------------------------------------ tap --
     def _tap(self, module, args, output):
@@ -92,7 +108,6 @@ class BottleneckModel:
             resid, rest = output[0], output[1:]
         else:
             resid, rest = output, None
-        self._hook_fired += 1
 
         if self._mode == "capture":
             self._captured = resid.detach()
@@ -104,12 +119,8 @@ class BottleneckModel:
             )
             m = self._replace_mask.to(resid.device).unsqueeze(-1)
             new = torch.where(m, self._replacement.to(resid.device, resid.dtype), resid)
-        else:  # decode-step transform (C0′ / C1)
+        else:
             assert callable(self._mode)
-            assert resid.shape[1] == 1, (
-                f"decode transform fired on seq_len={resid.shape[1]} — prefill must "
-                f"run with the tap off (mode is set around each forward explicitly)"
-            )
             new = self._mode(resid)
         if rest is None:
             return new
@@ -125,6 +136,62 @@ class BottleneckModel:
         )
         return self.tokenizer.encode(text, add_special_tokens=False)
 
+    # ------------------------------------------------------ transform builders --
+    def _last_pos_fn(self, active: torch.Tensor, codec, step: int,
+                     tok_at_pos: torch.Tensor, step_logs: list[StepLog] | None,
+                     identity: bool):
+        """Transform resid[:, -1] for active rows. Valid for both the prefill
+        forward (left-padding puts every row's last real prompt token in the
+        final column) and decode steps (S=1)."""
+        def fn(resid: torch.Tensor) -> torch.Tensor:
+            new = resid.clone()
+            rows = active.to(resid.device).nonzero(as_tuple=True)[0]
+            if rows.numel() == 0:
+                return new
+            if identity:
+                new[rows, -1] = identity_transform(resid[rows, -1])
+                return new
+            h_hat, recs = codec.roundtrip(resid[rows, -1])
+            new[rows, -1] = h_hat.to(resid.device, resid.dtype)
+            if step_logs is not None:
+                for j, r in enumerate(rows.tolist()):
+                    rec = recs[j]
+                    step_logs.append(StepLog(
+                        row=r, step=step, token_id=int(tok_at_pos[r]),
+                        cosine=rec.cosine, h_norm=rec.h_norm, pred_norm=rec.pred_norm,
+                        z_len=rec.verb.n_tokens, z_text=rec.verb.text,
+                        truncated=rec.verb.truncated,
+                        extract_failed=rec.verb.extract_failed,
+                        steer_verified=rec.verb.steer_verified,
+                    ))
+            return new
+        return fn
+
+    def _all_prompt_fn(self, mask: torch.Tensor, ids: torch.Tensor, codec,
+                       step_logs: list[StepLog] | None):
+        """nla_prompt prefill: substitute EVERY real prompt position (quantifies
+        how much information survives via clean prompt KV in plain C1)."""
+        def fn(resid: torch.Tensor) -> torch.Tensor:
+            new = resid.clone()
+            S = resid.shape[1]
+            flat = mask.bool().to(resid.device).nonzero(as_tuple=False)  # [N,2]
+            h_hat, recs = codec.roundtrip(resid[flat[:, 0], flat[:, 1]])
+            new[flat[:, 0], flat[:, 1]] = h_hat.to(resid.device, resid.dtype)
+            if step_logs is not None:
+                for j in range(flat.shape[0]):
+                    r, pos = int(flat[j, 0]), int(flat[j, 1])
+                    rec = recs[j]
+                    step_logs.append(StepLog(
+                        row=r, step=pos - S, token_id=int(ids[r, pos]),
+                        cosine=rec.cosine, h_norm=rec.h_norm, pred_norm=rec.pred_norm,
+                        z_len=rec.verb.n_tokens, z_text=rec.verb.text,
+                        truncated=rec.verb.truncated,
+                        extract_failed=rec.verb.extract_failed,
+                        steer_verified=rec.verb.steer_verified,
+                    ))
+            return new
+        return fn
+
     # ----------------------------------------------------------- generation --
     @torch.no_grad()
     def generate(
@@ -132,15 +199,14 @@ class BottleneckModel:
         prompt_ids_list: list[list[int]],
         max_new_tokens: int,
         codec=None,
-        condition: str = "clean",   # clean | identity | nla
+        condition: str = "clean",
         step_logs: list[StepLog] | None = None,
     ) -> list[list[int]]:
         """Batched greedy generation under a condition. Returns generated ids
-        (per row, EOS included if emitted). Prefill is always clean; from the
-        first generated token on, every step's layer-l stream is substituted
-        (identity or codec round-trip) for rows that haven't finished."""
-        assert condition in ("clean", "identity", "nla")
-        if condition == "nla":
+        (per row, EOS included if emitted). See module docstring for the
+        substitution semantics per condition."""
+        assert condition in CONDITIONS, condition
+        if condition in ("nla", "nla_prompt"):
             assert codec is not None
         from transformers import DynamicCache
 
@@ -152,11 +218,22 @@ class BottleneckModel:
             ids[r, maxp - len(p):] = torch.tensor(p, dtype=torch.long, device=self.device)
             mask[r, maxp - len(p):] = 1
         pos = (mask.cumsum(-1) - 1).clamp(min=0)
+        all_rows = torch.ones(B, dtype=torch.bool, device=self.device)
+        last_prompt_tok = ids[:, -1]
 
         cache = DynamicCache()
-        self._mode = None                             # prefill clean
-        out = self.model(input_ids=ids, attention_mask=mask, position_ids=pos,
-                         past_key_values=cache, use_cache=True)
+        if condition == "clean":
+            self._mode = None
+        elif condition == "nla_prompt":
+            self._mode = self._all_prompt_fn(mask, ids, codec, step_logs)
+        else:
+            self._mode = self._last_pos_fn(all_rows, codec, -1, last_prompt_tok,
+                                           step_logs, identity=condition == "identity")
+        try:
+            out = self.model(input_ids=ids, attention_mask=mask, position_ids=pos,
+                             past_key_values=cache, use_cache=True, logits_to_keep=1)
+        finally:
+            self._mode = None
         next_tok = out.logits[:, -1, :].float().argmax(-1)          # [B]
         next_pos = mask.sum(-1, keepdim=True)                        # [B,1]
 
@@ -177,12 +254,10 @@ class BottleneckModel:
             active = ~finished
             if condition == "clean":
                 self._mode = None
-            elif condition == "identity":
-                self._mode = self._make_decode_fn(
-                    lambda h: identity_transform(h), active, None, step, next_tok)
             else:
-                self._mode = self._make_decode_fn(None, active, codec, step, next_tok,
-                                                  step_logs=step_logs)
+                self._mode = self._last_pos_fn(active, codec, step, next_tok,
+                                               step_logs,
+                                               identity=condition == "identity")
             step_ids = next_tok.unsqueeze(-1)                        # [B,1]
             mask = torch.cat([mask, torch.ones((B, 1), dtype=torch.long,
                                                device=self.device)], dim=-1)
@@ -200,35 +275,6 @@ class BottleneckModel:
 
         return generated
 
-    def _make_decode_fn(self, ident_fn, active: torch.Tensor, codec, step: int,
-                        in_tok: torch.Tensor, step_logs: list[StepLog] | None = None):
-        """Build the per-forward decode transform. `active` selects rows that
-        still generate — finished rows keep their clean stream (their output is
-        discarded anyway, and skipping them is where the AV savings are)."""
-        def fn(h: torch.Tensor) -> torch.Tensor:       # h [B, 1, d]
-            new = h.clone()
-            rows = active.to(h.device).nonzero(as_tuple=True)[0]
-            if rows.numel() == 0:
-                return new
-            if ident_fn is not None:
-                new[rows, 0] = ident_fn(h[rows, 0])
-                return new
-            h_hat, recs = codec.roundtrip(h[rows, 0])
-            new[rows, 0] = h_hat.to(h.device, h.dtype)
-            if step_logs is not None:
-                for j, r in enumerate(rows.tolist()):
-                    rec = recs[j]
-                    step_logs.append(StepLog(
-                        row=r, step=step, token_id=int(in_tok[r]),
-                        cosine=rec.cosine, h_norm=rec.h_norm, pred_norm=rec.pred_norm,
-                        z_len=rec.verb.n_tokens, z_text=rec.verb.text,
-                        truncated=rec.verb.truncated,
-                        extract_failed=rec.verb.extract_failed,
-                        steer_verified=rec.verb.steer_verified,
-                    ))
-            return new
-        return fn
-
     # -------------------------------------------------- teacher-forced (A) --
     @torch.no_grad()
     def forward_teacher_forced(
@@ -239,9 +285,8 @@ class BottleneckModel:
         replace_mask: torch.Tensor | None = None,  # [B, S] bool, positions to swap
         capture: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """One full forward (no cache). Returns (logits [B,S,V] fp32-on-cpu-…
-        actually left on device in model dtype — caller reduces immediately),
-        and the captured layer-l stream if capture=True."""
+        """One full forward (no cache). Returns (logits [B,S,V] in model dtype —
+        caller reduces immediately) and the captured layer-l stream if capture."""
         assert not (capture and replacement is not None)
         pos = (mask.cumsum(-1) - 1).clamp(min=0)
         self._captured = None
@@ -266,6 +311,7 @@ class BottleneckModel:
     def score_continuation_nll(self, prompt_ids: list[int], cont_ids: list[int]) -> float:
         """Mean NLL of cont_ids given prompt_ids under CLEAN M (fluency metric:
         PPL of a condition's outputs under the unpatched model)."""
+        assert cont_ids, "empty continuation"
         full = torch.tensor([prompt_ids + cont_ids], dtype=torch.long, device=self.device)
         self._mode = None
         logits = self.model(input_ids=full, use_cache=False).logits.float()

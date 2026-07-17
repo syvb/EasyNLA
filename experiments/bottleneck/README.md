@@ -1,12 +1,20 @@
 # Capability degradation under a continuous NLA language bottleneck
 
 During generation, replace the residual stream at the NLA layer (24) with its
-round-trip reconstruction `ĥ = AR(AV(h))` at **every generated token**, and
+round-trip reconstruction `ĥ = AR(AV(h))` for **every generated token**, and
 measure which capability areas degrade. `AR ∘ AV` is a lossy codec whose
 channel is natural language; substituting the round-trip at layer 24 forces
-everything the model carries past that depth through the channel. Capability
-retention by domain is a behavioral map of what the codec preserves — a
-stronger, domain-stratified probe than FVE on generic text.
+the *generated-position* state that the model carries past that depth through
+the channel. Capability retention by domain is a behavioral map of what the
+codec preserves — a stronger, domain-stratified probe than FVE on generic text.
+
+**Scope caveat (registered up front):** the bottleneck is not total. Prefill
+is left clean, so the prompt's KV at every layer — including above the tap —
+remains directly attendable: prompt-resident information (exact operands, code
+identifiers, non-English question text) can be re-fetched from clean KV even
+if the codec drops it; only *generated-position* state and "what to fetch"
+must survive the channel. The optional `nla_prompt` condition (substitute
+prompt positions too) quantifies this bypass on a short-prompt task.
 
 Checkpoint: `asher577/nla-qwen-3-8b` (AV LoRA on the `asher577/nla-warmstart-2x`
 AV-SFT base; 25-layer AR critic; held-out FVE ~78-79%, max_new 150,
@@ -17,16 +25,21 @@ stay comparable across conditions.
 
 ## The intervention
 
-For each generated token step (prefill left clean): layers 0..24 run normally →
+Every generated token must be sampled from a substituted stream, so the tap
+fires (a) at the **last real prompt position during prefill** — that stream
+produces the first generated token; without this, single-token answers
+(MMLU-Pro letters) would bypass the codec entirely — and (b) at the current
+position of every decode step. Per substitution: layers 0..24 run normally →
 h; AV verbalizes h (vLLM, Karvonen norm-matched injection at the marker, temp
 1.0 as trained); AR reconstructs ĥ from the explanation; **ĥ is rescaled to
 ‖h‖** (the codec is direction-only by construction: injection norm-matches and
 the AR loss normalizes both sides to √d — without the rescale we'd measure
-scale miscalibration, not information loss); layers 25..35 compute and cache KV
-from the substituted stream; next token sampled greedily. Layers ≤24 only ever
-see (and cache) clean streams, layers >24 only reconstructed ones — internally
-consistent, and errors compound through attention, which is the regime under
-study.
+scale miscalibration, not information loss; note this hands the codec the true
+norm for free — ‖AR(z)‖ is logged so norm-information content stays
+analyzable); layers 25..35 compute and cache KV from the substituted stream;
+next token sampled greedily. Layers ≤24 only ever see clean streams — h is
+therefore a pure function of token history, which makes every run exactly
+replayable offline from the stored output token ids.
 
 ## Conditions
 
@@ -34,72 +47,106 @@ study.
   Qwen3-8B non-thinking numbers; treat ±2-3pp as a pass — harness/extraction
   differences make exact parity a time sink; C0′≡C0 is the real check).
 - **C0′ identity** — h substituted for itself through the full interception
-  machinery (serialization round-trip + same write path, no arithmetic).
-  Must match C0 **token-for-token**; catches dtype/indexing/off-by-one-layer.
-- **C1 NLA round-trip** — the measurement. Stochastic through z-sampling →
-  2-3 codec seeds on gsm8k/triviaqa gauge the variance.
+  machinery (serialization round-trip + same write path, no arithmetic), at
+  the same positions C1 substitutes. Must match C0 **token-for-token**.
+- **C1 nla** — the measurement. Stochastic through z-sampling → 2-3 codec
+  seeds on gsm8k/triviaqa gauge gross instability (3 seeds bound variance
+  only loosely — don't cite as "variance was checked").
+- **C1p nla_prompt** — C1 plus substitution of every prompt position
+  (quantifies the clean-prompt-KV bypass; run on triviaqa).
 
-Deferred (slot into the same tap later): distortion-matched noise control,
-shuffled-explanation, interpolation, every-k-th-token substitution — the last
-is the *contingency* if C1 floors every benchmark (FVE 0.78 ≈ cosine ~0.9 per
-step, compounded over hundreds of tokens, may leave no domain contrast).
+Deferred (slot into the same tap later, replaying from stored output_ids):
+**shuffled-explanation first** — AR(z) from a different position is exactly
+manifold-matched to C1's substitutions, needs only the stored z corpus —
+then a noise control matched per-task on the empirical per-position cosine
+distribution. Also: every-k-th-token substitution — the *contingency dial* if
+C1 floors all long-horizon tasks (pick k from Stage A flip rates, and note it
+leaks clean KV on unsubstituted steps).
 
 ## Two-stage evaluation
 
 **Stage A** (cheap dense map, `stage_a.py`): ~64 seqs × 256 tok × 12 domains
 (fineweb, wikipedia, code, openwebmath, arxiv, pubmed, chat, zh/fr/hi wiki,
-synthetic JSON/tables, **on-policy** = M's own greedy outputs teacher-forced —
-the codec trained only on finefineweb, so chat-mode activations are
-off-distribution and that gap gets its own domain). One clean forward captures
-h everywhere; every position verbalized+reconstructed (batched — >95% of
-cost); one patched forward with all positions replaced; per-token ΔNLL,
-KL(clean‖patched), top-1 flip, cosine (free). Caveat: verbalizes clean-history
-activations — compounding is Stage B's job.
+synthetic JSON/tables, **on-policy** = M's own greedy outputs — open-ended /
+math / code / QA prompts, train splits only — teacher-forced; the codec
+trained only on finefineweb, so chat-mode activations are off-distribution and
+that gap gets its own domain). One clean forward captures h everywhere; every
+position verbalized+reconstructed (>95% of cost); then three codec-free
+patched forwards reusing the same ĥ:
+1. **full** — all positions replaced (= teacher-forced C1; position i's
+   metrics include reconstructed history, i.e. compounding);
+2. **nosink** — position 0 + top-1%-‖h‖ (Qwen massive-activation sinks) kept
+   clean — the real robustness check, since a mangled sink direction
+   contaminates every position through attention;
+3. **one-position-only** calibration (first batch/domain, 8 strided
+   positions) — single-step damage with clean history, decomposing full into
+   per-step vs compounded.
+Metrics per token: ΔNLL, KL(clean‖patched), top-1 flip, cosine (free).
 
 **Stage B** (`stage_b.py` + offline `score_stage_b.py`): generation-mode
-benchmarks — gsm8k 200, math500 150, humaneval 164, mbpp 150, triviaqa 300,
-popqa 300, mmlu_pro 40/category (per-category CIs at n=40 are ±15pp —
-aggregate to clusters in analysis), mgsm 4×100, ifeval 150, 50 open-ended
-fluency prompts (PPL under clean M + repetition). Retention =
-score(C1)/score(C0), paired bootstrap CIs.
+benchmarks — gsm8k 200, **gsm8k_short 200** (same problems, answer-only,
+~16 substituted steps — the horizon control: long-vs-short math on the same
+items separates "codec drops math content" from "long chains compound
+per-step damage"), math500 150, humaneval 164, mbpp 150, triviaqa 300,
+popqa 300, mmlu_pro 40/category (±15pp per-category CIs — aggregate to
+clusters), mgsm 5×100 (**en**+fr+zh+ru+sw; en gives a same-item cross-language
+contrast), ifeval 150 (doubles as the instruction-following/format-compliance
+internal control), 50 open-ended fluency prompts. Retention =
+score(C1)/score(C0), paired bootstrap CIs; fluency reported as (ΔNLL under
+clean M, rep3, length, hit-cap rate) **jointly** — PPL alone rewards
+degenerate loops; format-compliance rates and chance-adjusted MMLU-Pro
+retention reported alongside.
 
 ## Order of operations
 
-1. `setup_box.sh` — venv (pinned vllm 0.19 + patched vllm-lens), downloads,
-   AV LoRA merge.
-2. `sanity_checks.py` — custom loop ≡ HF generate; C0′ ≡ C0; tiny C1 smoke.
+1. `setup_box.sh` — venv (pinned vllm 0.19 + patched vllm-lens, peft 0.19.1,
+   datasets 5.0.0), downloads, AV LoRA merge.
+2. `sanity_checks.py` — custom loop ≡ batched HF generate; C0′ ≡ C0; tiny C1
+   smoke incl. the prefill-substitution log check.
 3. `norm_scatter.py` — reproduce held-out FVE (~0.78) through our plumbing +
-   confirm AR norms are uncalibrated. **Both 2 and 3 must pass before
-   anything downstream.**
-4. `stage_a.py` (go/no-go: if ΔNLL is catastrophic everywhere, expect floors)
-   → `analysis_stage_a.py`.
-5. Stage B pilot (24 gsm8k + 8 fluency, C0 vs C1) — abort/redesign if floored.
-6. Full Stage B: C0, C0′, C1, +2 codec seeds on gsm8k/triviaqa. `run_all.sh`
-   does 2-6 in order with sentinels.
+   confirm AR norms are uncalibrated. **Both 2 and 3 must pass first.**
+4. `stage_a.py` → `analysis_stage_a.py` (go/no-go + expectations calibration).
+5. Stage B pilot spanning horizons (gsm8k, gsm8k_short, triviaqa, mmlu_pro,
+   fluency; small slices). Decision rule: abort/redesign only if floored
+   **across horizons** — a long-horizon-only floor is itself a result.
+6. Full Stage B: C0, C0′, C1, +2 codec seeds, + nla_prompt on triviaqa.
+   `run_all.sh` does 2-6 in order with sentinels.
 
 ## Analysis & priors (registered up front)
 
-1. Domain map: Stage B retention and Stage A ΔNLL/KL side by side.
-2. Attribution: correlate per-domain behavioral degradation with Stage A
-   reconstruction cosine. Off-trend domains (good cosine, big drop) are the
-   interesting ones — cosine weights all directions equally, behavior doesn't.
+1. Domain map: Stage B retention and Stage A ΔNLL/KL side by side; retention
+   vs mean steps-to-answer across tasks (the horizon axis); absolute deltas
+   alongside ratios wherever clean < ~0.4 (popqa).
+2. Attribution: correlate per-domain Stage B retention with Stage A cosine
+   (noting Stage A "full" is compounded — use the one-step calibration to
+   bridge). Off-trend domains (good cosine, big drop) are the story.
 3. Read the explanations on the worst domains (the z corpus is stored in
    full): does the AV describe math vaguely while dropping operands? Is
-   non-English paraphrased into English with specifics lost?
-4. Caveat until the noise control runs: C1 degradation conflates information
-   loss with off-manifold fragility at layer 24.
-5. Priors: worst — exact-token-identity domains (arithmetic operands, code
-   identifiers, non-English, verbatim recall); mildest — style, fluency,
-   broad-topic knowledge. Also expected: on-policy/chat Stage A domain
-   measurably worse than fineweb (train-distribution gap).
+   non-English paraphrased into English with specifics lost? Also: per-step
+   cosine-vs-step curves from the C1 steplogs (does the codec degrade as
+   prefixes drift off-distribution?).
+4. Caveats for the writeup (mandatory): prefill-KV bypass; horizon confound
+   (partially resolved by gsm8k_short); information-loss vs off-manifold
+   fragility undecided until the shuffled-z control; norm handed to the codec
+   by the rescale; format-compliance conflation (report compliance rates);
+   only registered contrasts get confirmatory language — off-trend domains
+   are exploratory; sub-15pp retention orderings are below resolution.
+5. Priors: worst — long-horizon multi-step tasks, then exact-token-identity
+   content generated (not prompt-resident) — intermediate arithmetic results,
+   generated code identifiers, non-English generation; mildest — style,
+   fluency, broad-topic knowledge, short answers fetched from clean prompt
+   KV. Also expected: on-policy/chat Stage A domain worse than fineweb.
 
 ## Cost envelope (1× H200, ~$3/hr)
 
-~150-token explanations (not ~500 — the checkpoint's cap): Stage A ≈ 197k
-positions ≈ 30M AV tokens ≈ 1-2h. Stage B C1 ≈ 440k generated tokens ≈ 66M AV
-tokens ≈ 3-5h at batch 64-128; C0/C0′ ≈ 1h. Whole first pass incl. setup:
-**8-13 GPU-h ≈ $25-40** (budget ~2× for first-run debugging). vLLM gets 0.35
-of the card; HF side (M 16G + AR 11.5G) shares the rest.
+~150-token explanations (the checkpoint's cap). Stage A ≈ 200k positions ≈
+30M AV tokens ≈ 1-2h. Stage B C1: ≈ 9k sequential cohort decode steps, each a
+synchronous vLLM generate() of ~150 tokens over the active rows (~4-6s at
+cohort 192, eager mode) → **~6-10h**; C0/C0′ ≈ 1h; pilot + seeds + nla_prompt
++2-3h. Whole first pass incl. setup: **~15-25 GPU-h ≈ $45-75** (the earlier
+3-5h Stage-B estimate ignored per-call fixed overhead and the shrinking-batch
+tail; budget 2× regardless for first-run debugging). vLLM gets 0.35 of the
+card; HF side (M 16G + AR 11.5G) shares the rest.
 
 ## Gotchas already encoded
 
@@ -108,4 +155,10 @@ of the card; HF side (M 16G + AR 11.5G) shares the rest.
 - Injection verified per-request via the patched vllm-lens steer log.
 - Marker is ㈎ U+320E; sidecar asserts catch tokenizer drift.
 - Don't name checkpoint dirs `av`/`ar` etc. (package shadowing).
-- Qwen3 massive-activation positions: report Stage A with/without top-1%-norm.
+- Never `hash()` for sampling seeds — salted per process; conditions run in
+  separate processes and would silently sample different problem sets.
+- Script-based HF datasets are dead on datasets≥3 — all loaders parquet-native.
+- Prefill logits capped via `logits_to_keep=1` (full [B,S,V] prefill logits at
+  cohort 192 would be ~17GB).
+- Stage B resume is per-cohort (shards); steplogs written before the shard
+  sentinel so a crash can't lose them.

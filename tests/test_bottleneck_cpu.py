@@ -88,24 +88,28 @@ def test_identity_matches_clean(bm):
         bm.generate(prompts, 12, condition="clean")
 
 
+class FakeCodec:
+    """Sign-flip stand-in: a maximally visible perturbation."""
+    def __init__(self):
+        self.calls = 0
+        self.total_positions = 0
+
+    def roundtrip(self, h):
+        self.calls += 1
+        self.total_positions += h.shape[0]
+        fake_recs = []
+        for _ in range(h.shape[0]):
+            class V:  # minimal VerbalizeRecord stand-in
+                n_tokens, text, truncated, extract_failed, steer_verified = \
+                    3, "z", False, False, True
+            class R:
+                verb, cosine, h_norm, pred_norm = V(), 0.9, 1.0, 1.0
+            fake_recs.append(R())
+        return -h, fake_recs
+
+
 def test_codec_condition_calls_and_perturbs(bm):
     from experiments.bottleneck.patched import StepLog
-
-    class FakeCodec:
-        def __init__(self):
-            self.calls = 0
-
-        def roundtrip(self, h):
-            self.calls += 1
-            fake_recs = []
-            for _ in range(h.shape[0]):
-                class V:  # minimal VerbalizeRecord stand-in
-                    n_tokens, text, truncated, extract_failed, steer_verified = \
-                        3, "z", False, False, True
-                class R:
-                    verb, cosine, h_norm, pred_norm = V(), 0.9, 1.0, 1.0
-                fake_recs.append(R())
-            return -h, fake_recs  # sign-flip: a maximally visible perturbation
 
     codec = FakeCodec()
     logs: list[StepLog] = []
@@ -114,9 +118,29 @@ def test_codec_condition_calls_and_perturbs(bm):
     pert = bm.generate(prompts, 8, codec=codec, condition="nla", step_logs=logs)
     assert codec.calls > 0 and logs
     assert pert != clean, "sign-flipped stream should change greedy tokens"
-    # first generated token comes from CLEAN prefill in both conditions
-    for i in range(len(prompts)):
-        assert pert[i][0] == clean[i][0], "prefill must be clean (first token equal)"
+    # the FIRST generated token must also flow through the codec: prefill
+    # substitutes the last real prompt position (step logged as -1)
+    prefill_logs = [l for l in logs if l.step == -1]
+    assert len(prefill_logs) == len(prompts), "one prefill substitution per row"
+    for i, p in enumerate(prompts):
+        assert prefill_logs[i].token_id == p[-1], "prefill log = last prompt token"
+    assert any(pert[i][0] != clean[i][0] for i in range(len(prompts))), (
+        "sign-flip at the last prompt position should change some first token")
+
+
+def test_nla_prompt_substitutes_all_prompt_positions(bm):
+    from experiments.bottleneck.patched import StepLog
+
+    codec = FakeCodec()
+    logs: list[StepLog] = []
+    prompts = _prompts()
+    gen = bm.generate(prompts, 4, codec=codec, condition="nla_prompt", step_logs=logs)
+    assert len(gen) == len(prompts)
+    n_prompt_tokens = sum(len(p) for p in prompts)
+    prefill_logged = [l for l in logs if l.step < 0]
+    assert len(prefill_logged) == n_prompt_tokens, (
+        f"expected every real prompt position substituted "
+        f"({n_prompt_tokens}), logged {len(prefill_logged)}")
 
 
 def test_replace_all_identity_bitwise(bm):

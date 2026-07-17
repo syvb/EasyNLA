@@ -188,6 +188,9 @@ class NLACodec:
                 extra_args={"apply_steering_vectors": [sv]},
             ))
         self._seed_ctr += n
+        assert self._seed_ctr < 1_000_003, (
+            "per-process codec calls exceeded the seed-space stride — bump the "
+            "stride or this run starts resampling the next --seed's stream")
 
         # Reset per-request steer log so stale entries can't merge into ours.
         try:

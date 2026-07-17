@@ -44,16 +44,23 @@ def main():
                         layer_index=cfg.get("layer_index", 24))
     ids_list = [m.build_chat_ids([{"role": "user", "content": q}]) for q in PROMPTS]
 
-    # --- 1. custom loop == HF generate (greedy) ---
+    # --- 1. custom loop == HF generate (greedy), SAME left-padded batch ---
+    # (batched-vs-unbatched bf16 GEMMs can legitimately flip a near-tie argmax,
+    # so the reference must use identical batch shapes for a bitwise claim)
     ours = m.generate(ids_list, args.max_new, condition="clean")
-    for i, ids in enumerate(ids_list):
-        t = torch.tensor([ids], dtype=torch.long, device=m.device)
-        with torch.no_grad():
-            out = m.model.generate(
-                input_ids=t, attention_mask=torch.ones_like(t),
-                max_new_tokens=args.max_new, do_sample=False,
-                pad_token_id=m.pad_id)
-        ref = out[0, t.shape[1]:].tolist()
+    B = len(ids_list)
+    maxp = max(len(p) for p in ids_list)
+    ids = torch.full((B, maxp), m.pad_id, dtype=torch.long, device=m.device)
+    attn = torch.zeros((B, maxp), dtype=torch.long, device=m.device)
+    for r, p_ in enumerate(ids_list):
+        ids[r, maxp - len(p_):] = torch.tensor(p_, dtype=torch.long, device=m.device)
+        attn[r, maxp - len(p_):] = 1
+    with torch.no_grad():
+        out = m.model.generate(
+            input_ids=ids, attention_mask=attn, max_new_tokens=args.max_new,
+            do_sample=False, pad_token_id=m.pad_id)
+    for i in range(B):
+        ref = out[i, maxp:].tolist()
         # trim ref at first EOS (inclusive) to match our loop's stopping rule
         for j, tok in enumerate(ref):
             if tok in m.eos_ids:
@@ -62,7 +69,8 @@ def main():
         assert ours[i] == ref, (
             f"CHECK 1 FAILED (prompt {i}): custom loop diverges from HF generate\n"
             f"ours={ours[i][:20]}\nref ={ref[:20]}")
-    print(f"CHECK 1 PASSED: custom greedy loop == model.generate on {len(PROMPTS)} prompts")
+    print(f"CHECK 1 PASSED: custom greedy loop == batched model.generate on "
+          f"{len(PROMPTS)} prompts")
 
     # --- 2. C0' == C0 ---
     ident = m.generate(ids_list, args.max_new, condition="identity")
@@ -91,6 +99,9 @@ def main():
             print(f"\n--- C1 smoke prompt {i}: {PROMPTS[i]!r}")
             print(f"    output: {m.tokenizer.decode(gen[i], skip_special_tokens=True)!r}")
         assert logs, "CHECK 3 FAILED: no codec step logs recorded"
+        assert any(l.step == -1 for l in logs), (
+            "CHECK 3 FAILED: no prefill-last-position substitution logged — "
+            "the first generated token would bypass the codec")
         print(f"\nCHECK 3: {len(logs)} codec calls, "
               f"cosine mean {sum(l.cosine for l in logs)/len(logs):.3f}, "
               f"z_len mean {sum(l.z_len for l in logs)/len(logs):.0f}")

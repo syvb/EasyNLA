@@ -42,12 +42,18 @@ def main():
     base = AutoModelForCausalLM.from_pretrained(args.base_dir, torch_dtype=torch.bfloat16)
     peft = PeftModel.from_pretrained(base, args.lora_dir)
     merged = peft.merge_and_unload()
-    out.mkdir(parents=True, exist_ok=True)
-    merged.save_pretrained(out)
-    AutoTokenizer.from_pretrained(args.base_dir).save_pretrained(out)
+    # Atomic: save_pretrained writes config.json before the 16GB shards, so a
+    # crash mid-save would leave a dir that passes the resume skip-check.
+    tmp = out.with_name(out.name + ".tmp")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+    merged.save_pretrained(tmp)
+    AutoTokenizer.from_pretrained(args.base_dir).save_pretrained(tmp)
     sidecar = Path(args.base_dir) / "nla_meta.yaml"
     assert sidecar.exists(), f"warmstart base lacks nla_meta.yaml ({sidecar})"
-    shutil.copy2(sidecar, out / "nla_meta.yaml")
+    shutil.copy2(sidecar, tmp / "nla_meta.yaml")
+    tmp.rename(out)
     print(f"[merge_av] done -> {out}")
     print("MERGE_AV_DONE")
 

@@ -34,7 +34,6 @@ def token_class(tok: str) -> str:
 def summarize(name: str, d: dict) -> dict:
     ok = ~np.isnan(d["nll_clean"])
     dnll = d["nll_patched"][ok] - d["nll_clean"][ok]
-    hi = d["h_norm"] > np.percentile(d["h_norm"], 99)
     out = {
         "domain": name,
         "n": int(len(d["kl"])),
@@ -50,9 +49,11 @@ def summarize(name: str, d: dict) -> dict:
         "extract_fail_rate": float(d["extract_failed"].mean()),
         "z_len_mean": float(d["z_len"].mean()),
         "h_norm_median": float(np.median(d["h_norm"])),
-        # robustness: drop top-1% norm positions
-        "kl_mean_lo_norm": float(d["kl"][~hi].mean()),
-        "flip_rate_lo_norm": float(d["flip"][~hi].mean()),
+        # robustness: the nosink forward EXEMPTED sink positions (pos 0 +
+        # top-1% norm) from substitution — dropping sink rows from the summary
+        # wouldn't help, they contaminate every position through attention
+        "kl_mean_nosink": float(d["kl_nosink"].mean()),
+        "flip_rate_nosink": float(d["flip_nosink"].mean()),
     }
     return out
 
@@ -64,11 +65,13 @@ def main():
     res = Path(args.results)
 
     summaries, class_rows = [], []
-    for f in sorted(res.glob("*.parquet")):
+    files = [f for f in sorted(res.glob("*.parquet")) if not f.stem.endswith("_onestep")]
+    assert files, f"no stage_a parquets under {res}"
+    for f in files:
         t = pq.read_table(f, columns=["domain", "pos", "token", "cosine", "h_norm",
                                       "z_len", "truncated", "extract_failed",
                                       "nll_clean", "nll_patched", "kl", "top1_flip",
-                                      "is_response"])
+                                      "kl_nosink", "top1_flip_nosink", "is_response"])
         d = {
             "cosine": np.array(t["cosine"].to_pylist(), dtype=float),
             "h_norm": np.array(t["h_norm"].to_pylist(), dtype=float),
@@ -81,6 +84,8 @@ def main():
                                      for x in t["nll_patched"].to_pylist()], dtype=float),
             "kl": np.array(t["kl"].to_pylist(), dtype=float),
             "flip": np.array(t["top1_flip"].to_pylist(), dtype=float),
+            "kl_nosink": np.array(t["kl_nosink"].to_pylist(), dtype=float),
+            "flip_nosink": np.array(t["top1_flip_nosink"].to_pylist(), dtype=float),
         }
         name = f.stem
         summaries.append(summarize(name, d))
@@ -120,15 +125,29 @@ def main():
               f"cos={r_['cosine']:.3f} kl={r_['kl']:.3f} flip={r_['flip']:.3f} "
               f"dnll={r_['dnll']:+.3f}")
 
+    # one-step calibration files: single-step damage with clean history
+    print("\n== one-step calibration (clean-history single-position substitution) ==")
+    for f in sorted(res.glob("*_onestep.parquet")):
+        t = pq.read_table(f)
+        kl = np.array(t["kl_onestep"].to_pylist(), dtype=float)
+        flip = np.array(t["flip_onestep"].to_pylist(), dtype=float)
+        dn = (np.array(t["nll_onestep"].to_pylist(), dtype=float)
+              - np.array(t["nll_clean"].to_pylist(), dtype=float))
+        print(f"{f.stem.removesuffix('_onestep'):>12s}: n={len(kl)} "
+              f"kl={kl.mean():.3f} flip={flip.mean():.3f} dnll={dn.mean():+.3f} "
+              f"(compare with the full-substitution kl/flip above: the gap is "
+              f"compounding)")
+
     import csv
     with (res / "summary.csv").open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(summaries)
-    with (res / "token_classes.csv").open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(class_rows[0]))
-        w.writeheader()
-        w.writerows(class_rows)
+    if class_rows:
+        with (res / "token_classes.csv").open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(class_rows[0]))
+            w.writeheader()
+            w.writerows(class_rows)
     print(f"\nwrote {res/'summary.csv'} and {res/'token_classes.csv'}")
 
 
