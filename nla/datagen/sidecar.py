@@ -36,10 +36,12 @@ class NLAExtractionMeta:
     corpus_slice: dict[str, int]
     positions_per_doc: int
     # Set iff norm != "none": provenance of the whitening transform
-    # (WhiteningStats.sidecar_block — stats path, sha256, shrinkage, source).
-    # Deliberately inside `extraction`, not top-level: old readers construct
-    # NLAExtractionMeta(**d["extraction"]) and fail LOUDLY on the unknown key
-    # instead of silently training a raw-activation pipeline on whitened data.
+    # (WhiteningStats.sidecar_block — stats path, sha256, regularization,
+    # base_model/layer, source). Inside `extraction`, not top-level, so
+    # DATAGEN-side readers on old checkouts (NLAExtractionMeta(**d) is strict)
+    # fail loudly on the unknown key. NB this does NOT protect old TRAINERS:
+    # pre-whitening load_nla_config reads the extraction dict with .get() and
+    # ignores norm entirely — never point an old checkout at whitened data.
     whitening: dict | None = None
 
 
