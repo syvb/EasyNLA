@@ -6,8 +6,10 @@
 #
 #   bash /workspace/nla/experiments/bottleneck/setup_box.sh
 #
-# Layout it creates:
-#   $HOME/envs/vllm-lens        — the pinned vllm venv (runs everything)
+# Layout it creates (ALL on /workspace — the big volume; container disks on
+# RunPod-style pods are small):
+#   /workspace/envs/vllm-lens   — the pinned vllm venv (runs everything)
+#   /workspace/hf_home          — HF hub cache (Qwen3-8B, datasets)
 #   /workspace/nlabtl/warmstart — asher577/nla-warmstart-2x av/ (AV-SFT base)
 #   /workspace/nlabtl/rl_ckpt   — asher577/nla-qwen-3-8b (av LoRA + ar critic)
 #   /workspace/nlabtl/av_merged — merged AV for vLLM
@@ -17,10 +19,14 @@ set -euo pipefail
 # Non-interactive SSH shells on Vast boxes don't reliably carry the image's
 # PATH — pin conda + uv locations up front or a detached run dies at `pip`.
 export PATH=/opt/conda/bin:$HOME/.local/bin:$PATH
+# Keep EVERYTHING bulky on the big /workspace volume: the default HF hub cache
+# (~/.cache) and $HOME/envs sit on the small CONTAINER disk on RunPod-style
+# pods — a 16GB hub-cached model or a 20GB venv there = mid-run out-of-space.
+export HF_HOME=/workspace/hf_home
 REPO=/workspace/nla
 WORK=/workspace/nlabtl
-VENV=$HOME/envs/vllm-lens
-mkdir -p "$WORK"
+VENV=/workspace/envs/vllm-lens
+mkdir -p "$WORK" "$HF_HOME"
 
 command -v uv >/dev/null || pip install -q uv
 

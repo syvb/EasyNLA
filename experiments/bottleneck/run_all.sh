@@ -7,8 +7,9 @@
 # Order of operations == README §sanity: cheap checks first, C1 pilot before
 # the full Stage B matrix (abort early if the codec floors everything).
 set -euo pipefail
-VENV=$HOME/envs/vllm-lens
+VENV=/workspace/envs/vllm-lens
 CFG=/workspace/nla/experiments/bottleneck/config.yaml
+export HF_HOME=/workspace/hf_home   # hub cache lives on the big volume
 cd /workspace/nla
 test -f /workspace/nlabtl/domains.parquet || {
   echo "FATAL: /workspace/nlabtl/domains.parquet missing — run prep_domains.py" \
