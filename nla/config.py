@@ -14,7 +14,13 @@ from typing import Any
 
 import yaml
 
-from nla.schema import SCALE_SQRT_D, compute_canonical_neighbors, resolve_target_scale, sidecar_path_for
+from nla.schema import (
+    SCALE_SQRT_D,
+    compute_canonical_neighbors,
+    resolve_activation_norm,
+    resolve_target_scale,
+    sidecar_path_for,
+)
 
 
 
@@ -63,6 +69,14 @@ class NLAConfig:
     injection_scale: float | None = None
     mse_scale: float | None = None
 
+    # What space the dataset's activation_vector column lives in — "none" (raw
+    # residual stream) or a whitening tag (see schema.KNOWN_ACTIVATION_NORMS).
+    # load_nla_config asserts it's a known value; trainers train in this space
+    # transparently, but eval/steering code that maps back to the raw stream
+    # needs `whitening` (the sidecar's provenance block: stats path + sha256).
+    activation_norm: str = "none"
+    whitening: dict | None = None
+
     @property
     def sqrt_d(self) -> float:
         return math.sqrt(self.d_model)
@@ -105,6 +119,15 @@ def load_nla_config(sidecar_source: str, tokenizer) -> NLAConfig:
     injection_scale = resolve_target_scale(extraction.get("injection_scale"), d_model)
     mse_scale = resolve_target_scale(extraction.get("mse_scale", SCALE_SQRT_D), d_model)
 
+    # Fail at startup on a norm this code doesn't understand — mixing whitened
+    # data with raw-trained checkpoints (or vice versa) is silent otherwise.
+    activation_norm = resolve_activation_norm(extraction.get("norm"))
+    whitening = extraction.get("whitening")
+    assert (activation_norm == "none") == (whitening is None), (
+        f"sidecar inconsistency: extraction.norm={activation_norm!r} but "
+        f"extraction.whitening is {'absent' if whitening is None else 'present'}"
+    )
+
     t = meta["tokens"]
     templates = meta.get("prompt_templates", {})
     critic_meta = meta.get("critic") or {}
@@ -125,6 +148,8 @@ def load_nla_config(sidecar_source: str, tokenizer) -> NLAConfig:
         critic_suffix_ids=t.get("critic_suffix_ids"),
         injection_scale=injection_scale,
         mse_scale=mse_scale,
+        activation_norm=activation_norm,
+        whitening=whitening,
     )
 
     # encode(), not convert_tokens_to_ids(): byte-level BPE tokenizers (Qwen,

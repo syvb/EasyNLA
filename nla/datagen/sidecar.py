@@ -29,12 +29,18 @@ class NLAExtractionMeta:
     base_model: str
     d_model: int
     layer_index: int
-    norm: str  # data-gen always writes "none" (raw vectors). Training decides
-    # how/whether to normalize at load time. Field stays for forward-compat
-    # and so training can assert on what it's reading.
+    norm: str  # data-gen always writes "none" (raw vectors); scripts/
+    # whiten_dataset.py rewrites to schema.NORM_WHITENED_ZCA. Training asserts
+    # the value is one it knows (schema.resolve_activation_norm).
     corpus: str
     corpus_slice: dict[str, int]
     positions_per_doc: int
+    # Set iff norm != "none": provenance of the whitening transform
+    # (WhiteningStats.sidecar_block — stats path, sha256, shrinkage, source).
+    # Deliberately inside `extraction`, not top-level: old readers construct
+    # NLAExtractionMeta(**d["extraction"]) and fail LOUDLY on the unknown key
+    # instead of silently training a raw-activation pipeline on whitened data.
+    whitening: dict | None = None
 
 
 @dataclass
@@ -100,6 +106,9 @@ def serialize_sidecar(meta: NLADatasetMeta) -> str:
     # keys so the YAML stays readable and downstream readers don't have to
     # special-case "tokens: null" vs "tokens absent".
     d = {k: v for k, v in asdict(meta).items() if v is not None}
+    # Same for extraction.whitening — raw datasets serialize exactly as before
+    # (no "whitening: null" key), so pre-whitening readers stay compatible.
+    d["extraction"] = {k: v for k, v in d["extraction"].items() if v is not None}
     return yaml.safe_dump(d, sort_keys=False)
 
 

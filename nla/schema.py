@@ -71,6 +71,26 @@ MM_MSE_SCALE_KEY = "nla_mse_scale"
 # at load time. Lets sidecars say "use the default" without baking a float.
 SCALE_SQRT_D = "sqrt_d_model"
 
+# extraction.norm values a trainer knows how to handle. Datagen writes "none"
+# (raw vectors); scripts/whiten_dataset.py rewrites parquets with ZCA-whitened
+# vectors and stamps NORM_WHITENED_ZCA. Anything else is a newer pipeline this
+# code predates — refuse to train on it rather than guess.
+NORM_RAW = "none"
+NORM_WHITENED_ZCA = "whitened_zca_v1"
+KNOWN_ACTIVATION_NORMS = (NORM_RAW, NORM_WHITENED_ZCA)
+
+
+def resolve_activation_norm(raw: str | None) -> str:
+    """Validate a sidecar's extraction.norm. Absent (None) means raw vectors —
+    sidecars predating the field. Unknown tags fail loudly at trainer startup,
+    not after a run silently mixes whitened data with raw checkpoints."""
+    norm = NORM_RAW if raw is None else raw
+    assert norm in KNOWN_ACTIVATION_NORMS, (
+        f"unknown extraction.norm {norm!r} — this code understands "
+        f"{KNOWN_ACTIVATION_NORMS}. Dataset was built by a newer pipeline?"
+    )
+    return norm
+
 
 def resolve_target_scale(raw: float | str | None, d_model: int) -> float | None:
     """Turn a scale value (from sidecar or CLI) into a concrete float or None.
