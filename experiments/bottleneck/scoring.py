@@ -134,8 +134,25 @@ def normalize_text(s: str) -> str:
 
 
 def em_f1(pred: str, aliases: list[str]) -> tuple[float, float]:
-    # Answer = first line of the output (SHORT_INSTR asks for just the answer).
-    pred_n = normalize_text(pred.strip().split("\n")[0])
+    """First-line EM/F1 vs aliases, with two degradation-robust repairs that a
+    post-run audit showed recover ZERO extra clean rows but ~50% of degraded
+    rows that contain the correct entity: (1) strip stray chat-template think
+    tags the degraded model glues onto answers ('Turin</think>'); (2) if the
+    first line misses, accept an explicit 'answer is X' span. Without these,
+    first-line EM penalizes the degraded condition for burying a correct
+    answer — an asymmetric artifact, not capability."""
+    pred = re.sub(r"</?think>", " ", pred)
+    m = re.search(r"(?i)\banswer\s+is\s*:?\s*([^\n.]+)", pred)
+    if m:
+        em_alt, f1_alt = _em_f1_line(m.group(1), aliases)
+    else:
+        em_alt, f1_alt = 0.0, 0.0
+    em, f1 = _em_f1_line(pred.strip().split("\n")[0], aliases)
+    return max(em, em_alt), max(f1, f1_alt)
+
+
+def _em_f1_line(line: str, aliases: list[str]) -> tuple[float, float]:
+    pred_n = normalize_text(line)
     best_f1 = 0.0
     em = 0.0
     for a in aliases:
