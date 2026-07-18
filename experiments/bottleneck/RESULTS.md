@@ -109,6 +109,39 @@ recurring kinds, with prevalence:
    ("A. …" → the option-prior bias) and CJK leakage (27% of z's, 3-6% of
    outputs).
 
+## Which error kinds get worse over generation (hazard analysis, offline)
+
+Per-kind onset hazard (first-event rate per 100 at-risk steps, binned by
+generation step) over the C1 transcripts, clean condition as detector
+baseline:
+
+- **Register/mode loss: instantaneous, then stops.** Hazard concentrated in
+  steps 0-16 (gsm8k 0.56→0.11→~0; triviaqa 3.8→2.0→0.8; fluency 2.1→~0;
+  clean = 0 everywhere). The mode flag is lost at/near the prefill
+  substitution or never.
+- **Operand corruption: constant per-step rate.** gsm8k C1 hazard
+  0.2/0.9/1.0/0.8/0.3 across bins — flat after warm-up (clean baseline
+  0.0-0.07). Matches the flat per-step cosine: binding noise does not
+  intensify.
+- **Loops/degeneration: the kind that compounds.** Strict 6-gram-repeat
+  hazard rises ~20-30× from the first bin to steps 64+ (gsm8k C1
+  0.07→1.2→2.5→3.8; fluency 0.12→1.2→1.8→2.4; triviaqa 0.11→2.2→3.4), and
+  sits 3-30× above clean in every mid/late bin.
+- **Loops are NOT triggered by momentary bad reconstructions:** mean cosine
+  in the 8 steps before loop onset equals matched control windows
+  (0.815 vs 0.814, +0.4 SE, n=185/141) — onset is driven by accumulated
+  degenerate context, not fidelity spikes.
+- **No causal ordering operand→loop:** among 129 gsm8k transcripts with both
+  events, the operand error precedes the loop only 49% of the time (median
+  steps 58 vs 55) — the two are co-symptoms of context corruption, not a
+  causal chain; 56 transcripts loop with no detectable bad equation at all.
+
+Registered predictions from the taxonomy all held: bindings = constant rate,
+loops = compounding, register = instantaneous. Detector caveat: even clean
+math transcripts repeat 6-grams eventually (onset-frac 0.94) — the hazard
+*shape* and clean-ratio are the informative quantities, not absolute
+onset fractions.
+
 ## Standing caveats (until the extension run)
 
 Prefill-KV bypass unquantified (`nla_prompt` not run) — a live confound for
