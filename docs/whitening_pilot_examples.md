@@ -1,9 +1,12 @@
 # Held-out examples — whitening pilot (av_sft_val, greedy, n=1000)
 
-Same activation per example; four texts: the GOLD explanation (Sonnet-written, used in SFT),
-then the three models. `mse` = normalized reconstruction error in each model's native space
-(raw for the raw NLA; whitened for SFT/RL) — comparable within a column, not across.
-Examples are the RL model's 10 best / 10 median / 10 worst rows — not cherry-picked.
+Same activation per example; the GOLD explanation (Sonnet-written, used in SFT), then the three
+models' explanations. `fve` = per-example fraction of variance explained, 1 − mse_i/baseline,
+where the baseline is the population predict-the-mean error over all 1000 held-out golds in the
+model's NATIVE space (raw 0.561 · whitened 0.999) — per-row means reproduce each
+model's aggregate FVE exactly, and columns are comparable as fraction-of-native-variance.
+Negative = worse than predicting the mean on that row. Examples are the whitened-RL model's
+10 best / 10 median / 10 worst rows — not cherry-picked.
 
 
 ---
@@ -19,15 +22,15 @@ Printed from the PrimePages <primes.utm.edu> © G. L. Honaker and Chris K
 
 **GOLD:** <explanation> Citation/attribution pattern: text is ending a copyright notice naming authors "G. L. Honaker and Chris K" — a surname is being cut off mid-name.  Database/website footer format: PrimePages credit line follows standard academic/web attribution conventions, expecting a full last name and likely "Caldwell" specifically.  Final token "K" is the first letter of an incomplete surname in a copyright attribution, strongly constraining next tokens to the completion of that last name (almost certainly "Caldwell," the known PrimePages maintainer). </explanation>
 
-**raw NLA** (mse 0.839): Mathematical definition being completed: "a prime number is a natural number greater than 1 that has no positive divisors other than 1 and itself" — the standard formal definition is being restated.
+**raw NLA** (fve -0.496): Mathematical definition being completed: "a prime number is a natural number greater than 1 that has no positive divisors other than 1 and itself" — the standard formal definition is being restated.
 
 The text is a Wikipedia-style article on prime numbers, establishing foundational definitions before moving to properties, history, or examples.
 
 Final token "K" is the beginning of "Kuratowski" (as in "C. C. Kuratowski"), part of a parenthetical citation "(also known as the C. C. Kuratowski" — the next tokens must complete this proper name and likely continue with a definition or elaboration of the prime number concept.
 
-**whitened SFT** (mse nan): (none)
+**whitened SFT** (fve —): (none)
 
-**whitened RL** (mse 0.270): Mathematical problem-solving context: the text describes a prime number search problem involving concatenation of primes, establishing that the solution involves multiple primes.
+**whitened RL** (fve +0.729): Mathematical problem-solving context: the text describes a prime number search problem involving concatenation of primes, establishing that the solution involves multiple primes.
 
 The sentence structure "These numbers are created by Chris K" is mid-word, completing "Chris K" as part of "Chris K" — likely "Chris K Caldwell" or "Chris K. Caldwell" (a known prime number researcher), continuing "These numbers are created by Chris K" as part of a list of contributors or methods.
 
@@ -44,19 +47,19 @@ Final token "K" is the start of a surname, completing "Chris K," immediately fol
 
 **GOLD:** <explanation> A list of contributor names is being enumerated, following a consistent pattern of "First [Middle Initial.] Last" format. The list uses comma separation throughout.  The list is mid-sequence and clearly incomplete — "and" signals the final contributor is imminent, with only one name remaining after "Robert A."  "Robert A." is a partially given name (first name + middle initial with period), requiring a surname to complete it, as seen with every prior contributor entry like "Fred Adams" or "Eric T. Olson." </explanation>
 
-**raw NLA** (mse 0.217): Academic citation/bibliography format: structured reference list with author names, journal titles, and publication details following standard citation conventions.
+**raw NLA** (fve +0.614): Academic citation/bibliography format: structured reference list with author names, journal titles, and publication details following standard citation conventions.
 
 The list of references is mid-sequence, with each entry following a consistent pattern: authors, journal name, volume, issue, pages, year, and DOI — the current entry is incomplete.
 
 Final token "Robert A" is the beginning of an author's surname (likely "Robert A. D. Roberts" or similar), part of the author list for the "Philosophy and Phenomenological Research" reference; the next tokens must complete this surname.
 
-**whitened SFT** (mse 0.948): Academic philosophy paper on epistemic justification, maintaining formal scholarly register throughout with citations and technical terminology like "epistemic justification," "justified belief," "epistemic warrant."
+**whitened SFT** (fve +0.051): Academic philosophy paper on epistemic justification, maintaining formal scholarly register throughout with citations and technical terminology like "epistemic justification," "justified belief," "epistemic warrant."
 
 The argumentative structure follows a pattern of presenting a claim, then elaborating with supporting reasoning — the text is mid-argument about epistemic justification and its relation to belief formation.
 
 Final token "Robert" is the beginning of a proper name (likely "Robert Audi" or similar epistemologist), mid-sentence within a citation or attribution clause ("Robert [Audi] argues that..."), requiring the surname to complete the reference immediately.
 
-**whitened RL** (mse 0.286): Academic paper listing references/bibliography for a philosophy of mind course, establishing a pattern of citing philosophers and their works throughout.
+**whitened RL** (fve +0.714): Academic paper listing references/bibliography for a philosophy of mind course, establishing a pattern of citing philosophers and their works throughout.
 
 The sentence structure "I have written a number of papers on the topic of belief and justification, including those by Robert Stalnaker, Robert Cummins, and Robert A" follows a list of philosophers, strongly implying more names to follow in the series.
 
@@ -74,19 +77,19 @@ In addition to discussing the new status quo for Monkeybrain (which surprisingly
 
 **GOLD:** <explanation> Ongoing review/overview article covering multiple comics news items, shifting from "Blade of the Immortal" coverage to a new topic signaled by "In addition to discussing."  The Monkeybrain segment is just beginning, implying upcoming detail about editorial/publishing changes, mirroring the structured multi-topic format used throughout.  "as Rob" is a mid-sentence fragment introducing a named person (likely Rob Venditti or similar figure), requiring immediate continuation with a surname and their attributed statement or role in the Monkeybrain discussion. </explanation>
 
-**raw NLA** (mse 0.111): Comic book news article format with multiple story segments, each introducing a new topic with attribution and details.
+**raw NLA** (fve +0.801): Comic book news article format with multiple story segments, each introducing a new topic with attribution and details.
 
 The article is mid-sentence introducing a new story about a comic book convention panel, establishing a pattern of naming contributors and their roles.
 
 Final token "Rob" is the beginning of a proper name (likely "Rob Liefeld" or similar comic creator), part of a list of panel participants introduced by "including Rob," requiring the surname to immediately follow.
 
-**whitened SFT** (mse 0.386): Comic book news/blog format with multiple short blurbs about different titles, establishing a pattern of brief promotional summaries. The text cycles through multiple titles (X-Force, X-Men, Wolverine, Deadpool, X-Force again).
+**whitened SFT** (fve +0.614): Comic book news/blog format with multiple short blurbs about different titles, establishing a pattern of brief promotional summaries. The text cycles through multiple titles (X-Force, X-Men, Wolverine, Deadpool, X-Force again).
 
 The final sentence introduces a new title "X-Force #1" with a tagline-style description, following the same promotional blurb structure as the previous entries.
 
 "Rob" is the start of a proper name (likely "Rob Liefeld" or similar comic creator), mid-word, requiring immediate completion of that name before the blurb continues with a description of the comic.
 
-**whitened RL** (mse 0.318): Ongoing listicle format covering comic book news and reviews, establishing a pattern of introducing creators, titles, and publication details for upcoming works.
+**whitened RL** (fve +0.682): Ongoing listicle format covering comic book news and reviews, establishing a pattern of introducing creators, titles, and publication details for upcoming works.
 
 The sentence structure "In addition to Rob" signals continuation of a list of collaborators or co-creators for the "Dark Horse Presents" issue, following "alongside Rob" — likely "Rob Williams" or similar artist name completing "with Rob."
 
@@ -107,19 +110,19 @@ The Fishing Pole Lending Program is a partnership with libraries and DEC, allowi
 
 **GOLD:** <explanation> Newsletter/bulletin format with bulleted section headers used as an article table of contents, each header introducing a self-contained news item in sequence.  The text is systematically working through each item listed in the "In This Issue" section; the final listed item "Did You Know...?" about the Black and Yellow Garden Spider has not yet appeared, indicating it must follow.  Final token "Schen" is a truncated proper noun mid-word, part of a DEC press release headline about Hemlock Wooly Adelgid discovery; it must complete as "Schenectady" (a New York county), followed by the article body text. </explanation>
 
-**raw NLA** (mse 0.183): Geographic location pattern: "Schen" is the beginning of a place name, almost certainly "Schenectady" (New York), completing the route description of the train's destination.
+**raw NLA** (fve +0.675): Geographic location pattern: "Schen" is the beginning of a place name, almost certainly "Schenectady" (New York), completing the route description of the train's destination.
 
 Narrative momentum: the article is detailing the train's route and schedule, so the destination city name must be completed to finish the geographic endpoint.
 
 Final token "Schen" is a truncated proper noun mid-word, requiring immediate completion as "ectady" to form the full city name "Schenectady, NY."
 
-**whitened SFT** (mse 0.522): Narrative momentum: a personal travel anecdote is being told, with the speaker recounting a specific trip to Schenectady, NY, and the story is mid-sentence.
+**whitened SFT** (fve +0.477): Narrative momentum: a personal travel anecdote is being told, with the speaker recounting a specific trip to Schenectady, NY, and the story is mid-sentence.
 
 Geographic/locational specificity: "Schen" is a truncated word, almost certainly "Schenectady," the city name already mentioned earlier in the text, requiring immediate completion.
 
 Final token "Schen" is a partial word mid-sentence, part of a location reference; the next tokens must complete "Schenectady" before continuing the anecdote about the trip.
 
-**whitened RL** (mse 0.353): Ongoing narrative about a reader's experience with the Adirondack Dark Sky Festival, establishing that the writer is sharing a personal anecdote about a completed project. The sentence structure "I was really impressed with the results" sets up a continuation describing the location or outcome of the project.
+**whitened RL** (fve +0.647): Ongoing narrative about a reader's experience with the Adirondack Dark Sky Festival, establishing that the writer is sharing a personal anecdote about a completed project. The sentence structure "I was really impressed with the results" sets up a continuation describing the location or outcome of the project.
 
 The sentence "I've been doing this for a while in Schen" is clearly mid-word, completing "Schenectady" — the next tokens must finish "Schenectady" and likely continue with "New York" or "NY."
 
@@ -139,19 +142,19 @@ Angus Energy PLC is the United Kingdom-based independent onshore oil and gas dev
 
 **GOLD:** <explanation> Factual company profile continuation: structured business description lists assets/locations, "Salt" is the start of a truncated place name (likely "Saltfleetby" or similar UK onshore field).  List completion pattern: locations enumerated with commas ("Brockham, Lidsey, Balcombe, A24 Prospect, and Salt...") strongly signals the final location name must be completed before the sentence closes.  Final token "Salt" is the beginning of an incomplete proper noun (a UK oilfield name), requiring immediate continuation of that specific word before any punctuation or new sentence. </explanation>
 
-**raw NLA** (mse 0.166): Geographical/technical description of a specific oil field, requiring continuation of location details (e.g., "Salt" likely refers to a specific geological formation or field name like "Saltfleetby").
+**raw NLA** (fve +0.704): Geographical/technical description of a specific oil field, requiring continuation of location details (e.g., "Salt" likely refers to a specific geological formation or field name like "Saltfleetby").
 
 The sentence structure "between the North Sea and the Salt" is mid-phrase, establishing a spatial relationship that demands a completing noun — a place name, field name, or geological feature.
 
 Final token "Salt" is the start of a proper noun or compound noun (e.g., "Saltfleetby," "Saltburn," or "Salt Basin"), requiring immediate completion of that specific geographic/technical term.
 
-**whitened SFT** (mse 0.670): Technical oil/gas industry document describing a well completion project, establishing domain-specific terminology (e.g., "salt water disposal," "wellhead," "wellbore").
+**whitened SFT** (fve +0.329): Technical oil/gas industry document describing a well completion project, establishing domain-specific terminology (e.g., "salt water disposal," "wellhead," "wellbore").
 
 Narrative momentum: the text is mid-sentence describing a specific well completion project, with details about location, wellhead, and wellbore already established, suggesting further technical specifications or project details follow.
 
 Final token "Salt" is the beginning of a proper noun or compound term (likely "Saltwell" or "Saltwater" or a specific field name), requiring immediate continuation of that capitalized technical or geographic name.
 
-**whitened RL** (mse 0.362): Technical oil/gas industry document listing UK shale gas exploration companies and their capabilities, establishing a pattern of naming specific operators and their field applications.
+**whitened RL** (fve +0.637): Technical oil/gas industry document listing UK shale gas exploration companies and their capabilities, establishing a pattern of naming specific operators and their field applications.
 
 The text is mid-sentence describing a range of UK shale gas operators, having named "BGS" and "RGS" with their respective fields ("Salt" and "Sedgwick"), implying more operators or field names will follow in the list.
 
@@ -171,19 +174,19 @@ World Christian DatabaseThis link opens in a new windowProvided detailed statist
 
 **GOLD:** <explanation> Bibliographic/reference list format with consistent fields (title, location, publication date) signals continuation of resource entries with similar structured metadata.  The entry is mid-description for "World Christian Database," a reference resource, so content describing its data coverage (religious statistics, demographics) is being enumerated—the list of provided features is incomplete.  Final token "dem" is a truncated word, almost certainly "demographics" or "demographic," requiring immediate completion of that word before the sentence or list of database features concludes. </explanation>
 
-**raw NLA** (mse 0.177): Academic/religious demographic report tone, presenting statistical data about LDS Church growth in Africa, expecting continued formal enumeration of metrics.
+**raw NLA** (fve +0.685): Academic/religious demographic report tone, presenting statistical data about LDS Church growth in Africa, expecting continued formal enumeration of metrics.
 
 The phrase "demographic and social data" establishes a list pattern — "demographic and social data" strongly implies continuation with additional categories like "economic," "political," or "cultural" data.
 
 Final token "dem" is the truncated beginning of "demographics" (or "demographic"), part of the compound noun "demographic and social data," requiring immediate completion of that word before the sentence continues.
 
-**whitened SFT** (mse 0.469): Biblical enumeration pattern: the text lists demographic groups ("children, youth, women, and dem-"), following a standard church membership/attendance breakdown structure.
+**whitened SFT** (fve +0.531): Biblical enumeration pattern: the text lists demographic groups ("children, youth, women, and dem-"), following a standard church membership/attendance breakdown structure.
 
 Domain signals: church website content listing congregation demographics, expecting typical categories like "demographics" or "demographics by age/region."
 
 Final token "dem" is a truncated word mid-list, almost certainly completing as "demographics" or "demographics by..." — the next tokens must finish this word and likely continue the demographic breakdown.
 
-**whitened RL** (mse 0.368): Ongoing listicle/report structure about global Christian growth statistics, establishing patterns of demographic and geographic data with specific figures and comparisons.
+**whitened RL** (fve +0.632): Ongoing listicle/report structure about global Christian growth statistics, establishing patterns of demographic and geographic data with specific figures and comparisons.
 
 The sentence beginning "The data also includes information about age, gender, and dem" is mid-enumeration, listing additional survey variables alongside "geographic distribution and population statistics." The next tokens will continue this list of demographic variables, likely "demographics" completing "and demography" or "demographics such as age, gender, and population."
 
@@ -204,19 +207,19 @@ Presidential Spill Commission Final Report — Jan. 11, 2011
 
 **GOLD:** <explanation> Bulleted investigative findings format: each report section lists multiple bullet points summarizing causes and failures of the BP spill.  Parallel structure across reports: the Presidential Spill Commission section mirrors the BP internal investigation format, listing multiple attributed failures (BP, Halliburton, Transocean).  "Undue" ends mid-sentence within a bullet point, requiring completion of a noun phrase describing what companies excessively prioritized — likely "emphasis on cost/speed over safety." </explanation>
 
-**raw NLA** (mse 0.135): Legal/regulatory document structure: formal regulatory filing (SEC 10-K) establishing liability for safety violations, requiring precise legal language.
+**raw NLA** (fve +0.760): Legal/regulatory document structure: formal regulatory filing (SEC 10-K) establishing liability for safety violations, requiring precise legal language.
 
 Narrative momentum: the sentence is mid-clause explaining what the company failed to do, building toward a specific legal finding about safety culture or risk management failures.
 
 Final token "undue" is an adjective mid-phrase, part of "placed undue [weight/importance/on]," requiring a noun completing the phrase — almost certainly "weight" or "emphasis" — followed by a prepositional phrase like "on safety" or "on cost savings."
 
-**whitened SFT** (mse 0.488): Ongoing direct quotation from a named official (likely a regulator or industry body) discussing safety concerns, requiring continuation of their speech.
+**whitened SFT** (fve +0.512): Ongoing direct quotation from a named official (likely a regulator or industry body) discussing safety concerns, requiring continuation of their speech.
 
 The sentence structure "companies placed undue" strongly signals a completion about prioritizing profit/speed over safety — e.g., "undue emphasis on cost" or "undue pressure on safety."
 
 Final token "undue" is mid-sentence within a direct quote, functioning as an adjective modifying an upcoming noun (e.g., "emphasis," "pressure," "priority"), requiring immediate noun completion before the quote closes.
 
-**whitened RL** (mse 0.374): Ongoing regulatory/legislative reporting on Boeing's safety culture and 737 MAX grounding, establishing that the FAA and Boeing have been criticized for prioritizing profit over safety.
+**whitened RL** (fve +0.626): Ongoing regulatory/legislative reporting on Boeing's safety culture and 737 MAX grounding, establishing that the FAA and Boeing have been criticized for prioritizing profit over safety.
 
 The sentence structure "The company placed undue" sets up a classic "but" clause completing a list of pressures on Boeing's engineers — "prioritized profit over safety" or "placed undue emphasis on meeting deadlines" is expected next.
 
@@ -233,19 +236,19 @@ Final token "undue" ends "placed undue," completing "engineers placed undue," pa
 
 **GOLD:** <explanation> List continuation pattern: a comma-separated sequence of contributor names is mid-stream, following "Shaun Nichols, Eric" — more names expected in same "Firstname Lastname" format.  Alphabetical ordering of surnames guides prediction: after "Nichols" and "Eric," the next surname likely begins with a letter near or after "N."  Final token "Eric" is an incomplete contributor entry (first name only), immediately requiring a surname to complete the name, matching the established "Firstname Lastname" pattern of all prior contributors. </explanation>
 
-**raw NLA** (mse 0.166): Academic philosophy paper on free will, establishing a structured argumentative framework with citations and references, expecting continued scholarly discussion.
+**raw NLA** (fve +0.704): Academic philosophy paper on free will, establishing a structured argumentative framework with citations and references, expecting continued scholarly discussion.
 
 The text is mid-sentence listing philosophers and their works, following a pattern of naming authors and their contributions (e.g., "David Lewis, Daniel Dennett, and others have written about free will and determinism").
 
 Final token "Eric" is the beginning of a proper name (likely "Eric Olson" or similar philosopher), part of a list of philosophers cited in the paper; the next tokens must complete this name and likely continue with their work or a citation.
 
-**whitened SFT** (mse 0.397): Academic philosophy paper structure: abstract/introduction establishing problem, now transitioning to body with citations and argumentation.
+**whitened SFT** (fve +0.602): Academic philosophy paper structure: abstract/introduction establishing problem, now transitioning to body with citations and argumentation.
 
 The text is mid-sentence introducing a key concept ("the problem of other minds"), signaling an elaboration of the philosophical challenge — likely referencing Nagel's famous "What is it like to be a bat?" argument.
 
 Final token "Eric" is the beginning of a proper name (likely "Eric Olson" or similar philosopher), mid-word, requiring immediate completion of that name before the sentence continues with a verb phrase describing their contribution or argument.
 
-**whitened RL** (mse 0.376): Academic paper abstract structure: after introducing the paper's thesis about conscious intentionality and the "Rationality of Intentionalism" argument, the text is now moving to describe methodology or elaboration of the argument.
+**whitened RL** (fve +0.623): Academic paper abstract structure: after introducing the paper's thesis about conscious intentionality and the "Rationality of Intentionalism" argument, the text is now moving to describe methodology or elaboration of the argument.
 
 The paper references "Eric Olson" and "David Chalmers" as philosophers whose views on intentionalism are being discussed, establishing that the next content will explain how these philosophers' views relate to the argument about conscious intentionality.
 
@@ -265,19 +268,19 @@ The “Rappers Jack” won the award ahead of popular Ghanaian Dancehall moguls 
 
 **GOLD:** <explanation> Incomplete proper noun "Mo" signals a music producer's name is being spelled out, requiring immediate continuation of that name (e.g., "Mog," "Moses," or similar).  Music news article structure: after naming award winners and context, crediting the producer of the hit song is the expected next element.  The final token "Mo" is the beginning of a producer's name mid-word, strongly constraining next tokens to complete that specific name without spaces or punctuation. </explanation>
 
-**raw NLA** (mse 0.098): News article reporting on a music industry event, establishing factual, journalistic tone with specific names and dates.
+**raw NLA** (fve +0.825): News article reporting on a music industry event, establishing factual, journalistic tone with specific names and dates.
 
 The sentence is mid-completion, naming a producer/label associated with the song "I'm Not Sorry," requiring the full name of the producer/label (e.g., "Mo'Ko" or similar Nigerian music label).
 
 Final token "Mo" is the beginning of a proper noun — a producer's name or label name — requiring immediate continuation of that word, likely completing a Nigerian music industry figure or brand name.
 
-**whitened SFT** (mse 0.432): News article format with dateline and attribution signals a direct quote or sourced statement is being introduced. The article follows a standard journalism structure: headline, dateline, body, now a quote.
+**whitened SFT** (fve +0.568): News article format with dateline and attribution signals a direct quote or sourced statement is being introduced. The article follows a standard journalism structure: headline, dateline, body, now a quote.
 
 The article has been building toward a specific claim about the song's success, with "100 million streams" and "100 million views" establishing a pattern of impressive statistics.
 
 Final token "Mo" is the beginning of a proper name (likely "Mo'Ko" or similar artist/producer name), mid-word, requiring immediate completion of that name before the quote continues.
 
-**whitened RL** (mse 0.400): Ongoing Nigerian entertainment news report about DJ Kizz's achievements and collaborations, establishing a pattern of citing specific details like names, dates, and accolades.
+**whitened RL** (fve +0.599): Ongoing Nigerian entertainment news report about DJ Kizz's achievements and collaborations, establishing a pattern of citing specific details like names, dates, and accolades.
 
 The sentence structure "He added that the award-winning producer, Dr. Bello, was able to reach out to the Ghanaian music industry with the song" sets up a specific citation of a source or publication name completing "Mo."
 
@@ -296,19 +299,19 @@ Figure 3 shows an aircraft in straight-and
 
 **GOLD:** <explanation> Technical aviation textbook explaining flight stability concepts, progressing systematically through static, dynamic, and longitudinal stability with figures and bullet definitions.  The text has been walking through longitudinal stability factors, now discussing Center of Lift (CL) movement with AOA changes, building toward a diagram explanation.  "straight-and" is the beginning of the compound phrase "straight-and-level flight," a standard aviation term appearing mid-sentence introducing Figure 3's illustration of CL/CP behavior during pitch changes. </explanation>
 
-**raw NLA** (mse 0.145): Technical aviation article explaining aircraft stability, establishing a pattern of defining terms then elaborating with examples.
+**raw NLA** (fve +0.742): Technical aviation article explaining aircraft stability, establishing a pattern of defining terms then elaborating with examples.
 
 The phrase "straight-and" is a hyphenated compound adjective mid-construction, strongly requiring "level" to complete the standard aviation phrase "straight-and-level flight," a foundational concept in stability discussions.
 
 Final token "straight-and" is the beginning of the fixed compound adjective "straight-and-level," which must be completed immediately with "level" before continuing the sentence describing straight-and-level flight characteristics.
 
-**whitened SFT** (mse 0.469): Technical aviation documentation describing a flight test program, maintaining formal engineering/procedural register throughout.
+**whitened SFT** (fve +0.530): Technical aviation documentation describing a flight test program, maintaining formal engineering/procedural register throughout.
 
 Narrative momentum: the text is mid-sentence describing a specific flight test condition ("straight-and"), requiring completion of the standard aviation phrase "straight-and-level" or "straight-and-level flight."
 
 Final token "straight-and" is the beginning of a hyphenated compound adjective or noun phrase, almost certainly completing as "straight-and-level" — a standard aviation term describing unaccelerated, constant-altitude flight, directly constrained by the preceding context of "no roll, no pitch, no yaw."
 
-**whitened RL** (mse 0.401): Technical aerospace engineering textbook describing wind tunnel testing of UAVs, establishing a pattern of listing flight conditions and aerodynamic characteristics for each chapter topic.
+**whitened RL** (fve +0.598): Technical aerospace engineering textbook describing wind tunnel testing of UAVs, establishing a pattern of listing flight conditions and aerodynamic characteristics for each chapter topic.
 
 The sentence structure "The aircraft is flying straight-and" follows a standard phrase in aerodynamics literature describing a symmetric, steady flight condition — "straight-and-level flight" is the expected completion, continuing the description of the Cessna 172's flight characteristics.
 
@@ -331,19 +334,19 @@ Grinding machines. In materials processing a
 
 **GOLD:** <explanation> Industrial/technical content about grinding mills and milling equipment — a web search results page listing product pages, company names, and descriptions for ball mills and grinding machines.  Repetition/continuation pattern: each result follows a structured format of title, source, date, and description; the pattern continues consistently across entries.  Final token "a" begins an indefinite article mid-sentence in a Wikipedia excerpt about "Grinding machines. In materials processing a" — the next token must be a noun phrase describing what grinding machines are or do, continuing this definitional encyclopedic sentence. </explanation>
 
-**raw NLA** (mse 0.271): Encyclopedic/technical article structure: the text is a Wikipedia-style article on ball mills, systematically covering definitions, types, and applications.
+**raw NLA** (fve +0.517): Encyclopedic/technical article structure: the text is a Wikipedia-style article on ball mills, systematically covering definitions, types, and applications.
 
 The phrase "In mineral processing a" begins a new sentence introducing a technical definition or process description, likely continuing with "grinding" or "crushing" as the subject noun.
 
 Final token "a" is an indefinite article beginning a noun phrase, requiring an immediately following noun or adjective+noun — almost certainly a technical mineral processing term like "grinding" or "crushing" operation.
 
-**whitened SFT** (mse 1.211): Encyclopedic/technical register defining industrial processes, with formal definitions and structured explanations throughout.
+**whitened SFT** (fve -0.213): Encyclopedic/technical register defining industrial processes, with formal definitions and structured explanations throughout.
 
 The text is mid-sentence completing a definition of "grinding in industrial processes," following the pattern of providing precise technical terminology and context (e.g., "grinding is a unit operation, often involving the use of a grinding mill").
 
 Final token "a" is an indefinite article beginning a noun phrase, requiring a singular noun or adjective+noun describing a specific industrial grinding process, equipment, or method (e.g., "a grinding mill," "a ball mill," "a crushing process").
 
-**whitened RL** (mse 0.743): Encyclopedic/wiki article format about industrial crushing processes, establishing definitions and applications of crushing in mining and materials processing.
+**whitened RL** (fve +0.256): Encyclopedic/wiki article format about industrial crushing processes, establishing definitions and applications of crushing in mining and materials processing.
 
 The text is building toward describing a specific type of crushing application or process, following the pattern "In materials processing a [noun phrase]" — likely "grinding mill" or "grinding process" completing "In materials processing a grinding mill is used to reduce the size of materials."
 
@@ -361,19 +364,19 @@ The compounds used to make synthetic fibers come from fossil-fuel-derived resour
 
 **GOLD:** <explanation> Informational/expository prose about synthetic fibers, maintaining factual, encyclopedic tone throughout.  Historical/narrative momentum building: the text has shifted from defining synthetics to listing properties, now transitioning to their impact or adoption — "They made" signals a claim about consequences or historical significance (e.g., "They made clothing more affordable" or "They made mass production possible").  "They made" is a transitive verb construction requiring a direct object immediately following — a noun phrase or adjective complement describing what synthetics enabled or produced is grammatically mandatory next. </explanation>
 
-**raw NLA** (mse 0.196): Historical/educational narrative momentum: the text is explaining synthetic fibers' origins, so a factual historical claim about their impact or introduction is expected.
+**raw NLA** (fve +0.651): Historical/educational narrative momentum: the text is explaining synthetic fibers' origins, so a factual historical claim about their impact or introduction is expected.
 
 Causal/explanatory continuation: "They made" sets up a predicate requiring a verb phrase describing what synthetic fibers did, enabled, or achieved (e.g., "possible," "possible to produce," "possible to create").
 
 Final token "made" is a past-tense auxiliary verb beginning a predicate, requiring an object or complement — most likely a past participle phrase describing synthetic fibers' revolutionary impact on textiles.
 
-**whitened SFT** (mse 0.883): Historical/technical narrative momentum: the text traces the development of synthetic fibers, moving from natural fibers to synthetic, requiring continuation of this chronological progression.
+**whitened SFT** (fve +0.116): Historical/technical narrative momentum: the text traces the development of synthetic fibers, moving from natural fibers to synthetic, requiring continuation of this chronological progression.
 
 Domain-specific content expectation: the passage is explaining synthetic fibers' advantages over natural ones (cost, durability, versatility), so specific properties or applications of synthetic fibers are expected next.
 
 Final token "made" is a past-tense verb beginning a relative clause or predicate, requiring a direct object or complement describing what synthetic fibers enabled or achieved (e.g., "made possible," "made it possible to...").
 
-**whitened RL** (mse 0.743): Historical/technical exposition about synthetic fibers and their impact on aviation, establishing that "they made" begins a clause explaining how these materials revolutionized or replaced natural fibers in specific applications.
+**whitened RL** (fve +0.256): Historical/technical exposition about synthetic fibers and their impact on aviation, establishing that "they made" begins a clause explaining how these materials revolutionized or replaced natural fibers in specific applications.
 
 The sentence structure "Since then, they made" follows "Polyester and other synthetic fibers were introduced in the 1960s" — completing a classic "X introduced, they made" construction, expecting a statement about how synthetic fibers became dominant or transformed industries.
 
@@ -391,19 +394,19 @@ We (those who care) must begin to see one another as partners, no matter our pol
 
 **GOLD:** <explanation> Argumentative momentum: thesis about humanization/partnership is building toward a concluding statement, with "In the end" signaling a climactic summation.  Repetition/continuation pattern: the essay consistently pairs opposing sides ("moderate friend" vs. accusers, violence vs. reconciliation), suggesting a unifying resolution about shared humanity is next.  Final token: "relationships," ends a clause mid-thought after "comes down to human relationships," strongly constraining the next tokens toward an elaboration—likely explaining what those relationships require or mean for resolving the conflict. </explanation>
 
-**raw NLA** (mse 0.133): Argumentative momentum: the text builds toward a conclusion about human connection and empathy, with "human relationships" as the culminating point.
+**raw NLA** (fve +0.763): Argumentative momentum: the text builds toward a conclusion about human connection and empathy, with "human relationships" as the culminating point.
 
 Repetition/continuation pattern: the phrase "human relationships" has been emphasized throughout, suggesting elaboration or a concluding statement reinforcing its central role.
 
 Final token: "relationships," ends a clause mid-thought after "at the end of the day, it's all about human relationships," — a comma signals continuation, likely a subordinate clause or elaborating phrase such as "not about policy" or "not about ideology."
 
-**whitened SFT** (mse 1.369): Argumentative momentum: author has built a case for empathy over ideology, now delivering a concluding synthesis or call to action.
+**whitened SFT** (fve -0.371): Argumentative momentum: author has built a case for empathy over ideology, now delivering a concluding synthesis or call to action.
 
 Repetition/continuation pattern: the text repeatedly pairs "empathy" with "ideology," "love," and "understanding," suggesting the next tokens will reinforce this theme with a closing statement.
 
 Final token: "love," ends a list-like clause ("love, understanding, and empathy") mid-thought, strongly constraining what follows to a concluding phrase or sentence wrapping up the essay's thesis.
 
-**whitened RL** (mse 0.744): Ongoing argumentative essay about the importance of human connection in conservation, with the author building toward a conclusion that despite all the science, relationships matter most.
+**whitened RL** (fve +0.255): Ongoing argumentative essay about the importance of human connection in conservation, with the author building toward a conclusion that despite all the science, relationships matter most.
 
 The sentence structure "Ultimately, this is all about relationships," sets up a classic rhetorical pivot completing the thought: "and relationships are ultimately about trust, empathy, and human connection" — the author is about to name the core human qualities that make conservation work.
 
@@ -420,19 +423,19 @@ Final token "," follows "relationships," completing "everything is about relatio
 
 **GOLD:** <explanation> Technical documentation pattern: structured tutorial steps (Step4, Step5, Part?) with hardware/embedded system specifications following a consistent format throughout.  Continuation of PCD8544 addressing specification table: X-address range "X 0 to 83" establishes a parallel structure, strongly implying Y-address range follows next, e.g., "Y 0 to 5" or similar coordinate specification.  Final token "10" appears mid-sentence within address range specification "(X 0 to 83 (10..." — likely starting a binary/decimal notation like "10101..." or completing a parenthetical technical value, constrained to numerical/hexadecimal content. </explanation>
 
-**raw NLA** (mse 0.339): Technical documentation pattern: structured list of register fields with consistent format (name, description, bits, value ranges).
+**raw NLA** (fve +0.397): Technical documentation pattern: structured list of register fields with consistent format (name, description, bits, value ranges).
 
 The text is mid-sentence describing the "Address" field's bit width, having stated "10" bits — the next token must complete this bit-width specification, likely "bits)" or similar closing punctuation.
 
 Final token "10" is an incomplete bit-width value within an open parenthesis, immediately requiring a closing parenthesis ")" to complete the parenthetical expression "(10 bits)" or similar.
 
-**whitened SFT** (mse 0.925): Technical datasheet format with structured sections (Overview, Features, Specifications) signals continued specification details and pin descriptions.
+**whitened SFT** (fve +0.074): Technical datasheet format with structured sections (Overview, Features, Specifications) signals continued specification details and pin descriptions.
 
 The text is mid-sentence describing the 16-bit address bus, having just stated "16-bit address bus (10" — the parenthetical is unclosed, requiring completion of the bit-width notation (e.g., "10-bit address)" or similar).
 
 Final token "10" is part of an incomplete parenthetical bit-width descriptor, immediately requiring a closing bit count or unit like "10-bit address)" to complete the technical specification.
 
-**whitened RL** (mse 0.745): Technical datasheet listing binary register specifications for a 7-segment display driver, establishing pattern of describing bit width and format details.
+**whitened RL** (fve +0.255): Technical datasheet listing binary register specifications for a 7-segment display driver, establishing pattern of describing bit width and format details.
 
 The sentence structure "The address is 10 bits (10" is mid-word, completing "10 bits (10" — likely continuing as "10 bits (10 bits)" or "10 bits (10 bits binary)" describing how the address is represented in binary format, e.g., "10 bits (10 bits binary)" or "10 bits (10 bits unsigned integer)."
 
@@ -451,19 +454,19 @@ In her artist statement, Harvell wrote “I revere the strength, beauty, and pra
 
 **GOLD:** <explanation> List continuation pattern: fiber art techniques being enumerated ("embroidery, crochet, rusting and...") requires at least one more technique to complete the series.  Artist statement quote structure: each artist gets a direct quote describing their work; Karpa's quote is mid-sentence, constraining continuation to another technique name.  The final word "and" is a conjunction mid-list inside Karpa's quoted statement, immediately requiring a noun phrase naming another fiber art technique (e.g., "weaving," "dyeing," "felting"). </explanation>
 
-**raw NLA** (mse 0.107): List continuation pattern: "embroidery, stitching, raveling and" signals an incomplete enumeration of textile techniques, requiring at least one more item (e.g., "dyeing," "painting," "collage").
+**raw NLA** (fve +0.809): List continuation pattern: "embroidery, stitching, raveling and" signals an incomplete enumeration of textile techniques, requiring at least one more item (e.g., "dyeing," "painting," "collage").
 
 Artwork description genre: formal exhibition catalog style, detailing materials, techniques, and creative process with precise vocabulary like "textile collage" and "layered."
 
 Final token "and" is a coordinating conjunction mid-list, directly requiring the next textile/arts technique noun to complete the enumeration of methods used in the piece.
 
-**whitened SFT** (mse 0.786): List continuation pattern: "embroidery, erasure and" signals an incomplete enumeration of textile techniques, requiring at least one more item (e.g., "dyeing," "stitching," "weaving").
+**whitened SFT** (fve +0.213): List continuation pattern: "embroidery, erasure and" signals an incomplete enumeration of textile techniques, requiring at least one more item (e.g., "dyeing," "stitching," "weaving").
 
 Academic/artistic project description register: formal yet accessible tone describing a graduate thesis project, maintaining consistent third-person institutional framing throughout.
 
 Final token "and" is a coordinating conjunction mid-list, directly requiring the next technique name to complete the series of textile methods used in the project.
 
-**whitened RL** (mse 0.745): Academic thesis statement listing artistic methods for exploring identity and memory in textile art, establishing a pattern of enumerating specific techniques used in the project.
+**whitened RL** (fve +0.255): Academic thesis statement listing artistic methods for exploring identity and memory in textile art, establishing a pattern of enumerating specific techniques used in the project.
 
 The sentence structure "I will use techniques such as embroidery, crocheting and" signals an incomplete list of methods, with "embroidery, crocheting and" requiring additional parallel techniques to complete the series — likely "dyeing, stitching, and" or similar fiber arts.
 
@@ -480,19 +483,19 @@ Final token "and" is a list conjunction completing "embroidery and," part of "te
 
 **GOLD:** <explanation> Business service promotional copywriting pattern, maintaining formal yet accessible tone throughout for a local lawn care company.  Narrative momentum of listing professional credentials and commitments — "keeping abreast of advances," "liaising with" implies ongoing relationship-building with industry partners, suppliers, or professional bodies next.  "liaising with" is an incomplete prepositional phrase requiring a direct object — specifically a noun phrase naming partners/organisations, e.g., "industry professionals," "leading suppliers," or "other lawn care experts." </explanation>
 
-**raw NLA** (mse 0.165): Business promotional/marketing copy establishing credibility and service quality, expecting continuation of professional partnerships or client relationships.
+**raw NLA** (fve +0.705): Business promotional/marketing copy establishing credibility and service quality, expecting continuation of professional partnerships or client relationships.
 
 The phrase "working closely with" sets up a list or description of collaborating parties — likely landscapers, suppliers, local authorities, or industry bodies — continuing the professional partnership theme.
 
 "working closely with" is an incomplete prepositional phrase requiring a noun phrase or list of partners/clients as its object, immediately constraining the next tokens to be a specific entity or group name.
 
-**whitened SFT** (mse 1.034): Business service description maintaining professional, customer-focused tone throughout, listing company capabilities and values.
+**whitened SFT** (fve -0.036): Business service description maintaining professional, customer-focused tone throughout, listing company capabilities and values.
 
 The text is building a list of company commitments and partnerships, following a pattern of "we do X, we also do Y" — the sentence structure signals continuation of this enumeration.
 
 "Working in partnership with" is an incomplete prepositional phrase requiring a noun object (e.g., "local authorities," "contractors," "suppliers") to complete the sentence, likely followed by further partnership examples or a concluding statement.
 
-**whitened RL** (mse 0.745): Business promotional copy for a garden maintenance company, establishing credibility and services offered in a professional yet accessible tone throughout.
+**whitened RL** (fve +0.254): Business promotional copy for a garden maintenance company, establishing credibility and services offered in a professional yet accessible tone throughout.
 
 The text follows a pattern of listing company strengths and partnerships: "we keep in touch with other companies in the industry" signals an ongoing list of quality assurance practices, with "consulting with leading manufacturers" already named as one example.
 
@@ -510,19 +513,19 @@ I also take Lysine in moderation about 500mg a day… double to 1000mg if I feel
 
 **GOLD:** <explanation> Narrative momentum toward completion: the speaker is mid-sentence recounting a successful treatment streak, strongly implying a duration ("one in a year," "one in months") follows.  Personal testimony pattern: the letter follows a structured before/after format, building toward a triumphant conclusion about the ear wax + Lysine combination's effectiveness.  Final token "in" opens a time-duration phrase (e.g., "in over a year," "in six months"), requiring a specific elapsed timeframe to complete the sentence and validate the remedy's claimed success. </explanation>
 
-**raw NLA** (mse 0.115): Personal health narrative building toward a positive outcome, establishing a contrast between past struggles and current improvement.
+**raw NLA** (fve +0.794): Personal health narrative building toward a positive outcome, establishing a contrast between past struggles and current improvement.
 
 The phrase "haven't had any in" sets up a time reference — the reader expects a specific duration (e.g., "a month," "a year," "over a year") completing the contrast with the earlier "every 2 weeks."
 
 Final token "in" is a preposition beginning a time phrase, requiring an immediate noun phrase specifying a duration, almost certainly a period of time like "a month" or "over a year."
 
-**whitened SFT** (mse 0.992): Medical case report narrative momentum: the text is recounting a patient's treatment history, building toward a conclusion about the treatment's effectiveness.
+**whitened SFT** (fve +0.007): Medical case report narrative momentum: the text is recounting a patient's treatment history, building toward a conclusion about the treatment's effectiveness.
 
 Chronological progression pattern: the report traces the patient's journey from diagnosis → treatment → improvement, now reaching a resolution point about recurrence.
 
 Final token "in" opens a time duration phrase (e.g., "in over a year" or "in months"), completing the sentence about the patient not having experienced a recurrence, requiring a specific time period or timeframe immediately following.
 
-**whitened RL** (mse 0.745): Ongoing clinical trial report about a biofeedback device for anxiety, establishing a pattern of describing positive outcomes and absence of side effects. The sentence structure "I haven't had any flare-ups since I started using it in" sets up a time reference completing "haven't had any flare-ups in" — likely "over a year" or "more than six months."
+**whitened RL** (fve +0.254): Ongoing clinical trial report about a biofeedback device for anxiety, establishing a pattern of describing positive outcomes and absence of side effects. The sentence structure "I haven't had any flare-ups since I started using it in" sets up a time reference completing "haven't had any flare-ups in" — likely "over a year" or "more than six months."
 
 The narrative momentum toward a positive conclusion: "I haven't had any flare-ups in" strongly signals a period of sustained remission, consistent with the trial's stated goal of "no flare-ups."
 
@@ -542,19 +545,19 @@ is useful for many medical purposes and the burden of manual
 
 **GOLD:** <explanation> Medical/technical academic paper format: abstract section establishing problem, method, and utility of an endoscopy measurement system.  Narrative momentum: the abstract is mid-sentence listing clinical motivations, having covered system description and methodology, now detailing practical benefits — "3D length information is useful for many medical purposes" leads naturally to elaborating specific use cases or justifications.  Final token "manual" is part of the phrase "burden of manual," an incomplete noun phrase requiring a noun (e.g., "operation," "measurement," "pointing") describing the effortful human task the system addresses. </explanation>
 
-**raw NLA** (mse 0.207): Academic/technical paper describing a medical imaging system, establishing context for a problem-solution structure. The text is building toward explaining limitations of current methods.
+**raw NLA** (fve +0.632): Academic/technical paper describing a medical imaging system, establishing context for a problem-solution structure. The text is building toward explaining limitations of current methods.
 
 The phrase "manual" strongly signals a contrast with automation — the next word is almost certainly "manual" followed by a noun like "segmentation," "marking," or "labeling," completing the criticism of current methods' inefficiencies.
 
 Final token "manual" is an adjective mid-noun-phrase, requiring an immediate noun or noun phrase describing a labor-intensive task performed by human operators, e.g., "manual segmentation" or "manual marking."
 
-**whitened SFT** (mse 0.821): Academic/technical paper describing a medical imaging system, establishing context for a problem-solution structure — the system's limitations are being enumerated.
+**whitened SFT** (fve +0.178): Academic/technical paper describing a medical imaging system, establishing context for a problem-solution structure — the system's limitations are being enumerated.
 
 The sentence "However, the system has a problem of manual" signals an upcoming description of a limitation or drawback, likely related to manual measurement, calibration, or data entry — a contrast to the system's automated capabilities.
 
 Final token "manual" is an adjective beginning a noun phrase, requiring an immediate noun or noun phrase describing a manual task, e.g., "manual measurement," "manual calibration," or "manual data entry."
 
-**whitened RL** (mse 0.745): Academic paper introducing a novel image analysis system for measuring vascular branching in intraoperative OCT, establishing technical context and clinical motivation throughout.
+**whitened RL** (fve +0.254): Academic paper introducing a novel image analysis system for measuring vascular branching in intraoperative OCT, establishing technical context and clinical motivation throughout.
 
 The paper is building toward explaining the limitations of current manual measurement methods, setting up the contrast between the proposed automated system and the existing labor-intensive process. "However, the measurement requires manual" signals an upcoming contrast clause listing the drawbacks of manual measurement, e.g., "However, the measurement requires manual tracing by a surgeon."
 
@@ -572,19 +575,19 @@ Since the outbreak of the pandemic, China's moves have formed a sharp contrast t
 
 **GOLD:** <explanation> Argumentative momentum: the essay contrasts China's effective pandemic response with Western failures, building toward a conclusion praising China's system.  "End of History" framing: Fukuyama's theory is positioned as a flawed lens distorting Western perception of China, urging fair reassessment.  Final fragment "institutional advantages of" is an incomplete noun phrase mid-sentence, directly requiring a noun or noun phrase naming China's specific system, e.g., "China's system" or "socialism with Chinese characteristics." </explanation>
 
-**raw NLA** (mse 0.172): Political commentary on China's governance model, contrasting Western democracy with China's system, establishing a critical but measured tone throughout.
+**raw NLA** (fve +0.693): Political commentary on China's governance model, contrasting Western democracy with China's system, establishing a critical but measured tone throughout.
 
 The sentence structure "the institutional advantages of" sets up a noun phrase completing the thought — specifically naming China's political system, likely "the Chinese socialist system" or "the Chinese model."
 
 Final token "of" is a preposition opening a noun phrase, requiring an immediate noun or noun phrase describing China's institutional/political system, consistent with the preceding discussion of China's governance model.
 
-**whitened SFT** (mse 0.730): Political speech pattern: formal Chinese government rhetoric praising China's pandemic response, listing achievements and institutional strengths.
+**whitened SFT** (fve +0.269): Political speech pattern: formal Chinese government rhetoric praising China's pandemic response, listing achievements and institutional strengths.
 
 Narrative momentum: the text is building a case for China's institutional superiority, having just cited specific statistics (100 million, 100,000, 10,000), now pivoting to broader institutional comparison.
 
 Final token "of" opens a prepositional phrase completing "the institutional advantages of [China/the Chinese system]" — a noun phrase naming the specific institution or system being praised is immediately required.
 
-**whitened RL** (mse 0.745): Ongoing Chinese political commentary on the pandemic and governance, establishing that China's system has demonstrated advantages over Western models. The argumentative momentum builds toward explaining how China's collective governance model complements the Communist Party's strengths.
+**whitened RL** (fve +0.254): Ongoing Chinese political commentary on the pandemic and governance, establishing that China's system has demonstrated advantages over Western models. The argumentative momentum builds toward explaining how China's collective governance model complements the Communist Party's strengths.
 
 The sentence structure "The advantages of the system of pooling resources to fight the epidemic can be seen as the unique characteristics of" sets up a noun phrase completing "the unique characteristics of," requiring "the Chinese socialist system" or "our country's governance model."
 
@@ -604,19 +607,19 @@ Engineering and design of carrier-class communications equipment, including digi
 
 **GOLD:** <explanation> List continuation pattern: the text enumerates product/customer categories with "including digital transmission, remote monitoring, power distribution and demarcation products used by wireline and wireless telecommunications service providers, industrial customers," implying more list items follow.  Domain signal: trademark/patent registration context — "Standard character mark" introduces a formal USPTO-style goods/services description requiring complete, precise enumeration of covered categories.  Final token "customers," is a comma-separated list item mid-enumeration, immediately requiring another customer/entity type (e.g., "government agencies," "utilities," or similar end-user category) to complete the series. </explanation>
 
-**raw NLA** (mse 0.111): Product description genre following technical marketing format, establishing capabilities and use cases for a networking equipment product.
+**raw NLA** (fve +0.802): Product description genre following technical marketing format, establishing capabilities and use cases for a networking equipment product.
 
 List continuation pattern: "telecom operators, business customers," signals an ongoing enumeration of target market segments, with more industry types expected (e.g., "government agencies," "enterprise customers").
 
 Final token is a comma after "business customers," mid-list, requiring additional parallel noun phrases describing customer types or market sectors to complete the enumeration.
 
-**whitened SFT** (mse 0.752): Technical product description listing applications, following a pattern of enumerating use cases for the optical transponder equipment.
+**whitened SFT** (fve +0.247): Technical product description listing applications, following a pattern of enumerating use cases for the optical transponder equipment.
 
 The list of applications is mid-enumeration: "telecom service providers, industrial users," signals more comma-separated entities expected (e.g., "government agencies," "data centers").
 
 Final token is a comma after "industrial users," acting as a list separator, requiring continuation with additional application categories or a closing phrase completing the enumeration.
 
-**whitened RL** (mse 0.746): Technical product description for a fiber optic transmission system, establishing capabilities and applications throughout. The text follows a pattern of listing use cases and customer types.
+**whitened RL** (fve +0.254): Technical product description for a fiber optic transmission system, establishing capabilities and applications throughout. The text follows a pattern of listing use cases and customer types.
 
 The sentence structure "used by service providers, utilities," signals an ongoing list of application domains for the product, with "telecom companies, military, and" implying additional industry sectors like "government," "enterprise," or "telecom operators."
 
@@ -633,19 +636,19 @@ Final token "," follows "utilities," completing "for service providers, utilitie
 
 **GOLD:** <explanation> Structured service listing pattern: each entry follows "Title → description → Read More" repetition, establishing strong continuation expectation.  Website services page genre: corporate utility/energy sector tone, bullet-style service summaries with consistent brevity and formal register throughout.  Final token "More" closes a "Read More" call-to-action link, the fourth in a repeating sequence — next tokens likely begin a new service category title or section heading, continuing the established list format. </explanation>
 
-**raw NLA** (mse 0.398): Business services webpage listing company offerings, following a pattern of "Service Category → description" entries. The list structure suggests more service categories may follow.
+**raw NLA** (fve +0.291): Business services webpage listing company offerings, following a pattern of "Service Category → description" entries. The list structure suggests more service categories may follow.
 
 The page is mid-list, having covered "Gas and Oil," "Water and Sewerage," "Electrical and Communications," and "Construction and Maintenance" — implying additional service categories or a closing section may follow.
 
 "Construction and Maintenance" is the final list item, ending the current section; the next token likely begins a new section header, a closing call-to-action, or a new service category label.
 
-**whitened SFT** (mse 1.841): Marketing/promotional copy for a gas services company, using structured sections with bold headers ("Why Choose Us?", "Our Services") to present company credentials and offerings.
+**whitened SFT** (fve -0.843): Marketing/promotional copy for a gas services company, using structured sections with bold headers ("Why Choose Us?", "Our Services") to present company credentials and offerings.
 
 List continuation pattern: "Our Services" section has begun enumerating service categories (Gas Safety, Gas Installation, Gas Maintenance, Gas Metering, Gas Metering), suggesting more service items or a closing summary statement may follow.
 
 Final token "4000" ends a specific statistic about gas meters, part of a promotional claim; next tokens likely continue with additional service details, a call-to-action, or another section header.
 
-**whitened RL** (mse 1.795): Promotional copywriting for a gas services company, establishing credentials and services offered to Australian clients, with a structured listicle format throughout.
+**whitened RL** (fve -0.797): Promotional copywriting for a gas services company, establishing credentials and services offered to Australian clients, with a structured listicle format throughout.
 
 The text follows a pattern of listing service benefits and applications, with "Our services include: Gas Leak Detection, Electrical Services, Industrial Solutions, Pipeline Engineering" — more service categories or elaboration are expected to continue this list.
 
@@ -665,19 +668,19 @@ Another thing that will help you to win over these types
 
 **GOLD:** <explanation> Listicle/advice article pattern: text offers sequential tips for attracting European women, with repeated "Another thing" and "It is vital" structures suggesting more advice points follow.  Continuation of "tips for impressing European women" argumentative momentum: the phrase "these types" signals an unfinished noun phrase describing European women, requiring a completion before the next piece of advice.  Final token "types" is mid-noun-phrase, part of "these types of [women/ladies]," immediately requiring a noun or prepositional phrase to complete the reference before continuing the sentence. </explanation>
 
-**raw NLA** (mse 0.769): Spam/SEO content pattern: low-quality, keyword-stuffed dating site promotional text with fragmented sentences and repeated phrases like "free dating sites."
+**raw NLA** (fve -0.370): Spam/SEO content pattern: low-quality, keyword-stuffed dating site promotional text with fragmented sentences and repeated phrases like "free dating sites."
 
 List/enumeration momentum: the text has been cycling through dating site features, benefits, and services, suggesting continuation of similar promotional claims.
 
 Final token "types" ends an incomplete phrase "a number of types," which is part of a list construction requiring continuation — likely "of dating sites" or "of services" followed by another promotional claim about site features.
 
-**whitened SFT** (mse 1.861): Product listing format with bullet-pointed features, establishing a pattern of short, punchy marketing phrases like "No more waiting for your favorite designer to come to you."
+**whitened SFT** (fve -0.863): Product listing format with bullet-pointed features, establishing a pattern of short, punchy marketing phrases like "No more waiting for your favorite designer to come to you."
 
 The list of product benefits is mid-enumeration, with several items already given; more feature bullets are expected to continue the pattern.
 
 Final token "types" ends an incomplete bullet point ("You can now get a wide range of types"), requiring immediate continuation specifying what types of products/designs are available, likely "of products" or a specific category.
 
-**whitened RL** (mse 1.796): Promotional copy for a beauty/luxury skincare brand, establishing a pattern of listing product features and benefits of online shopping for direct-to-consumer services.
+**whitened RL** (fve -0.798): Promotional copy for a beauty/luxury skincare brand, establishing a pattern of listing product features and benefits of online shopping for direct-to-consumer services.
 
 The sentence structure "These include a variety of services such as" sets up an enumeration of specific offerings — likely "of online consultations" or "of a beauty platform" — completing the thought about what the website provides alongside the listed products.
 
@@ -699,19 +702,19 @@ Selectek is a member of the American Staffing Association, which promotes legal,
 
 **GOLD:** <explanation> Job posting genre with bullet-pointed requirements and benefits structure — parallel list items describing organizational/employee benefits expected to continue.  The ASA certification section follows a pattern of explaining member benefits with em-dash bullet points; additional parallel benefits like "Ensure compliance" or "Maintain standards" are strongly anticipated.  Final token "employees" closes the first bullet point in a list of ASA certification program benefits, requiring 1-2 more parallel "- [Verb] the [noun]..." bullet items to complete the promised list. </explanation>
 
-**raw NLA** (mse 0.724): List continuation pattern: a bulleted list of "Benefits of ISO 9001" is mid-sequence, with "Protect employees" as the first item, strongly implying more parallel benefit items follow.
+**raw NLA** (fve -0.290): List continuation pattern: a bulleted list of "Benefits of ISO 9001" is mid-sequence, with "Protect employees" as the first item, strongly implying more parallel benefit items follow.
 
 Domain/genre signals: formal business/quality management content, likely from a certification or compliance website, maintaining professional register throughout.
 
 Final token "employees" closes the first list item; the next token must begin another parallel bullet point (e.g., "- Improve customer satisfaction" or "- Enhance business reputation"), continuing the same "- [Benefit]" format.
 
-**whitened SFT** (mse 1.833): Bulleted list structure with parallel formatting: each item follows "- [Topic] [detail]" pattern, establishing strong continuation expectations.
+**whitened SFT** (fve -0.835): Bulleted list structure with parallel formatting: each item follows "- [Topic] [detail]" pattern, establishing strong continuation expectations.
 
 The document is a formal organizational mission statement listing key areas of focus, with "Protecting the rights of employees and consumers" as the first bullet, implying additional parallel mission areas remain.
 
 Final token "employees and consumers" ends the first bullet point; the next token must begin a new "- " bullet continuing the parallel list of organizational mission areas.
 
-**whitened RL** (mse 1.801): Promotional/informational document listing safety and consumer protection services offered by a company, establishing a pattern of describing organizational roles and responsibilities.
+**whitened RL** (fve -0.803): Promotional/informational document listing safety and consumer protection services offered by a company, establishing a pattern of describing organizational roles and responsibilities.
 
 The text follows a structured format listing what the company does: "Protecting consumers and employees by enforcing rules and regulations" sets up a continuation of protective measures — likely "Protecting consumers and employees" followed by additional parallel actions like "Monitoring industry standards" or "Promoting safe practices."
 
@@ -731,19 +734,19 @@ Ahmed Youssef Apr 07, 2
 
 **GOLD:** <explanation> Repeating review pattern: each entry follows "Name | Date | Rating | Review text" format, strongly constraining next tokens to continue Ahmed Youssef's review body.  Positive sentiment momentum: all previous reviews are 5-star with enthusiastic praise for service, quality, packaging, and partnership, predicting similar complimentary content ahead.  The truncated date "Apr 07, 2" is mid-entry (likely "2019"), immediately requiring completion of the date, then a rating number (likely "5"), then review text. </explanation>
 
-**raw NLA** (mse 0.485): Repetition/continuation pattern: The text is a list of customer testimonials/reviews, each following a consistent format of name, location, and praise for a product or service.
+**raw NLA** (fve +0.135): Repetition/continuation pattern: The text is a list of customer testimonials/reviews, each following a consistent format of name, location, and praise for a product or service.
 
 Domain/genre signals: E-commerce product review page, likely for a hotel or accommodation service, with positive sentiment throughout.
 
 Final token "2" is the start of a year (e.g., "2023" or "2022"), completing the date "April 2[023]" — the immediate next tokens must be the remaining digits of a year, almost certainly "023" or "022."
 
-**whitened SFT** (mse 1.897): Repetition/continuation pattern: Each entry follows "Quote → Source → Attribution" structure, cycling through multiple quotes about love.
+**whitened SFT** (fve -0.899): Repetition/continuation pattern: Each entry follows "Quote → Source → Attribution" structure, cycling through multiple quotes about love.
 
 List continuation momentum: The sequence presents a series of love quotes with consistent formatting; another quote, source, or attribution is expected to follow.
 
 Final token "2" is the start of a year (likely "2023" or similar), part of a date stamp or publication year following "Posted on," requiring 3 more digits to complete the year.
 
-**whitened RL** (mse 1.814): Repetition/continuation pattern: The text is a list of Chinese customer reviews for a hotel, each on a new line, with consistent structure: "Review content" + "More reviews."
+**whitened RL** (fve -0.816): Repetition/continuation pattern: The text is a list of Chinese customer reviews for a hotel, each on a new line, with consistent structure: "Review content" + "More reviews."
 
 Semantic completion: The pattern "5 reviews:" followed by four review snippets establishes that a fifth review entry is expected next, continuing the same format.
 
@@ -771,19 +774,19 @@ Language: No Dialogue
 
 **GOLD:** <explanation> Structured film festival/catalog format: each entry follows "- TITLE (year, runtime) / description / Language / Director / Actor" pattern consistently.  List continuation momentum: multiple short film entries have been presented; another entry or field completion is expected, with "Actor:" or another metadata tag likely next.  Final token "Dialogue" ends the "Language: No Dialogue" field — the last metadata line of the "LEE" entry — immediately expecting either another metadata field (e.g., "Director:") or a new film entry beginning with "- TITLE". </explanation>
 
-**raw NLA** (mse 0.626): Structured film database format with consistent metadata fields (Title, Director, Writer, Cast, Country, Language, Runtime, Genre, Rating, Description) — next field expected continues this pattern.
+**raw NLA** (fve -0.116): Structured film database format with consistent metadata fields (Title, Director, Writer, Cast, Country, Language, Runtime, Genre, Rating, Description) — next field expected continues this pattern.
 
 The list of metadata fields follows a strict alphabetical/sequential order, with "No Dialogue" as the final entry suggesting the next field is a new metadata category (e.g., "Noir," "Thriller," or "Starring").
 
 "No Dialogue" is the last metadata field value, likely the final item in a structured list; the next token is almost certainly a new metadata label (e.g., "Noir," "Thriller," or "Starring") continuing the film's descriptive attributes.
 
-**whitened SFT** (mse 1.668): Structured film metadata format: each line follows "Label: Value" pattern (Title, Director, Writer, etc.), establishing strong continuation expectations.
+**whitened SFT** (fve -0.670): Structured film metadata format: each line follows "Label: Value" pattern (Title, Director, Writer, etc.), establishing strong continuation expectations.
 
 The list of metadata fields is incomplete — typical film database entries include additional fields like "Cast," "Release Date," "Runtime," "Genre," or "Country."
 
 Final token "None" closes the "Language" field value; the next token is almost certainly a newline followed by another metadata label (e.g., "Cast:" or "Release Date:").
 
-**whitened RL** (mse 1.823): Ongoing analysis of "The Last Kingdom" Season 2's reception and production context, establishing that the show's lack of dialogue in the finale episode is being contrasted with other non-verbal storytelling techniques.
+**whitened RL** (fve -0.825): Ongoing analysis of "The Last Kingdom" Season 2's reception and production context, establishing that the show's lack of dialogue in the finale episode is being contrasted with other non-verbal storytelling techniques.
 
 The sentence structure "Despite having no dialogue, the episode was well-received" sets up an explanation of why non-verbal storytelling works effectively — likely referencing visual cues, symbolism, or the show's established visual style.
 
@@ -802,19 +805,19 @@ These developers use state-of-the-art technology to create games that are visual
 
 **GOLD:** <explanation> Listicle/promotional casino content pattern: fragmented clauses listing features like "visually stunning, enhance the betting experience, simple gameplay" suggest continuation with more comma-separated selling points or a new promotional paragraph.  Topic cycling through pokies/casino features: text repeatedly shifts between bonuses, mobile play, game variety, and wagering requirements, suggesting next tokens introduce another casino feature or tip.  Final token "payouts." ends a sentence fragment list; a new sentence or paragraph header continuing the promotional Australian pokies/casino theme is immediately expected. </explanation>
 
-**raw NLA** (mse 0.452): Listicle/promotional casino content pattern: each paragraph introduces a new slot game or feature, suggesting continuation of this format.
+**raw NLA** (fve +0.194): Listicle/promotional casino content pattern: each paragraph introduces a new slot game or feature, suggesting continuation of this format.
 
 The text follows a structured review format covering casino features, game types, and player benefits, implying further elaboration on specific games or features.
 
 Final sentence ends with "slot machines" as a topic pivot, likely introducing a new paragraph or section discussing slot machine specifics, game types, or player tips — a new sentence or paragraph beginning is immediately expected.
 
-**whitened SFT** (mse 1.863): Structured listicle format with numbered sections (1, 2, 3) signals continuation of a multi-part guide, with section 3's content now expected to follow.
+**whitened SFT** (fve -0.865): Structured listicle format with numbered sections (1, 2, 3) signals continuation of a multi-part guide, with section 3's content now expected to follow.
 
 The text follows a consistent pattern: bolded section header, then explanatory paragraph(s) covering benefits, considerations, and practical advice — section 3's body content is now due.
 
 The final sentence ends mid-thought after "in the short term," completing a contrast between short-term and long-term benefits; the next tokens will likely elaborate on long-term benefits or transition to actionable advice for section 3.
 
-**whitened RL** (mse 1.879): Business proposal document listing services and benefits for a local casino, establishing a pattern of structured sections with headers and descriptive content about community engagement and partnership.
+**whitened RL** (fve -0.881): Business proposal document listing services and benefits for a local casino, establishing a pattern of structured sections with headers and descriptive content about community engagement and partnership.
 
 The text has detailed a multi-step process for selecting and implementing services, with "Next Steps" section already covering initial assessment and community input — the next logical continuation would elaborate on additional steps like onboarding, training, or specific service recommendations.
 
@@ -832,19 +835,19 @@ Final token "." ends "of the state." completing "For instance, we've identified 
 
 **GOLD:** <explanation> Domain/genre signals: SEO-aggregated mining/crushing equipment content, mixing product listings, regulatory snippets, and operational guides with repetitive "Read More" pagination markers throughout.  Repetition/continuation pattern: Each section follows a heading → descriptive content → "Read More" structure, cycling through crushing plant subtopics like operations, maintenance, design, and equipment specifications.  Final token context: The text ends mid-sentence ("near the source to the"), part of a location-rationale clause about stone crushing plant siting; the immediate next tokens must complete this prepositional phrase, likely "raw materials" or similar, followed by a period and "Read More." </explanation>
 
-**raw NLA** (mse 0.908): Repetitive SEO/spam content pattern: each paragraph introduces a new "gold ore crusher" topic with near-identical phrasing, suggesting another similar entry follows.
+**raw NLA** (fve -0.619): Repetitive SEO/spam content pattern: each paragraph introduces a new "gold ore crusher" topic with near-identical phrasing, suggesting another similar entry follows.
 
 List continuation momentum: the text cycles through gold ore crusher topics (types, manufacturers, prices, equipment), implying another such topic entry is expected next.
 
 Final token "Gold" opens a new sentence/paragraph, likely beginning a new topic entry (e.g., "Gold ore crusher plant," "Gold ore processing," or "Gold ore crusher machine"), constrained to continue the established SEO keyword-stuffed format.
 
-**whitened SFT** (mse 1.873): Domain/genre signals: Industrial mining equipment catalog/SEO content, mixing product listings, technical specs, and fragmented web-scraped text about crushing and grinding machinery.
+**whitened SFT** (fve -0.875): Domain/genre signals: Industrial mining equipment catalog/SEO content, mixing product listings, technical specs, and fragmented web-scraped text about crushing and grinding machinery.
 
 Repetition/continuation patterns: The text repeatedly cycles through equipment types (jaw crusher, cone crusher, ball mill, grinding mill), manufacturers, and specifications, suggesting more of the same fragmented product descriptions follow.
 
 Final token: "Crushing" ends a sentence fragment "The main objective of the crushing process is to reduce the size of the material to a certain size" — a technical definition sentence, likely followed by a period or continuation explaining further crushing process details or transitioning to another equipment description.
 
-**whitened RL** (mse 1.894): Technical document listing crusher equipment specifications and applications, establishing a pattern of detailed product descriptions with model names, capacities, and process details.
+**whitened RL** (fve -0.896): Technical document listing crusher equipment specifications and applications, establishing a pattern of detailed product descriptions with model names, capacities, and process details.
 
 The text follows a structured enumeration pattern: "Here are some examples of the crusher equipment used in the process of stone crushing in China" signals that more specific equipment details or process steps will follow, continuing the listicle format.
 
@@ -863,19 +866,19 @@ But the president will have a bigger problem than Republicans to worry about if 
 
 **GOLD:** <explanation> Political opinion journalism arguing Obama's debt position is irresponsible, using bipartisan sources and CBO data as evidence; narrative builds toward consequences of inaction.  The argument has escalated from political criticism to economic market consequences, introducing "rating firms and bond market" as a new, serious threat beyond partisan politics.  Final clause "In 2011 an actual deal on the debt (which gave birth to the sequestration now in contention) didn" — mid-sentence, past-tense narrative about 2011 debt deal, with "didn" requiring completion of a negative verb phrase, likely "didn't prevent" or "didn't satisfy" rating agencies/S&P downgrade. </explanation>
 
-**raw NLA** (mse 0.925): News article reporting style with factual, journalistic tone — expects continuation of factual details about the incident.
+**raw NLA** (fve -0.648): News article reporting style with factual, journalistic tone — expects continuation of factual details about the incident.
 
 Narrative momentum: the article has established the event (date, location, victim, cause) and is now detailing the specific circumstances of the crash, following a standard news structure.
 
 Final token "the" is an article beginning a noun phrase, likely introducing a specific object or location related to the crash (e.g., "the car," "the road," "the intersection") — a noun phrase must immediately follow.
 
-**whitened SFT** (mse 1.939): Product listing format with bullet-pointed feature descriptions, establishing a pattern of short, punchy marketing claims about a gaming mouse.
+**whitened SFT** (fve -0.942): Product listing format with bullet-pointed feature descriptions, establishing a pattern of short, punchy marketing claims about a gaming mouse.
 
 The list of bullet points has been building a feature-by-feature breakdown; the pattern suggests another feature or closing detail is expected next.
 
 The final token "2" begins a new bullet point, likely continuing a numeric feature (e.g., "2.4GHz," "2000 DPI," or "2-year warranty"), constrained to a short, capitalized product specification phrase.
 
-**whitened RL** (mse 1.894): Product listing format for a Chinese e-commerce item, establishing technical specifications and features of a 3D printer. The listing follows a structured pattern of describing capabilities, materials, and compatibility.
+**whitened RL** (fve -0.896): Product listing format for a Chinese e-commerce item, establishing technical specifications and features of a 3D printer. The listing follows a structured pattern of describing capabilities, materials, and compatibility.
 
 The listing has enumerated several technical specifications and features, with "The" beginning a new clause continuing the description of the printer's capabilities or additional features — likely "The printer supports..." or "The software is compatible with..."
 
@@ -892,19 +895,19 @@ Final token "The" opens a noun phrase completing "In addition, the," continuing 
 
 **GOLD:** <explanation> Enthusiastic review of Altadis/Sutliff pipe tobacco building toward a strong closing endorsement, with narrative momentum toward a positive conclusion praising the company.  The author is mid-sentence completing "My hat is off to Altad-" — a conventional complimentary idiom expressing respect, requiring completion of the company name "Altadis" followed by a closing sentiment congratulating or thanking them for improving their product line.  Final token "Altad" is a truncated proper noun ("Altadis"), syntactically and semantically requiring completion of that name, then likely a period or brief closing praise. </explanation>
 
-**raw NLA** (mse 0.815): Ongoing list of "most popular" articles, establishing a pattern of article titles with dates and brief descriptions, continuing the "most popular" series.
+**raw NLA** (fve -0.453): Ongoing list of "most popular" articles, establishing a pattern of article titles with dates and brief descriptions, continuing the "most popular" series.
 
 The text is mid-sentence describing the second article's content, following the same structure as the first article's description ("This article discusses...").
 
 The final token "the" is an article beginning a noun phrase, requiring an immediate noun or adjective+noun describing a specific topic or entity related to the second article's content (e.g., "the importance of," "the role of," "the impact of").
 
-**whitened SFT** (mse 1.987): Product listing format with bullet-pointed feature descriptions, establishing a pattern of short, punchy marketing claims about a gaming mouse.
+**whitened SFT** (fve -0.990): Product listing format with bullet-pointed feature descriptions, establishing a pattern of short, punchy marketing claims about a gaming mouse.
 
 The list of bullet points has been building a feature-by-feature breakdown of the mouse's specs (sensitivity, buttons, weight, cable), suggesting more technical specifications or selling points remain.
 
 The final token "2" begins a new bullet point, likely continuing a numeric specification (e.g., "2.4GHz wireless," "2000 DPI," or "2-year warranty"), constrained to a short technical or marketing phrase starting with a number.
 
-**whitened RL** (mse 1.925): Product listing format for a Chinese e-commerce item, establishing technical specifications and features of a 3D printer. The listing follows a structured pattern of describing capabilities, materials, and compatibility.
+**whitened RL** (fve -0.928): Product listing format for a Chinese e-commerce item, establishing technical specifications and features of a 3D printer. The listing follows a structured pattern of describing capabilities, materials, and compatibility.
 
 The listing has enumerated several technical specifications and features, with "The" beginning a new clause continuing the description of the printer's capabilities or additional features — likely "The printer supports..." or "The software is compatible with..."
 
@@ -924,19 +927,19 @@ So, could all this potential activity add up to a return of fashion M&A where pr
 
 **GOLD:** <explanation> Financial journalism article analyzing M&A activity in fashion/retail sector, establishing an expert-driven, analytical tone throughout with executive quotes.  Narrative momentum of "question posed, expert answer expected": the article consistently follows a pattern of raising a question or topic, then providing a named expert quote as response.  Final token "don" is the start of a direct quote from a named source (following the pattern "'I don[']t...'" or similar), part of an answering statement to the closing rhetorical question about whether fashion M&A prices will escalate — the next tokens will almost certainly continue this skeptical or cautionary expert response. </explanation>
 
-**raw NLA** (mse 0.938): News article reporting style with factual, journalistic tone — expects continued factual elaboration of the incident details.
+**raw NLA** (fve -0.672): News article reporting style with factual, journalistic tone — expects continued factual elaboration of the incident details.
 
 Narrative momentum: the article has introduced the incident, quoted officials, and is now detailing the specific circumstances of the crash, with more technical/operational details expected.
 
 Final token "the" opens a noun phrase mid-sentence, requiring an immediate noun or adjective+noun describing what the plane was doing or what happened next (e.g., "the plane was flying," "the pilot reported," "the aircraft was").
 
-**whitened SFT** (mse 2.021): Numbered list pattern: items 1–4 follow a consistent structure (number, title, description), establishing strong continuation expectation for item 5.
+**whitened SFT** (fve -1.024): Numbered list pattern: items 1–4 follow a consistent structure (number, title, description), establishing strong continuation expectation for item 5.
 
 Each entry follows a template: title, then 1-2 sentence description of a specific historical/educational resource, maintaining an informational, encyclopedic tone throughout.
 
 The final token "5" is the start of the fifth list item, immediately requiring a period or dash followed by a new resource title (likely another historical document, law, or educational tool).
 
-**whitened RL** (mse 1.964): Ongoing listicle format: "Here are some of the most popular Chinese dating apps" signals an enumeration of app names and descriptions, with "Tantan" already introduced as the first example.
+**whitened RL** (fve -0.966): Ongoing listicle format: "Here are some of the most popular Chinese dating apps" signals an enumeration of app names and descriptions, with "Tantan" already introduced as the first example.
 
 The sentence structure "The app is popular because it allows users to..." establishes a pattern of explaining app features/benefits, so next tokens will continue describing Tantan's specific features or capabilities.
 
