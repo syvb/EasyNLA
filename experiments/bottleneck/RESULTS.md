@@ -81,6 +81,34 @@ but the **first substituted position (prefill) is the worst of the run at
 5. Two codec seeds gave overlapping CIs (gsm8k 0.087/0.077, triviaqa
    0.592/0.602) — no gross instability; not a variance estimate.
 
+## Error taxonomy (from reading C1-fail/C0-pass samples + the z corpus)
+
+The channel transmits *descriptors* reliably and *bindings* unreliably. Five
+recurring kinds, with prevalence:
+
+1. **Same-category entity substitution** — type slot survives, filler doesn't
+   (Kriek fruit → "blackcurrant"; Apennines → "the Alps"; z: France →
+   "Canada/Ottawa"). 46 triviaqa items are C1-wrong/C0-right; misses are
+   near-neighbors, not non-sequiturs.
+2. **Operand corruption/drift** — numbers unstable *within one equation*
+   ("12 − 2 = 12 − 7 = 2"; "2/5 of 60 = 12"); question quantities vanish.
+   Already present in z: digits appear in 95% of math explanations but are
+   internally inconsistent ("alleged difference 600, but actual answer 320").
+3. **State-stall loops** — corrupted intermediates stall the computation and
+   the model re-asserts the last stable phrase (rep3>0.3: humaneval 69%,
+   fluency 66%, gsm8k 38%, triviaqa 13%, mmlu 3% — loops track output length).
+4. **Structural-glue corruption** — code starts with correct signatures/bodies
+   then newline/space fusion breaks syntax ("return x + ySo the function…",
+   "largest_divdivisor") and drifts into prose-about-code; matches Stage A's
+   worst-class = whitespace/punct tokens. HumanEval 0/164 = cannot sustain
+   exact syntax, not absent knowledge.
+5. **Register/mode confusion** — non-thinking-mode state doesn't survive:
+   "Okay, so I need to…" planning voice in 8-46% of C1 outputs (0% clean),
+   stray </think> in 45% of triviaqa C1; answer-then-"Okay"×40 = EOS/
+   completion state lost (hit-cap 40-92%). Plus artifacts: mmlu option-echo
+   ("A. …" → the option-prior bias) and CJK leakage (27% of z's, 3-6% of
+   outputs).
+
 ## Standing caveats (until the extension run)
 
 Prefill-KV bypass unquantified (`nla_prompt` not run) — a live confound for
