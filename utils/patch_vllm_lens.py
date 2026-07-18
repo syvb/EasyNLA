@@ -396,7 +396,14 @@ def main() -> int:
     # Per-hunk idempotency: a hunk whose NEW text is already present is skipped
     # (lets us add new hunks to an already-partially-patched file). A hunk whose
     # OLD text is missing AND whose NEW text is absent = version drift -> refuse.
-    to_apply = []
+    #
+    # Hunks are validated against the EVOLVING text, applying each as we go —
+    # NOT all against the pristine file. Later hunks legitimately anchor on
+    # text that earlier hunks introduce (e.g. STEERLOG_GLOBAL anchors on the
+    # COUNT hunks' output), so pristine-file validation refuses every fresh
+    # install (that bug shipped in the first hardening pass and made
+    # install_vllm_lens.sh unrunnable on a clean venv).
+    n_applied = 0
     for i, hunk in enumerate(HUNKS):
         old, new = hunk[0], hunk[1]
         satisfied = hunk[2] if len(hunk) > 2 else []
@@ -406,22 +413,21 @@ def main() -> int:
             print(f"[patch_vllm_lens] hunk {i} not found (neither OLD, NEW, nor a "
                   f"satisfied baseline) — vllm_lens version drift? Refusing to patch {path}")
             return 1
-        to_apply.append((old, new))
+        src = src.replace(old, new, 1)
+        n_applied += 1
 
-    if not to_apply:
+    if n_applied == 0:
         print(f"[patch_vllm_lens] already patched (all {len(HUNKS)} hunks): {path}")
         return 0
 
     _orig = path.with_suffix(".py.orig")
     if not _orig.exists():   # keep the PRISTINE original across incremental patches
         shutil.copy2(path, _orig)
-    for old, new in to_apply:
-        src = src.replace(old, new, 1)
     path.write_text(src)
     pycache = path.parent / "__pycache__"
     if pycache.exists():
         shutil.rmtree(pycache)
-    print(f"[patch_vllm_lens] applied {len(to_apply)} hunk(s) to {path} "
+    print(f"[patch_vllm_lens] applied {n_applied} hunk(s) to {path} "
           f"(backup: {path.name}.orig)")
     return 0
 
