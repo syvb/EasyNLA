@@ -1,5 +1,16 @@
 # Held-out examples — whitening pilot (av_sft_val, greedy, n=1000)
 
+**Models (exact checkpoints):**
+
+| column | AV (explanation generator) | AR (reconstructor) |
+|---|---|---|
+| raw NLA | `syvb/nanonla-qwen3-8b-L24-av` + RL LoRA `syvb/nanonla-qwen3-8b-L24-rl-lora`/`p0.0` | `syvb/nanonla-qwen3-8b-L24-ar` |
+| whitened SFT | `syvb/easynla-whitening-pilot`/`av_sft_lora/iter_0001400` on `Qwen/Qwen3-8B` | `.../ar_sft_lora/iter_0001400` |
+| whitened RL | `syvb/easynla-whitening-pilot`/`rl_lora/iter_000050` on `Qwen/Qwen3-8B` | `.../rl_lora/critic_latest` |
+
+Base model `Qwen/Qwen3-8B`, layer 24. Whitening stats: `syvb/easynla-whitening-pilot`/`whitening_stats.npz`
+(sha256 d90de445782fe183…). Wandb (private): octahedral-systems/easynla-whitening-pilot.
+
 Same activation per example; the GOLD explanation (Sonnet-written, used in SFT), then the three
 models' explanations. `fve` = per-example fraction of variance explained, 1 − mse_i/baseline,
 where the baseline is the population predict-the-mean error over all 1000 held-out golds in the
