@@ -2381,7 +2381,10 @@ def main():
             # noisy regardless (smooth before reading) so the 1/world_size shard is fine.
 
         # ---- save LoRA periodically (rank0 only; all ranks hold identical weights) ----
-        if is_main and (step + 1) % args.save_every == 0:
+        # ALWAYS save on the final step too: a run whose num_steps never hits a
+        # save_every multiple (e.g. 60 steps at save_every=100) must not end
+        # with zero checkpoints and no optimizer state.
+        if is_main and ((step + 1) % args.save_every == 0 or step + 1 == args.num_steps):
             out_dir = save_dir / f"iter_{step + 1:06d}"
             out_dir.mkdir(parents=True, exist_ok=True)
             actor.save_pretrained(str(out_dir))
