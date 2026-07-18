@@ -247,6 +247,45 @@ cells are reportable.
   MUST unwhiten first — `NLAConfig.activation_norm` / `cfg.whitening` is
   the flag to check.
 
+## Pilot variant (~$50–60 on Vast, 2 GPUs, overnight)
+
+A half-scale go/no-go run of the same design. Deviations from the full plan,
+all scale-only: **quarter-epoch SFT** (~1400 steps @ batch 64 — the July
+injection comparison discriminated recipes well before this point),
+**half-length RL**, a **fresh 10k-doc RL slice** at corpus offset 200000
+(disjoint from the original 100k docs *by construction* — no verification
+needed), **2 GPUs** (AV/AR SFT concurrent, then 2-rank RL — halves box
+idle vs 4 GPUs at identical GPU-hours), wandb **offline** mode, and a wider
+**<8pp inconclusive band** (half-trained models, single seed). If whitened
+training converges slower than raw, a short run under-sells it — compare
+trend curves at matched compute, not endpoints.
+
+The raw row of the 2×2 is FREE: trained raw checkpoints exist on HF —
+`syvb/nanonla-qwen3-8b-L24-av` (merged SFT AV), `…-L24-rl-lora` (RL
+adapters; `p0.0` = vanilla), `…-L24-ar` (merged AR + value head), all
+carrying compatible `nla_meta.yaml` sidecars (same marker/templates/corpus
+lineage as the warmstart data).
+
+Artifacts come from `scripts/dump_nla_eval.py` (explanations + d-dim AR
+preds + native FVE per checkpoint) — no trainer changes; the cross-space
+2×2 mapping is offline math on its npz outputs + `whitening_stats.npz`.
+
+Sequence (exact commands in the run notes; ~$ at ~2×H100 ≈ $4–5/hr):
+
+| step | what | est |
+|---|---|---|
+| 0 | box setup: clone `whitening` branch, deps, HF data download | ~$4 |
+| 1 | free cell: `dump_nla_eval.py` with the HF raw ckpts on raw `av_sft_val` (1 GPU, ~40 min) | ~$2 |
+| 2 | stats + whiten all splits (CPU-bound) | ~$2 |
+| 3 | RL slice: datagen stages 0–1 on `start: 200000, length: 10000` + manual `stage3_build --stage rl` + shuffle | ~$4 |
+| 4 | AV SFT (GPU0) ∥ AR SFT (GPU1), quarter-epoch, bf16 LoRA — measure s/step at 15 min and cap `--num-steps` to fit ≤6 h | ~$25 |
+| 5 | merge LoRAs → 2-rank vLLM GRPO RL, capped ~2.5 h | ~$12 |
+| 6 | `dump_nla_eval.py` on whitened val with the pilot ckpts; pull artifacts; destroy box | ~$3 |
+
+Abort points: step 1's whitened-space FVE (free cell) near the ceiling →
+stop; step 4's AR gold-explanation FVE ≈ 0 → stop (warm-start mismatch);
+step 5's within-group reward std flat at start → stop.
+
 ## Cost (4×H200 box, ~$3/GPU-hr; H100 rates similar)
 
 | Stage | Wall clock | Cost |
