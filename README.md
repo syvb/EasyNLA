@@ -34,6 +34,12 @@ a held-out split.
 > validate the injection path (e.g. `av/steer_apply_rate`, CJK-free generations)
 > before trusting a run on a new architecture.
 
+
+> 🔭 **RL Future Lens** (`nla/future_lens/`, branch `sv/future-rl`): a repurposed AV that reads
+> out *future tokens* from one hidden state, trained by SFT then GRPO with a future-token
+> reward and evaluated against shuffled-activation controls. See
+> [`docs/future_lens.md`](docs/future_lens.md).
+
 ## Setup
 
 ```bash
