@@ -1,0 +1,14 @@
+# CPU smoke config for nla.future_lens.train_rl on Qwen3-0.6B (scripts/smoke_future_lens_cpu.sh).
+device: cpu
+quant: none
+num_steps: 2
+batch_prompts: 4
+group_size: 4
+max_new_tokens: 12
+eval_every: 1
+eval_rows: 4
+eval_ks: "1,3"
+save_every: 2
+logp_micro_batch: 8
+lr: 1.0e-4
+no_wandb: true

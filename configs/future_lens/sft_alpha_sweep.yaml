@@ -1,0 +1,23 @@
+# Short SFT for the alpha / injection sweep (spec Phase "Injection"): 400 steps each,
+# run once with true labels and once with --shuffle-activations; pick the alpha with
+# the largest heldout/ce_gap. ~10 runs x ~10 min on one H100.
+mode: av
+future_lens: true
+use_lora: true
+lora_r: 64
+lora_alpha: 128
+quant: none
+batch_size: 32
+gradient_accumulation_steps: 1
+num_steps: 400
+lr: 1.0e-4
+min_lr: 1.0e-5
+lr_warmup_steps: 20
+max_len: 128
+gradient_checkpointing: false
+heldout_rows: 512
+heldout_every: 100
+heldout_gen_rows: 128
+save_every: 400
+wandb_project: rl-future-lens
+wandb_group: alpha_sweep

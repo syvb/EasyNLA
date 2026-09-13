@@ -1,0 +1,25 @@
+# Future-lens GRPO (nla.future_lens.train_rl), Qwen3-8B, 1x H100/A100 80GB.
+# Pass --av-ckpt (SFT iter dir), --parquet, --eval-parquet, --save-dir, --seed, --reward.
+quant: none
+reward: exact_match           # second arm: target_logp
+length_penalty: 0.1
+num_steps: 4000
+batch_prompts: 16
+group_size: 8
+max_new_tokens: 12
+temperature: 1.0
+gen_batch: 0                  # all 128 rollouts in one generate() call
+adv_norm: none                # Dr. GRPO
+kl_beta: 0.03
+kl_estimator: k3
+lr: 1.0e-5
+max_grad_norm: 1.0
+logp_micro_batch: 32
+gradient_checkpointing: false
+target_ctx: 1024
+eval_every: 200
+eval_rows: 200                # per layer -> 1200 rows x 5 K x 2 conditions per eval
+eval_batch: 64
+save_every: 500
+wandb_project: rl-future-lens
+wandb_group: rl
