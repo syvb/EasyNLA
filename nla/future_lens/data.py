@@ -49,7 +49,7 @@ DEFAULT_TEMPLATE = (
     "<concept>{injection_char}</concept>\n"
     "Output the next {k} tokens the model will produce after this point."
 )
-DEFAULT_K_CHOICES = (1, 2, 3, 5, 9)     # N in {0,1,2,4,8}
+DEFAULT_K_CHOICES = (1, 2, 3, 4, 5, 9)  # N in {0,1,2,3,4,8}: spec's {1,2,4,8} + N=0 sanity + N=3 (success criterion)
 DEFAULT_N_FUTURE = 9
 DEFAULT_N_PREV = 32
 FL_SIDECAR_KEY = "future_lens"
@@ -215,21 +215,30 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
         keep = np.ones(n, dtype=bool)
         if layers is not None and layer_col is not None:
             keep &= np.isin(layer_col, np.asarray(layers))
+        if n_max is not None:
+            budget = n_max - len(rows)
+            kept_idx = np.flatnonzero(keep)
+            if len(kept_idx) > budget:
+                keep[kept_idx[budget:]] = False
         fixed = {}
         for name, dt in (("activation_vector", np.float16), ("target_ids", np.int64),
                          ("target_top5", np.int64), ("target_logp", np.float32),
                          ("prev_ids", np.int64), ("greedy_ids", np.int64)):
             if name in cols:
-                fixed[name] = _fixed_col(rg, name).astype(dt, copy=False)
+                arr = _fixed_col(rg, name).astype(dt, copy=False)
+                # Compact to the kept rows: per-row slices are VIEWS into the row-group
+                # buffer, so without this a --layers filter still pins every layer's
+                # activations in RAM (~10 GB on the 8B train split).
+                fixed[name] = arr[keep] if not keep.all() else np.ascontiguousarray(arr)
         scalars = {c: rg.column(c).to_pylist() for c in cols if c not in fixed}
+        j = 0
         for i in range(n):
             if not keep[i]:
                 continue
-            if n_max is not None and len(rows) >= n_max:
-                break
             row = {c: scalars[c][i] for c in scalars}
             for name, arr in fixed.items():
-                row[name] = arr[i]
+                row[name] = arr[j]
+            j += 1
             if "target_top5" in row:
                 row["target_top5"] = row["target_top5"].reshape(-1, 5)
             rows.append(row)

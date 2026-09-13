@@ -58,15 +58,17 @@ def stop_ids(tokenizer, model=None) -> set[int]:
 def generate_readouts(model, tokenizer, jobs: list[dict], *, inject_char: str, vectors_ref,
                       injection_mode: str, device, eos_ids: set[int], batch_size: int = 32,
                       max_new_tokens: int | None = None, do_sample: bool = False,
-                      temperature: float = 1.0) -> list[list[int]]:
+                      temperature: float = 1.0, return_violations: bool = False):
     """jobs: dicts with `prompt` (messages), `k`, `vector` (raw np/tensor or None for
-    the no-injection condition), `alpha`. Returns EOS-stripped readouts truncated to k.
-    Left-padded batched generation; the injection hook scans for the marker so
-    padding is harmless."""
+    the no-injection condition), `alpha`. Returns EOS-stripped readouts truncated to k
+    (and, with return_violations, a parallel list of length-violation flags: the
+    PRE-truncation length != k, i.e. early EOS or overrun). Left-padded batched
+    generation; the injection hook scans for the marker so padding is harmless."""
     was_training = model.training
     model.eval()
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     outs: list[list[int]] = [None] * len(jobs)   # type: ignore[list-item]
+    viols: list[bool] = [False] * len(jobs)
     # group by whether a vector is present (the hook needs one vector per sequence)
     order = sorted(range(len(jobs)), key=lambda i: (jobs[i]["vector"] is None, jobs[i]["k"]))
     for cs in range(0, len(order), batch_size):
@@ -77,12 +79,13 @@ def generate_readouts(model, tokenizer, jobs: list[dict], *, inject_char: str, v
             # split mixed chunks (cheap; only at the boundary)
             for sub in ([i for i, h in zip(idx, has_vec) if h], [i for i, h in zip(idx, has_vec) if not h]):
                 if sub:
-                    for i, r in zip(sub, generate_readouts(
-                            model, tokenizer, [jobs[i] for i in sub], inject_char=inject_char,
-                            vectors_ref=vectors_ref, injection_mode=injection_mode, device=device,
-                            eos_ids=eos_ids, batch_size=batch_size, max_new_tokens=max_new_tokens,
-                            do_sample=do_sample, temperature=temperature)):
-                        outs[i] = r
+                    ro, vi = generate_readouts(
+                        model, tokenizer, [jobs[i] for i in sub], inject_char=inject_char,
+                        vectors_ref=vectors_ref, injection_mode=injection_mode, device=device,
+                        eos_ids=eos_ids, batch_size=batch_size, max_new_tokens=max_new_tokens,
+                        do_sample=do_sample, temperature=temperature, return_violations=True)
+                    for i, r, v in zip(sub, ro, vi):
+                        outs[i], viols[i] = r, v
             continue
         enc = [encode_prompt(tokenizer, j["prompt"], inject_char) for j in chunk]
         L = max(len(e) for e in enc)
@@ -110,19 +113,22 @@ def generate_readouts(model, tokenizer, jobs: list[dict], *, inject_char: str, v
             resp = gen[r, L:].tolist()
             # cut at the first stop id, then truncate to k
             cut = next((p for p, t in enumerate(resp) if t in eos_ids), len(resp))
-            outs[i], _ = truncate_readout(resp[:cut], chunk[r]["k"], eos_ids)
+            outs[i], viols[i] = truncate_readout(resp[:cut], chunk[r]["k"], eos_ids)
     if was_training:
         model.train()
-    return outs
+    return (outs, viols) if return_violations else outs
 
 
-def score_readout(readout: list[int], row: dict, k: int) -> dict:
-    """Per-offset hit/top-5 flags for one readout against the row's targets."""
+def score_readout(readout: list[int], row: dict, k: int, length_violation: bool | None = None) -> dict:
+    """Per-offset hit/top-5 flags for one readout against the row's targets. A readout
+    shorter than K is a miss at the missing offsets. `len_ok` = no length violation
+    (pre-truncation length == K) when the flag is given, else post-truncation length == K."""
     tgt = np.asarray(row["target_ids"])
     top5 = np.asarray(row["target_top5"]).reshape(-1, 5)
-    p1 = [int(j < len(readout) and int(readout[j]) == int(tgt[j])) for j in range(k)]
-    p5 = [int(j < len(readout) and int(readout[j]) in set(int(x) for x in top5[j])) for j in range(k)]
-    return {"p1": p1, "p5": p5, "exact": int(all(p1)), "len_ok": int(len(readout) == k)}
+    p1 = [int(j < len(readout) and j < len(tgt) and int(readout[j]) == int(tgt[j])) for j in range(k)]
+    p5 = [int(j < len(readout) and j < len(top5) and int(readout[j]) in set(int(x) for x in top5[j])) for j in range(k)]
+    len_ok = (not length_violation) if length_violation is not None else (len(readout) == k)
+    return {"p1": p1, "p5": p5, "exact": int(all(p1)), "len_ok": int(len_ok)}
 
 
 def summarize_by_offset(rows: list[dict], readouts: list[list[int]], ks: list[int]) -> dict:
@@ -152,8 +158,14 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
              device, conditions: list[str], ks: list[int], layers: list[int] | None = None,
              alpha_mult: float = 1.0, wrong_layer: int = 4, docs: dict | None = None,
              batch_size: int = 32, seed: int = 0, tag: dict | None = None,
-             eos_ids: set[int] | None = None, verbose: bool = True) -> list[dict]:
-    """Full controlled eval -> list of JSON records."""
+             eos_ids: set[int] | None = None, verbose: bool = True,
+             dump: list | None = None) -> list[dict]:
+    """Full controlled eval -> list of JSON records. If `dump` is a list, one dict per
+    (row, condition, K) with the raw readout is appended to it (for baselines.py leakage).
+
+    Wrong-layer control: the layer-`wrong_layer` vector of the same position is injected
+    under the ORIGINAL prompt (which names the row's layer) and scaled by the row's
+    layer alpha, so only the vector's content changes, not its norm or the prompt."""
     eos_ids = eos_ids or stop_ids(tokenizer, model)
     layers = layers or fl.layer_indices
     rng = np.random.default_rng(seed)
@@ -169,9 +181,12 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
             if not lrows:
                 continue
             if cond == "shuffled":
+                # cyclic derangement over a random order: every row gets ANOTHER row's vector
                 perm = rng.permutation(len(lrows))
-                perm = np.roll(perm, 1) if len(lrows) > 1 else perm
-                vec_src = [lrows[i]["activation_vector"] for i in perm]
+                src = [None] * len(lrows)
+                for j in range(len(lrows)):
+                    src[perm[j]] = lrows[perm[(j + 1) % len(lrows)]]["activation_vector"]
+                vec_src = src
             elif cond == "wrong_layer":
                 vec_src = [wl.get((int(r["doc_idx"]), int(r["t"]))) for r in lrows]
             elif cond == "none":
@@ -185,11 +200,16 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
                          "vector": vec_src[i], "alpha": fl.alpha(layer, alpha_mult)} for i in keep]
                 if not jobs:
                     continue
-                ro = generate_readouts(model, tokenizer, jobs, inject_char=cfg.injection_char,
-                                       vectors_ref=vectors_ref, injection_mode=injection_mode,
-                                       device=device, eos_ids=eos_ids, batch_size=batch_size)
+                ro, vi = generate_readouts(model, tokenizer, jobs, inject_char=cfg.injection_char,
+                                           vectors_ref=vectors_ref, injection_mode=injection_mode,
+                                           device=device, eos_ids=eos_ids, batch_size=batch_size,
+                                           return_violations=True)
                 srows = [lrows[i] for i in keep]
-                scores = [score_readout(r, row, k) for r, row in zip(ro, srows)]
+                scores = [score_readout(r, row, k, v) for r, row, v in zip(ro, srows, vi)]
+                if dump is not None:
+                    for r, row in zip(ro, srows):
+                        dump.append({"doc_idx": int(row["doc_idx"]), "t": int(row["t"]), "layer": layer, "k": k,
+                                     "condition": cond, "seed": seed, "readout": [int(x) for x in r], **tag})
                 N = k - 1
                 base = {"layer": layer, "N": N, "k": k, "condition": cond,
                         "injection": injection_mode, "seed": seed, **tag}
@@ -207,6 +227,8 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
                     prefixes = [docs[int(row["doc_idx"])][: int(row["t"]) + 1] for row in srows]
                     lp = target_logp_reward(model, prefixes, ro, device, pad_id=pad_id,
                                             micro_batch=max(1, batch_size // 4))
+                    # mean over NON-EMPTY readouts only (selection bias if the policy stops first;
+                    # `len_ok` records how often that happens)
                     vals = [-v for v in lp if v is not None]
                     if vals:
                         records.append({**base, "metric": "surprisal", "value": float(np.mean(vals)), "n": len(vals)})
@@ -266,6 +288,10 @@ def main(argv=None):
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--tag", default=None, help="JSON dict merged into every record (e.g. checkpoint name)")
+    p.add_argument("--checkpoint-name", default=None, help="record `checkpoint` (default: adapter path)")
+    p.add_argument("--group", default=None, help="record `group` (seed-agnostic run family; plots pool seeds by it)")
+    p.add_argument("--dump-readouts", default=None,
+                   help="JSONL of per-row readouts (doc_idx, t, layer, k, condition, readout) for `baselines leakage`")
     args = p.parse_args(argv)
 
     from transformers import AutoTokenizer
@@ -300,11 +326,20 @@ def main(argv=None):
     register_injection(model, args.injection, vectors_ref, cfg.injection_token_id,
                        cfg.injection_left_neighbor_id, cfg.injection_right_neighbor_id, affine)
     tag = json.loads(args.tag) if args.tag else {}
+    if args.checkpoint_name:
+        tag["checkpoint"] = args.checkpoint_name
+    if args.group:
+        tag["group"] = args.group
     tag.setdefault("checkpoint", args.adapter or "base")
+    dump = [] if args.dump_readouts else None
     recs = evaluate(model, tokenizer, rows, fl, cfg, injection_mode=args.injection, vectors_ref=vectors_ref,
                     device=device, conditions=conditions, ks=ks, layers=layers, alpha_mult=args.alpha_mult,
-                    wrong_layer=args.wrong_layer, docs=docs, batch_size=args.batch_size, seed=args.seed, tag=tag)
+                    wrong_layer=args.wrong_layer, docs=docs, batch_size=args.batch_size, seed=args.seed, tag=tag,
+                    dump=dump)
     write_records(recs, args.out)
+    if dump is not None:
+        write_records(dump, args.dump_readouts)
+        print(f"[eval] dumped {len(dump)} readouts -> {args.dump_readouts}")
     print(f"[eval] wrote {len(recs)} records -> {args.out}")
 
 

@@ -5,14 +5,24 @@
           decoder gain must be measured against. CPU.
   probe   linear probe h_t^l -> x_{t+1+N} ("Linear Vocab" in Future Lens): one
           Linear(d, vocab) per (layer, N), trained on train.parquet, scored on eval.
-  leakage linear probe h_t^l -> x_{t-j}, j = 1..4: how much of the PAST is linearly
-          readable from the state. Reported next to the future probes; a decoder
-          whose readouts track an n-gram model of the past more than the true
-          future is guessing from leaked context.
+  probe --leakage  linear probe h_t^l -> x_{t-j}, j = 1..4: how much of the PAST is
+          linearly readable from the state.
+  leakage the other half of the spec's leakage check: given a per-row readout dump from
+          `eval.py --dump-readouts`, compare each decoder readout with (a) the true
+          future and (b) what a preceding-token n-gram model predicts from x_<=t.
+          A decoder that agrees with the n-gram model more than with the future is
+          reading the past and guessing.
 
-    python -m nla.future_lens.baselines ngram --parquet <data>/eval.parquet --out evals/baselines.jsonl
+    python -m nla.future_lens.baselines ngram --parquet <data>/eval.parquet --out evals/baselines.jsonl \
+        [--hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 --base-ckpt Qwen/Qwen3-8B]
     python -m nla.future_lens.baselines probe --train-parquet <data>/train.parquet \
         --parquet <data>/eval.parquet --out evals/baselines.jsonl [--leakage]
+    python -m nla.future_lens.baselines leakage --parquet <data>/eval.parquet \
+        --readouts evals/readouts_rl.jsonl --out evals/leakage.jsonl
+
+Eval documents are never counted by the n-gram models: docs.parquet's eval split is
+excluded by doc_idx, and extra sources (--hf-corpus / --extra-docs) are screened by a
+hash of each document's first 64 token ids.
 """
 
 from __future__ import annotations
@@ -70,6 +80,50 @@ class NGramModel:
         return out
 
 
+def _doc_key(ids) -> tuple:
+    return tuple(int(x) for x in list(ids)[:64])
+
+
+def ngram_sources(args, fl, docs: dict, eval_docs: set):
+    """Yield token-id docs for counting, never an eval document."""
+    eval_keys = {_doc_key(docs[d]) for d in eval_docs}
+    for di, ids in docs.items():
+        if di not in eval_docs:
+            yield ids
+    if args.extra_docs:
+        for ids in _iter_extra_token_docs(args.extra_docs, args.extra_docs_max):
+            if _doc_key(ids) not in eval_keys:
+                yield ids
+    if args.hf_corpus:
+        from datasets import load_dataset
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(args.base_ckpt)
+        start = args.hf_start
+        if start is None:   # default: right after the slice the collector consumed
+            sl = fl.extra.get("corpus_slice") or {}
+            start = int(sl.get("start", 0)) + int(sl.get("length", 0))
+        ds = load_dataset(args.hf_corpus, name=args.hf_config, split=args.hf_split, streaming=True).skip(start)
+        n = 0
+        for ex in ds:
+            ids = tok.encode(ex[args.text_column] or "", add_special_tokens=False)[: args.hf_max_len]
+            if len(ids) < 32:
+                continue
+            if _doc_key(ids) in eval_keys:
+                continue
+            yield ids
+            n += 1
+            if n >= args.hf_docs:
+                break
+
+
+def build_ngram(order: int, sources) -> tuple[NGramModel, int]:
+    m = NGramModel(order)
+    n_tok = 0
+    for ids in sources:
+        m.add(ids); n_tok += len(ids)
+    return m, n_tok
+
+
 def run_ngram(args):
     fl = load_fl_meta(args.sidecar or args.parquet)
     docs = load_docs(resolve_docs_path(args.parquet, fl))
@@ -81,15 +135,7 @@ def run_ngram(args):
     recs = []
     for order in [int(x) for x in args.orders.split(",")]:
         t0 = time.time()
-        m = NGramModel(order)
-        n_tok = 0
-        for di, ids in docs.items():
-            if di in eval_docs:
-                continue                           # eval docs never counted
-            m.add(ids); n_tok += len(ids)
-        if args.extra_docs:
-            for ids in _iter_extra_token_docs(args.extra_docs, args.extra_docs_max):
-                m.add(ids); n_tok += len(ids)
+        m, n_tok = build_ngram(order, ngram_sources(args, fl, docs, eval_docs))
         nf = fl.n_future
         hits = defaultdict(list); hits5 = defaultdict(list)
         for (di, t), r in positions.items():
@@ -108,6 +154,59 @@ def run_ngram(args):
               " ".join(f"p1@{N}={np.mean(hits[N]):.3f}" for N in range(nf)) + f" ({time.time() - t0:.0f}s)")
     write_records(recs, args.out)
     print(f"[ngram] wrote {len(recs)} records -> {args.out}")
+
+
+def run_leakage(args):
+    """Readout agreement with the true future vs with a past-only n-gram prediction.
+
+    For every dumped readout (row = (doc_idx, t, layer, k, condition)) and offset j < k:
+        agree_future[j] = 1[y_j == x_{t+1+j}]
+        agree_ngram[j]  = 1[y_j == g_j]   where g = n-gram greedy rollout from x_<=t
+    plus the n-gram's own accuracy 1[g_j == x_{t+1+j}] and the agreement on positions
+    where the n-gram is WRONG (the diagnostic: a lens should not follow a wrong prior).
+    Records go out in the standard JSONL format with condition = the dump's condition.
+    """
+    fl = load_fl_meta(args.sidecar or args.parquet)
+    docs = load_docs(resolve_docs_path(args.parquet, fl))
+    eval_rows = load_fl_rows(args.parquet, keep_activations=False, columns=["doc_idx", "t", "target_ids"])
+    eval_docs = {int(r["doc_idx"]) for r in eval_rows}
+    tgt = {(int(r["doc_idx"]), int(r["t"])): np.asarray(r["target_ids"]) for r in eval_rows}
+    m, n_tok = build_ngram(args.order, ngram_sources(args, fl, docs, eval_docs))
+    print(f"[leakage] {args.order}-gram on {n_tok} tokens")
+    dumps = [json.loads(l) for l in open(args.readouts) if l.strip()]
+    cache: dict[tuple, list[int]] = {}
+    acc = defaultdict(lambda: defaultdict(list))
+    for d in dumps:
+        key = (int(d["doc_idx"]), int(d["t"]))
+        if key not in cache:
+            cache[key] = m.greedy(docs[key[0]][: key[1] + 1], fl.n_future)
+        g, x, y = cache[key], tgt[key], d["readout"]
+        gk = (d.get("checkpoint", "?"), d.get("group") or d.get("checkpoint", "?"), d["condition"],
+              int(d["layer"]), int(d["k"]))
+        for j in range(int(d["k"])):
+            if j >= len(y):
+                break
+            af, an, ng = int(y[j] == int(x[j])), int(y[j] == g[j]), int(g[j] == int(x[j]))
+            acc[gk][("agree_future", j)].append(af)
+            acc[gk][("agree_ngram", j)].append(an)
+            acc[gk][("ngram_correct", j)].append(ng)
+            if not ng:
+                acc[gk][("agree_ngram_when_ngram_wrong", j)].append(an)
+                acc[gk][("agree_future_when_ngram_wrong", j)].append(af)
+    recs = []
+    for (ck, group, cond, layer, k), stats in acc.items():
+        for (metric, j), v in stats.items():
+            recs.append({"layer": layer, "N": j, "k": k, "condition": cond, "injection": "n/a",
+                         "seed": int(dumps[0].get("seed", 0)), "checkpoint": ck, "group": group,
+                         "metric": f"leak_{metric}", "value": float(np.mean(v)), "n": len(v),
+                         "ngram_order": args.order})
+    write_records(recs, args.out)
+    for (ck, group, cond, layer, k), stats in sorted(acc.items()):
+        af = np.mean(stats[("agree_future", k - 1)]); an = np.mean(stats[("agree_ngram", k - 1)])
+        aw = stats.get(("agree_ngram_when_ngram_wrong", k - 1), [])
+        print(f"[leakage] {ck} {cond:9s} L{layer:2d} K={k}: agree(future)={af:.3f} agree(ngram)={an:.3f} "
+              f"agree(ngram | ngram wrong)={np.mean(aw) if aw else float('nan'):.3f} n={len(stats[('agree_future', k - 1)])}")
+    print(f"[leakage] wrote {len(recs)} records -> {args.out}")
 
 
 def _iter_extra_token_docs(path: str, max_docs: int):
@@ -209,9 +308,24 @@ def main(argv=None):
     n.add_argument("--parquet", required=True, help="eval.parquet")
     n.add_argument("--sidecar", default=None)
     n.add_argument("--orders", default="2,4")
-    n.add_argument("--extra-docs", default=None, help="extra .jsonl with `ids` rows for counts")
-    n.add_argument("--extra-docs-max", type=int, default=0)
     n.add_argument("--out", required=True)
+    lk = sub.add_parser("leakage")
+    lk.add_argument("--parquet", required=True, help="eval.parquet")
+    lk.add_argument("--sidecar", default=None)
+    lk.add_argument("--readouts", required=True, help="JSONL from eval.py --dump-readouts")
+    lk.add_argument("--order", type=int, default=4)
+    lk.add_argument("--out", required=True)
+    for sp in (n, lk):
+        sp.add_argument("--extra-docs", default=None, help="extra .jsonl with `ids` rows for counts")
+        sp.add_argument("--extra-docs-max", type=int, default=0)
+        sp.add_argument("--hf-corpus", default=None, help="stream extra counting docs from an HF dataset")
+        sp.add_argument("--hf-config", default=None)
+        sp.add_argument("--hf-split", default="train")
+        sp.add_argument("--hf-start", type=int, default=None, help="default: after the collector's slice")
+        sp.add_argument("--hf-docs", type=int, default=20000)
+        sp.add_argument("--hf-max-len", type=int, default=1024)
+        sp.add_argument("--text-column", default="text")
+        sp.add_argument("--base-ckpt", default="Qwen/Qwen3-8B", help="tokenizer for --hf-corpus")
     q = sub.add_parser("probe")
     q.add_argument("--train-parquet", required=True)
     q.add_argument("--parquet", required=True, help="eval.parquet")
@@ -228,7 +342,7 @@ def main(argv=None):
     q.add_argument("--device", default="auto")
     q.add_argument("--out", required=True)
     args = p.parse_args(argv)
-    {"ngram": run_ngram, "probe": run_probe}[args.cmd](args)
+    {"ngram": run_ngram, "probe": run_probe, "leakage": run_leakage}[args.cmd](args)
 
 
 if __name__ == "__main__":

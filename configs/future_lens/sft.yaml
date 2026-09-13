@@ -6,13 +6,14 @@ injection: replace_embed      # ablation arm: karvonen
 alpha_mult: 1.0               # alpha sweep: 0.5 / 1 / 2 / 4
 use_lora: true
 lora_r: 64
-lora_alpha: 128               # rsLoRA scaling (alpha/sqrt(r)) is on in train_sft
-quant: none                   # bf16 base; 8B fits on 48-80 GB with LoRA
+lora_alpha: 16                # rsLoRA is ON in train_sft: scale = alpha/sqrt(r) = 2.0 (repo default r128/a16 = 1.4)
+quant: none
+layers: "8,12,16,20,24"   # layer 4 is collected for the wrong-layer control only                   # bf16 base; 8B fits on 48-80 GB with LoRA
 batch_size: 32
 gradient_accumulation_steps: 2  # eff. batch 64 rows (~15 readout tokens each)
 lr: 1.0e-4
 min_lr: 1.0e-5
-lr_warmup_steps: 100          # ~3% of a 1-epoch run over 1.2M rows at eff. batch 64 is ~560; 100 is fine for the sweep
+lr_warmup_steps: 600          # spec: 3% of the ~20k-step epoch (1.3M rows / eff. batch 64)
 max_grad_norm: 1.0
 max_len: 128                  # prompt ~60 tokens + readout <= 10
 gradient_checkpointing: false

@@ -27,12 +27,15 @@ $PY -m nla.future_lens.train_rl --config configs/future_lens/smoke_cpu.yaml \
 $PY -m nla.future_lens.eval --base-ckpt Qwen/Qwen3-0.6B --adapter "$OUT/rl/iter_000002" \
     --parquet "$OUT/data/eval.parquet" --out "$OUT/evals/rl.jsonl" \
     --conditions real,shuffled,none,wrong_layer --ks 1,3 --layers 8,12 --wrong-layer 4 \
-    --max-rows 4 --batch-size 8 --device cpu --tag '{"checkpoint":"rl_smoke"}'
+    --max-rows 4 --batch-size 8 --device cpu --checkpoint-name rl_smoke --group rl_smoke \
+    --dump-readouts "$OUT/evals/readouts_rl.jsonl"
 
 $PY -m nla.future_lens.baselines ngram --parquet "$OUT/data/eval.parquet" --out "$OUT/evals/baselines.jsonl"
+$PY -m nla.future_lens.baselines leakage --parquet "$OUT/data/eval.parquet" \
+    --readouts "$OUT/evals/readouts_rl.jsonl" --out "$OUT/evals/leakage.jsonl" --order 4
 $PY -m nla.future_lens.baselines probe --train-parquet "$OUT/data/train.parquet" \
     --parquet "$OUT/data/eval.parquet" --base-ckpt Qwen/Qwen3-0.6B --layers 8 --epochs 1 \
     --batch 32 --leakage --device cpu --out "$OUT/evals/baselines.jsonl"
 
-$PY -m nla.future_lens.plots "$OUT"/evals/*.jsonl --out "$OUT/plots"
+$PY -m nla.future_lens.plots "$OUT"/evals/rl.jsonl "$OUT"/evals/baselines.jsonl --out "$OUT/plots"
 echo "SMOKE OK -> $OUT"

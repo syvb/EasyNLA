@@ -65,6 +65,19 @@ def test_exact_match_reward():
     assert r == pytest.approx(-0.1) and viol
 
 
+def test_per_offset_hits_and_logp_sum_reward():
+    from nla.future_lens.rewards import per_offset_hits, target_logp_sum_reward
+    tgt = np.array([5, 6, 7, 8, 9])
+    assert per_offset_hits([5, 0], tgt, 4) == [1, 0, 0, 0]          # short readout = misses, no None
+    assert per_offset_hits([5, 6, 7, 8, 9, 9], tgt, 9) == [1, 1, 1, 1, 1, 0, 0, 0, 0]  # k > len(target) safe
+    # summed reward: an honest K=9 readout at -3.5/token beats "1 good token + EOS"
+    honest = target_logp_sum_reward([-3.5] * 9, 9)
+    lazy = target_logp_sum_reward([-1.5], 9, length_violation=True)
+    assert honest == pytest.approx(-3.5) and lazy < honest
+    assert target_logp_sum_reward(None, 3) == pytest.approx(-4.0)
+    assert target_logp_sum_reward([-1.0, -1.0, -1.0], 3) == pytest.approx(-1.0)
+
+
 def test_group_advantages():
     from nla.future_lens.rewards import group_advantages
     r = torch.tensor([1.0, 0.0, 1.0, 0.0, 0.5, 0.5, 0.5, 0.5])
@@ -91,8 +104,9 @@ def test_ngram_model_greedy():
     m4 = NGramModel(order=4)
     for s in seqs:
         m4.add(s)
-    assert m4.predict([3, 1, 2]) == 3        # backs off from unseen 4-gram context? no: seen
-    assert m4.predict([9, 9, 1]) == 2        # backoff to bigram
+    assert m4.predict([3, 1, 2]) == 3        # trigram context (3,1,2) seen -> 3
+    assert m4.predict([9, 9, 1]) == 2        # unseen higher-order contexts -> backoff to bigram
+    assert NGramModel(order=2).predict([7]) == 0   # empty model -> 0, no crash
 
 
 def test_shuffle_activations_changes_rows():

@@ -1,13 +1,15 @@
 """Aggregate future-lens eval JSONL records into tables (and PNGs if matplotlib is present).
 
 Every eval / baseline run appends records {layer, N, condition, metric, value, seed,
-checkpoint, ...}. This script is the ONLY consumer: it groups by (checkpoint,
-condition, layer, N), averages over seeds (mean +- std), and prints
+checkpoint, group?, ...}. This script is the ONLY consumer: it groups by (group or
+checkpoint, condition, layer, N), keeps the LAST record per seed (re-running an eval
+appends, it must not count twice), averages over seeds (mean +- std), and prints
 
   * the headline table: p1 per (layer, N) for real vs shuffled and their gap,
     per checkpoint (SFT, GRPO seeds...), with the n-gram and linear-probe baselines
-  * the success-criteria check from the spec: GRPO - SFT gain at N=1,2 (offsets 1-2
-    in our convention) on real activations vs the same gain on shuffled activations
+  * the success-criteria check from the spec: GRPO - SFT gain at N=2 or N=3 (our N is
+    the spec's N: N=1 <-> x_{t+2}, so N=2,3 <-> x_{t+3}, x_{t+4}; K=4 is in k_choices so
+    N=3 is a first-class prompt) on real activations vs the same gain on shuffled ones
 
     python -m nla.future_lens.plots evals/*.jsonl --out plots/
 """
@@ -34,14 +36,17 @@ def load(paths: list[str]) -> list[dict]:
 
 
 def key_of(r: dict) -> tuple:
-    return (str(r.get("checkpoint")), str(r.get("condition")), int(r.get("layer", -1)), int(r["N"]), r["metric"])
+    name = r.get("group") or r.get("checkpoint")
+    return (str(name), str(r.get("condition")), int(r.get("layer", -1)), int(r["N"]), r["metric"])
 
 
 def aggregate(recs: list[dict]) -> dict[tuple, dict]:
-    by = defaultdict(list)
+    """One value per (key, seed) — the last record wins — then mean/std over seeds."""
+    per_seed: dict[tuple, dict] = defaultdict(dict)
     for r in recs:
-        by[key_of(r)].append(float(r["value"]))
-    return {k: {"mean": float(np.mean(v)), "std": float(np.std(v)), "n_seeds": len(v)} for k, v in by.items()}
+        per_seed[key_of(r)][r.get("seed", 0)] = float(r["value"])
+    return {k: {"mean": float(np.mean(list(v.values()))), "std": float(np.std(list(v.values()))),
+                "n_seeds": len(v)} for k, v in per_seed.items()}
 
 
 def table(agg: dict, metric: str = "p1") -> str:
@@ -70,8 +75,8 @@ def table(agg: dict, metric: str = "p1") -> str:
     return "\n".join(lines)
 
 
-def success_check(agg: dict, sft: str, rl: str, offsets=(1, 2), metric="p1") -> str:
-    """Spec: GRPO-SFT gain > 5pp at N=1 or 2 on real activations, shuffled gains < 1/3 of it."""
+def success_check(agg: dict, sft: str, rl: str, offsets=(2, 3), metric="p1") -> str:
+    """Spec: GRPO-SFT gain > 5pp at N=2 or N=3 on real activations, shuffled gains < 1/3 of it."""
     out = []
     for layer in sorted({k[2] for k in agg if k[0] == rl}):
         for N in offsets:
@@ -126,13 +131,15 @@ def main(argv=None):
     p.add_argument("jsonl", nargs="+")
     p.add_argument("--out", default=None, help="directory for PNGs + summary.md")
     p.add_argument("--metric", default="p1")
-    p.add_argument("--sft", default=None, help="checkpoint name of the SFT eval for the success check")
-    p.add_argument("--rl", default=None, help="checkpoint name of the GRPO eval for the success check")
+    p.add_argument("--sft", default=None, help="group/checkpoint name of the SFT eval for the success check")
+    p.add_argument("--rl", default=None, help="group/checkpoint name of the GRPO eval for the success check")
+    p.add_argument("--offsets", default="2,3", help="N values for the success check (spec: 2 or 3)")
     args = p.parse_args(argv)
     agg = aggregate(load(args.jsonl))
     txt = table(agg, args.metric)
     if args.sft and args.rl:
-        txt += "\n\n### success criteria\n" + success_check(agg, args.sft, args.rl, metric=args.metric)
+        offs = tuple(int(x) for x in args.offsets.split(","))
+        txt += "\n\n### success criteria\n" + success_check(agg, args.sft, args.rl, offsets=offs, metric=args.metric)
     print(txt)
     if args.out:
         out = Path(args.out); out.mkdir(parents=True, exist_ok=True)

@@ -5,9 +5,14 @@ Reward conventions (spec Phase 2):
                 tokens; readouts are truncated to K post hoc; a length violation
                 (fewer than K tokens before EOS, or more than K generated) costs
                 `length_penalty`. Free.
-  target_logp : mean log p_target(y_j | true prefix, y_<j) over the (truncated)
-                readout — Future Lens's surprisal, negated. Needs one batched
-                forward of the frozen target (adapters disabled) per step.
+  target_logp : (1/K) [ sum_{j<len} log p_target(y_j | true prefix, y_<j)
+                        - missing_token_penalty * (K - len) ]   (len = tokens before EOS, <= K)
+                Future Lens's surprisal, negated, SUMMED over the K slots so that
+                stopping early is never rewarded: a per-token mean would let "one
+                safe token + EOS" (~ -1.5) beat an honest 9-token readout (~ -3.5).
+                Each missing slot costs `missing_token_penalty` (default 4 nats,
+                about the surprisal of an average natural-text token). Needs one
+                batched forward of the frozen target (adapters disabled) per step.
 
 `None` rewards (unusable rollouts) follow EasyNLA's convention and get the
 `fail_value` floor before the advantage computation.
@@ -40,24 +45,24 @@ def exact_match_reward(resp_ids, target_ids, k: int, *, length_penalty: float = 
     return float(r), bool(viol)
 
 
-def per_offset_hits(resp_ids, target_ids, k: int, eos_ids: set[int] | None = None) -> list[int | None]:
-    """[K] entries: 1/0 per offset, None where the readout is shorter than K."""
+def per_offset_hits(resp_ids, target_ids, k: int, eos_ids: set[int] | None = None) -> list[int]:
+    """[K] entries: 1/0 per offset; a readout shorter than K is a MISS at the missing
+    offsets (same convention as eval.score_readout, so train and eval curves agree)."""
     ids, _ = truncate_readout(list(resp_ids), k, eos_ids or set())
-    out: list[int | None] = []
-    for j in range(k):
-        out.append(None if j >= len(ids) else int(int(ids[j]) == int(target_ids[j])))
-    return out
+    tgt = list(target_ids)
+    return [int(j < len(ids) and j < len(tgt) and int(ids[j]) == int(tgt[j])) for j in range(k)]
 
 
 @torch.no_grad()
-def target_logp_reward(model, prefixes: list[np.ndarray], readouts: list[list[int]], device,
+def target_token_logps(model, prefixes: list[np.ndarray], readouts: list[list[int]], device,
                        *, pad_id: int, micro_batch: int = 16, max_prefix: int = 1024,
-                       disable_adapter=True) -> list[float | None]:
-    """Mean per-token log-prob of each readout under the frozen target given its TRUE
+                       disable_adapter=True) -> list[list[float] | None]:
+    """Per-token log-probs of each readout under the frozen target given its TRUE
     prefix. `model` is the (PEFT-wrapped) policy; the frozen target is the same
     weights with adapters disabled and no injection (the caller must leave
-    vectors_ref[0] = None). Empty readouts -> None."""
-    out: list[float | None] = [None] * len(readouts)
+    vectors_ref[0] = None). Empty readouts -> None. Only the last (max readout + 1)
+    positions' logits are materialised (`logits_to_keep`)."""
+    out: list[list[float] | None] = [None] * len(readouts)
     idx = [i for i, r in enumerate(readouts) if len(r) > 0]
     ctx = model.disable_adapter() if (disable_adapter and hasattr(model, "disable_adapter")) else _nullctx()
     was_training = model.training
@@ -77,19 +82,37 @@ def target_logp_reward(model, prefixes: list[np.ndarray], readouts: list[list[in
                     full = pre + rd
                     ids[row, L - len(full):] = torch.tensor(full, dtype=torch.long)   # left pad
                     attn[row, L - len(full):] = 1
-                logits = model(input_ids=ids.to(device), attention_mask=attn.to(device)).logits
+                n_max = max(len(rd) for _, rd in seqs)
+                logits = model(input_ids=ids.to(device), attention_mask=attn.to(device),
+                               logits_to_keep=n_max + 1).logits       # [B, n_max+1, V]: last positions
                 for row, (pre, rd) in enumerate(seqs):
                     n = len(rd)
-                    pred_pos = torch.arange(L - n - 1, L - 1, device=logits.device)
-                    lg = logits[row].index_select(0, pred_pos).float()
+                    lg = logits[row, -(n + 1):-1].float()            # predicts rd[0..n-1]
                     lp = torch.log_softmax(lg, dim=-1)
                     tgt = torch.tensor(rd, dtype=torch.long, device=logits.device)
-                    out[chunk[row]] = float(lp.gather(1, tgt.unsqueeze(1)).mean())
+                    out[chunk[row]] = lp.gather(1, tgt.unsqueeze(1)).squeeze(1).tolist()
                 del logits
     finally:
         if was_training:
             model.train()
     return out
+
+
+def target_logp_reward(model, prefixes, readouts, device, **kw) -> list[float | None]:
+    """Mean per-token target log-prob (the eval surprisal metric; NOT the RL reward —
+    see `target_logp_sum_reward`)."""
+    return [None if t is None else float(np.mean(t)) for t in target_token_logps(model, prefixes, readouts, device, **kw)]
+
+
+def target_logp_sum_reward(token_logps: list[float] | None, k: int, *, missing_token_penalty: float = 4.0,
+                           length_violation: bool = False, length_penalty: float = 0.1) -> float:
+    """RL reward from per-token target log-probs: sum over produced slots, minus
+    `missing_token_penalty` per slot the readout did not fill, divided by K."""
+    t = token_logps or []
+    r = (float(sum(t)) - missing_token_penalty * max(0, k - len(t))) / max(k, 1)
+    if length_violation:
+        r -= length_penalty
+    return r
 
 
 class _nullctx:

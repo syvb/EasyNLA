@@ -66,7 +66,9 @@ def iter_corpus(args, tokenizer):
     def _tok(text):
         return tokenizer.encode(text, add_special_tokens=False)[: args.max_len]
 
-    if src.endswith(".jsonl") and Path(src).exists():
+    if src.endswith((".jsonl", ".parquet")) and not Path(src).exists():
+        raise FileNotFoundError(f"--corpus {src!r} looks like a local file but does not exist")
+    if src.endswith(".jsonl"):
         with open(src) as f:
             for i, line in enumerate(f):
                 d = json.loads(line)
@@ -76,7 +78,7 @@ def iter_corpus(args, tokenizer):
                 ids = list(ids)[: args.max_len]
                 if len(ids) >= min_len:
                     yield f"{src}:{d.get('doc_id', i)}", ids
-    elif src.endswith(".parquet") and Path(src).exists():
+    elif src.endswith(".parquet"):
         pf = pq.ParquetFile(src)
         n = 0
         for batch in pf.iter_batches(batch_size=256, columns=[args.text_column]):
@@ -88,9 +90,9 @@ def iter_corpus(args, tokenizer):
     else:
         from datasets import load_dataset
         ds = load_dataset(src, name=args.corpus_config, split=args.corpus_split, streaming=True)
-        for i, ex in enumerate(ds):
-            if i < args.corpus_start:
-                continue
+        if args.corpus_start:
+            ds = ds.skip(args.corpus_start)
+        for i, ex in enumerate(ds, start=args.corpus_start):
             ids = _tok(ex[args.text_column] or "")
             if len(ids) >= min_len:
                 yield f"{src}:{args.corpus_split}:{i}", ids
@@ -206,7 +208,10 @@ def main(argv=None):
     tcfg = resolve_text_config(model.config)
     d_model = int(tcfg.hidden_size)
     n_layers = int(tcfg.num_hidden_layers)
-    assert all(0 <= l < n_layers for l in layers), f"layers {layers} out of range for {n_layers} blocks"
+    # hidden_states[n_layers] is POST final-norm, not the raw output of the last block,
+    # so the last block is not a valid extraction layer under the block-output convention.
+    assert all(0 <= l < n_layers - 1 for l in layers), (
+        f"layers {layers} must be in [0, {n_layers - 2}] for a {n_layers}-block model")
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     print(f"[collect] {args.base_ckpt}: d_model={d_model} n_layers={n_layers} layers={layers} "
           f"device={device} dtype={dtype}", flush=True)
@@ -221,6 +226,7 @@ def main(argv=None):
     rng = np.random.default_rng(args.seed)
     schema = fl_schema(d_model, nf, npv)
     norms: dict[int, list[float]] = {l: [] for l in layers}
+    max_abs: dict[int, float] = {l: 0.0 for l in layers}
     stats = {"n_candidates": 0, "n_top1_correct": 0, "n_docs": {"train": 0, "eval": 0},
              "n_positions": {"train": 0, "eval": 0}, "n_rows": {"train": 0, "eval": 0}}
     docs_rows = {"doc_idx": [], "doc_id": [], "split": [], "ids": []}
@@ -285,10 +291,15 @@ def main(argv=None):
                     for l in layers:
                         vec = hs[l][bi, t].float().cpu()
                         norms[l].append(float(vec.norm()))
+                        max_abs[l] = max(max_abs[l], float(vec.abs().max()))
+                        vec16 = vec.to(torch.float16)
+                        assert torch.isfinite(vec16).all(), (
+                            f"layer {l} activation overflows float16 (max |h| = {vec.abs().max():.0f}) "
+                            f"at doc {did} t={t}; store fp32 or exclude this position")
                         k = int(rng.choice(k_choices))
                         pending["prompt"].append(build_prompt_messages(args.template, l, k))
                         pending["response"].append(tokenizer.decode(tgt[:k].tolist()))
-                        pending["activation_vector"].append(vec.to(torch.float16).numpy())
+                        pending["activation_vector"].append(vec16.numpy())
                         pending["activation_layer"].append(l)
                         pending["doc_id"].append(did)
                         pending["n_raw_tokens"].append(t + 1)
@@ -328,14 +339,13 @@ def main(argv=None):
             run_batch()
         flush()
         writer.close()
+        # docs table after every split (a crash in eval leaves train.parquet usable)
+        pq.write_table(pa.Table.from_pydict(docs_rows, schema=docs_schema()), str(out_dir / "docs.parquet"))
         print(f"[collect:{split}] done: {stats['n_docs'][split]} docs, "
               f"{stats['n_positions'][split]} positions, {stats['n_rows'][split]} rows", flush=True)
 
     process_split("train", args.n_train_docs, args.positions_per_doc)
     process_split("eval", args.n_eval_docs, args.eval_positions_per_doc or args.positions_per_doc)
-
-    # ---- docs table ----
-    pq.write_table(pa.Table.from_pydict(docs_rows, schema=docs_schema()), str(out_dir / "docs.parquet"))
 
     # ---- norm quantiles -> alpha ----
     norm_q = {l: {q: float(np.quantile(norms[l], f)) if norms[l] else float("nan")
@@ -344,6 +354,7 @@ def main(argv=None):
     discard = 1.0 - stats["n_top1_correct"] / max(1, stats["n_candidates"])
     stats["discard_fraction_top1"] = discard
     stats["norm_quantiles"] = norm_q
+    stats["max_abs_by_layer"] = max_abs
     stats["injection_scale_by_layer"] = alpha
     stats["wall_s"] = time.time() - t_start
     (out_dir / "collect_stats.json").write_text(json.dumps(stats, indent=2))
@@ -358,7 +369,9 @@ def main(argv=None):
         template=args.template, norm_quantiles=norm_q, injection_scale_by_layer=alpha,
         docs_parquet="docs.parquet", discard_fraction=discard, d_model=d_model,
         extra={"base_model": args.base_ckpt, "require_top1": bool(args.require_top1),
-               "max_len": args.max_len, "min_pos": args.min_pos},
+               "max_len": args.max_len, "min_pos": args.min_pos,
+               "corpus": args.corpus, "corpus_config": args.corpus_config,
+               "corpus_slice": {"start": args.corpus_start, "length": args.n_train_docs + args.n_eval_docs}},
     )
     for split in ("train", "eval"):
         pq_path = out_dir / f"{split}.parquet"

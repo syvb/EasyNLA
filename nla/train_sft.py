@@ -204,7 +204,7 @@ def av_generate_samples(model, tokenizer, rows, cfg, device, *,
         pt = torch.tensor([ids], dtype=torch.long, device=device)
         act = torch.tensor(np.asarray(row["activation_vector"], dtype=np.float32)).unsqueeze(0)
         if fl:
-            act = prepare_vectors(act, float(row.get("inject_alpha", 1.0)), inj_mode)
+            act = prepare_vectors(act, float(row["inject_alpha"]), inj_mode)
         act = act.to(device)
         if vref is not None:
             vref[0] = act
@@ -372,7 +372,8 @@ def build_lr_lambda(warmup_steps, total_steps, min_lr_ratio):
 
 @torch.no_grad()
 def heldout_av_ce(model, tokenizer, rows, cfg, vectors_ref, device, *,
-                  max_len=1024, micro_batch=16, fl=False, injection_mode="karvonen"):
+                  max_len=1024, micro_batch=16, fl=False, injection_mode="karvonen",
+                  drop_last_token=False):
     """Held-out AV val loss: mean token-CE on response tokens over doc-disjoint
     held-out AV rows — the SAME per-response-token CE the AV trains on, so it's
     directly comparable to the train `loss` (train loss is a memorization proxy;
@@ -388,6 +389,11 @@ def heldout_av_ce(model, tokenizer, rows, cfg, vectors_ref, device, *,
             logits = model(input_ids=ids, attention_mask=attn).logits.float()
         finally:
             vectors_ref[0] = None
+        if drop_last_token:
+            # exclude the trailing EOS from the count (readout tokens only) — the
+            # alpha-selection gap should not be diluted by a trivially-learned stop token
+            last = (loss_mask.cumsum(1) == loss_mask.sum(1, keepdim=True)) & (loss_mask > 0)
+            loss_mask = loss_mask * (~last).float()
         shift_logits = logits[:, :-1].contiguous()
         shift_targets = ids[:, 1:].to(shift_logits.device).contiguous()
         shift_mask = loss_mask[:, 1:].to(shift_logits.device).contiguous()
@@ -458,7 +464,7 @@ def _av_prepare_chunk(rows, tokenizer, inject_char, device, max_len=1024, *,
         dtype=torch.float32,
     )
     if fl:
-        alphas = torch.tensor([float(r.get("inject_alpha", 1.0)) for r in rows])
+        alphas = torch.tensor([float(r["inject_alpha"]) for r in rows])   # KeyError = caller forgot to set it
         v_batch = prepare_vectors(v_batch, alphas, injection_mode)
     return batch_ids, attn, loss_mask, v_batch.to(device)
 
@@ -653,6 +659,10 @@ def main():
         assert args.mode == "av", "--future-lens is an AV-mode option"
     if args.affine:
         assert args.injection == "replace_embed", "--affine needs --injection replace_embed"
+    assert args.injection == "karvonen" or args.future_lens, (
+        "--injection replace_embed needs --future-lens: the per-layer alpha that scales the "
+        "injected vector lives in the future-lens sidecar; a legacy sidecar has none."
+    )
     if args.lr is None:
         # Mode-aware default: non-comp AV warmstart is 1e-4 (2x-data 1-epoch best, held-out
         # val ppl 3.86; optimum dropped from the old 1x 2e-4 after the data doubled);
@@ -846,7 +856,9 @@ def main():
     if args.future_lens:
         fl_meta = load_fl_meta(args.sidecar)
         _layers = [int(x) for x in args.layers.split(",")] if args.layers else None
-        rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=_layers)
+        rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=_layers,
+                            columns=["prompt", "response", "activation_vector", "activation_layer",
+                                     "target_ids", "k", "doc_id"])
         for r in rows:
             r["inject_alpha"] = fl_meta.alpha(int(r["activation_layer"]), args.alpha_mult)
         if args.shuffle_activations:
@@ -920,7 +932,10 @@ def main():
     heldout_shuf_rows = None
     if args.mode == "av" and args.heldout_parquet and args.future_lens:
         _hl = [int(x) for x in args.layers.split(",")] if args.layers else None
-        heldout_av_rows = load_fl_rows(args.heldout_parquet, args.heldout_rows, layers=_hl)
+        heldout_av_rows = load_fl_rows(
+            args.heldout_parquet, args.heldout_rows, layers=_hl,
+            columns=["prompt", "response", "activation_vector", "activation_layer", "target_ids",
+                     "target_top5", "k", "doc_id", "p_top1"])
         for r in heldout_av_rows:
             r["inject_alpha"] = fl_meta.alpha(int(r["activation_layer"]), args.alpha_mult)
         heldout_shuf_rows = [dict(r) for r in heldout_av_rows]
@@ -1144,8 +1159,16 @@ def main():
                     s_ce, _ = heldout_av_ce(
                         model, tokenizer, heldout_shuf_rows, cfg, vectors_ref, device,
                         max_len=args.max_len, fl=True, injection_mode=args.injection)
+                    r_ce, _ = heldout_av_ce(
+                        model, tokenizer, heldout_av_rows, cfg, vectors_ref, device,
+                        max_len=args.max_len, fl=True, injection_mode=args.injection, drop_last_token=True)
+                    rs_ce, _ = heldout_av_ce(
+                        model, tokenizer, heldout_shuf_rows, cfg, vectors_ref, device,
+                        max_len=args.max_len, fl=True, injection_mode=args.injection, drop_last_token=True)
                 log["heldout/shuffled_loss"] = s_ce
                 log["heldout/ce_gap"] = s_ce - h_ce
+                log["heldout/readout_loss"] = r_ce              # readout tokens only (no EOS)
+                log["heldout/readout_ce_gap"] = rs_ce - r_ce    # the alpha-selection number
                 from nla.future_lens.eval import generate_readouts, stop_ids, summarize_by_offset
                 _g_rows = heldout_av_rows[: args.heldout_gen_rows]
                 _jobs = [{"prompt": r["prompt"], "k": int(r["k"]), "vector": r["activation_vector"],
@@ -1161,7 +1184,8 @@ def main():
                         log[f"heldout/{_k2}"] = _v2
                 _offs = " ".join(f"p1@{j}={_summ.get(f'p1_off{j}', float('nan')):.2f}"
                                  for j in range(9) if f"p1_off{j}" in _summ)
-                print(f"  [heldout@{step}] shuffled_loss {s_ce:.4f} | gap {s_ce - h_ce:+.4f} | "
+                print(f"  [heldout@{step}] shuffled_loss {s_ce:.4f} | gap {s_ce - h_ce:+.4f} "
+                      f"(readout-only gap {rs_ce - r_ce:+.4f}) | "
                       f"exact {_summ.get('exact', float('nan')):.3f} | {_offs}", flush=True)
             model.train()
         # ---- held-out FVE (AR mode, doc-disjoint) ----

@@ -80,6 +80,8 @@ def register_replace_embed_hook(model, vectors_ref, inj_id, left_id, right_id,
             return output
         v = v.to(output.device)
         if affine is not None:
+            if next(affine.parameters()).device != output.device:   # device_map=auto
+                affine.to(output.device)
             v = affine(v)
         return inject_at_marked_positions(
             ids.to(output.device), output, v, inj_id, left_id, right_id,

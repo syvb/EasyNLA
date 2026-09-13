@@ -4,8 +4,10 @@ Fork of nla/train_rl_self_contained.py with the AR critic removed and the reward
 replaced by a future-token reward:
 
   --reward exact_match  r = (1/K) sum_j 1[y_j == x_{t+1+j}]  (length violation -0.1)
-  --reward target_logp  r = mean log p_target(y | true prefix)  (frozen target = same
-                        weights, adapters disabled, no injection; prefix from docs.parquet)
+  --reward target_logp  r = [sum_j log p_target(y_j | true prefix) - c * (#missing slots)] / K
+                        (frozen target = same weights, adapters disabled, no injection;
+                        prefix from docs.parquet; c = --missing-token-penalty so that
+                        stopping early is never rewarded)
 
 Kept from EasyNLA: the policy LoRA is the SFT adapter continued in place, with a
 frozen copy loaded as adapter "reference" for the KL term (the --av-adapter
@@ -16,9 +18,12 @@ Adam state.
 
 Changed: all B x G rollouts run in ONE batched generate() (readouts are <= 12
 tokens, so rollout time is dominated by per-call overhead); advantages default to
-Dr. GRPO (group-mean only, --adv-norm none); per-step logs include the within-
-group reward std (must stay > 0 or there is no gradient); the periodic eval is the
-controlled future-lens eval (real vs shuffled precision@1 per layer/N).
+Dr. GRPO: group-mean only (--adv-norm none) AND a constant per-sequence normaliser
+(--seq-agg const scales each sample's token-mean surrogate by n_resp / max_new_tokens,
+i.e. sum over tokens / constant; the KL term stays a per-token mean); per-step logs
+include the within-group reward std (must stay > 0 or there is no gradient); the
+periodic eval is the controlled future-lens eval (real vs shuffled precision@1 per
+layer/N) on a seeded random subsample of eval rows per layer.
 
     python -m nla.future_lens.train_rl --config configs/future_lens/rl.yaml \
         --base-ckpt Qwen/Qwen3-8B --av-ckpt <sft>/iter_XXXXXXX \
@@ -32,6 +37,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import time
 from collections import defaultdict
@@ -50,8 +56,8 @@ from nla.future_lens.data import (
 from nla.future_lens.eval import evaluate, stop_ids, write_records
 from nla.future_lens.inject import INJECTION_MODES, AffineInjector, prepare_vectors, register_injection
 from nla.future_lens.rewards import (
-    REWARD_KINDS, exact_match_reward, group_advantages, per_offset_hits, target_logp_reward,
-    truncate_readout,
+    REWARD_KINDS, exact_match_reward, group_advantages, per_offset_hits, target_logp_sum_reward,
+    target_token_logps, truncate_readout,
 )
 from nla.injection import marker_well_formed
 from nla.schema import sidecar_path_for
@@ -106,7 +112,6 @@ def rollout_batch(actor, tokenizer, jobs: list[dict], *, inject_char, vectors_re
                 "prompt_ids": e, "resp_ids": resp,
                 "full_ids": torch.tensor(e + resp, dtype=torch.long),
                 "prompt_len": len(e), "group": gi, "job": jobs[gi],
-                "stopped": bool(resp) and resp[-1] in eos_ids,
             }
     if was_training:
         actor.train()
@@ -139,6 +144,9 @@ def main(argv=None):
     p.add_argument("--fail-reward", type=float, default=None,
                    help="reward for an unscorable rollout (empty readout). default: -length_penalty (exact_match) / -10 (target_logp)")
     p.add_argument("--target-ctx", type=int, default=1024, help="target_logp: prefix tokens fed to the frozen target")
+    p.add_argument("--missing-token-penalty", type=float, default=4.0,
+                   help="target_logp: nats charged per readout slot left empty (early EOS)")
+    p.add_argument("--target-micro-batch", type=int, default=32, help="target_logp: sequences per frozen-target forward")
     p.add_argument("--num-steps", type=int, default=4000)
     p.add_argument("--batch-prompts", type=int, default=16)
     p.add_argument("--group-size", type=int, default=8)
@@ -147,6 +155,8 @@ def main(argv=None):
     p.add_argument("--gen-batch", type=int, default=0, help="rows per generate() call; 0 = all B*G at once")
     p.add_argument("--adv-norm", choices=["none", "std"], default="none",
                    help="none = Dr. GRPO (group mean only; no length/variance bias). std = classic GRPO.")
+    p.add_argument("--seq-agg", choices=["const", "token_mean"], default="const",
+                   help="const = Dr. GRPO (sum of token terms / max_new_tokens); token_mean = per-sample mean.")
     p.add_argument("--kl-beta", type=float, default=0.03)
     p.add_argument("--kl-estimator", choices=["k3", "dist"], default="k3")
     p.add_argument("--lr", type=float, default=1e-5)
@@ -258,18 +268,28 @@ def main(argv=None):
         r["inject_alpha"] = fl.alpha(int(r["activation_layer"]), args.alpha_mult)
     print(f"[data] {len(rows)} train rows, layers={sorted({int(r['activation_layer']) for r in rows})}", flush=True)
     docs = None
-    if args.reward == "target_logp" or args.eval_parquet:
+    if args.reward == "target_logp":
         dp = resolve_docs_path(args.parquet, fl)
         docs = load_docs(dp) if dp else None
-        assert docs is not None or args.reward != "target_logp", "target_logp reward needs docs.parquet next to the parquet"
+        assert docs is not None, "target_logp reward needs docs.parquet next to the parquet"
     eval_rows = []
     if args.eval_parquet and args.eval_every > 0:
-        per: dict[int, int] = defaultdict(int)
-        for r in load_fl_rows(args.eval_parquet, layers=layers):
-            l = int(r["activation_layer"])
-            if per[l] < args.eval_rows:
-                eval_rows.append(r); per[l] += 1
-        print(f"[eval] {len(eval_rows)} eval rows ({dict(per)})", flush=True)
+        # seeded random subsample PER LAYER (the parquet is doc-major, so "first N rows"
+        # would be a handful of documents, the same ones at every layer)
+        all_eval = load_fl_rows(args.eval_parquet, layers=layers,
+                                columns=["prompt", "activation_vector", "activation_layer", "target_ids",
+                                         "target_top5", "k", "doc_idx", "t", "p_top1"])
+        by_layer: dict[int, list[dict]] = defaultdict(list)
+        for r in all_eval:
+            by_layer[int(r["activation_layer"])].append(r)
+        _erng = np.random.default_rng(1234 + args.seed)
+        for l, lr in sorted(by_layer.items()):
+            pick = _erng.choice(len(lr), size=min(args.eval_rows, len(lr)), replace=False)
+            eval_rows.extend(lr[i] for i in sorted(pick))
+        del all_eval
+        print(f"[eval] {len(eval_rows)} eval rows "
+              f"({ {l: min(args.eval_rows, len(v)) for l, v in by_layer.items()} }, "
+              f"{len({int(r['doc_idx']) for r in eval_rows})} docs)", flush=True)
     eval_ks = [int(x) for x in args.eval_ks.split(",")] if args.eval_ks else fl.k_choices
 
     # ---- optimizer ----
@@ -287,6 +307,10 @@ def main(argv=None):
         oc = find_optim_ckpt(args.save_dir, args.resume_from_lora)
         if oc is not None:
             st = torch.load(str(oc), map_location="cpu", weights_only=True)
+            _m = re.search(r"iter_(\d+)", str(args.resume_from_lora))
+            if _m and int(_m.group(1)) != int(st.get("step", -1)):
+                print(f"[resume] WARN: resuming weights from step {int(_m.group(1))} but optim_latest.pt "
+                      f"is from step {st.get('step')} — Adam moments will not match these weights", flush=True)
             if args.start_step == 0 and int(st.get("step", 0)) > 0:
                 args.start_step = int(st["step"])
             try:
@@ -360,18 +384,18 @@ def main(argv=None):
                        for s in samples]
         else:
             prefixes = [docs[int(s["job"]["row"]["doc_idx"])][: int(s["job"]["row"]["t"]) + 1] for s in samples]
-            lp = target_logp_reward(actor, prefixes, readouts, device, pad_id=pad_id,
-                                    micro_batch=args.logp_micro_batch, max_prefix=args.target_ctx)
-            rewards = [(args.fail_reward if v is None else v - (args.length_penalty if viol else 0.0))
-                       for v, viol in zip(lp, viols)]
+            tlp = target_token_logps(actor, prefixes, readouts, device, pad_id=pad_id,
+                                     micro_batch=args.target_micro_batch, max_prefix=args.target_ctx)
+            rewards = [target_logp_sum_reward(t, s["job"]["k"], missing_token_penalty=args.missing_token_penalty,
+                                              length_violation=viol, length_penalty=args.length_penalty)
+                       for t, s, viol in zip(tlp, samples, viols)]
         # exact-match statistics are logged for both reward kinds
         em = [exact_match_reward(s["resp_ids"], s["job"]["row"]["target_ids"], s["job"]["k"],
                                  length_penalty=0.0, eos_ids=eos_ids)[0] for s in samples]
         hits_by_off: dict[int, list[int]] = defaultdict(list)
         for s in samples:
             for j, h in enumerate(per_offset_hits(s["resp_ids"], s["job"]["row"]["target_ids"], s["job"]["k"], eos_ids)):
-                if h is not None:
-                    hits_by_off[j].append(h)
+                hits_by_off[j].append(h)
         rewards_t = torch.tensor(rewards, dtype=torch.float32, device=device)
         groups_t = torch.tensor([s["group"] for s in samples], dtype=torch.long, device=device)
         ok_t = torch.tensor(marker_ok, dtype=torch.bool, device=device)
@@ -388,9 +412,15 @@ def main(argv=None):
         prepared = prepare_vectors(raw, alphas, args.injection)
         acts = [prepared[i] for i in range(n)]
         keep = [i for i in range(n) if marker_ok[i]]
+        adv_eff = adv
+        if args.seq_agg == "const":
+            # grpo_token_loss averages over the sample's tokens; scaling the advantage by
+            # n_resp / max_new_tokens turns that into sum(tokens) / constant (Dr. GRPO).
+            n_resp_t = torch.tensor([len(s["resp_ids"]) for s in samples], dtype=torch.float32, device=device)
+            adv_eff = adv * n_resp_t / float(args.max_new_tokens)
         loss, grad_norm, m = grpo_update_microbatched(
             actor, optim, tokenizer, [full_ids[i] for i in keep], [prompt_lens[i] for i in keep],
-            [acts[i] for i in keep], adv[keep], vectors_ref, device,
+            [acts[i] for i in keep], adv_eff[keep], vectors_ref, device,
             micro_batch=args.logp_micro_batch, kl_beta=args.kl_beta, max_grad_norm=args.max_grad_norm,
             kl_estimator=args.kl_estimator, n_total=n,
         )

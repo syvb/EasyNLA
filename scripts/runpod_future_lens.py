@@ -12,7 +12,10 @@ network volume, then terminates itself (unless --keep).
   python scripts/runpod_future_lens.py launch rl       --volume <id> --av-ckpt sft_a1/iter_0018750 --seed 0
   python scripts/runpod_future_lens.py launch eval     --volume <id> --adapters sft_a1/iter_0018750,rl_s0/iter_004000
   python scripts/runpod_future_lens.py launch baselines --volume <id>
-  python scripts/runpod_future_lens.py status | logs <pod_id> | terminate <pod_id>
+  python scripts/runpod_future_lens.py status | terminate <pod_id>
+
+Quoting: the whole bootstrap runs inside `bash -lc '...'`, so stage commands must
+never contain single quotes; JSON tags use escaped double quotes (see _tag_arg).
 
 Credentials: ~/.runpod_key, ~/.wandb_key, ~/.hf_token. Layout on the volume
 (mounted at /workspace): fl/data (parquets), fl/ckpts/<run>, fl/evals/*.jsonl, fl/logs.
@@ -23,8 +26,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
-import time
 
 import httpx
 
@@ -36,6 +39,7 @@ GPU_PREF = [("NVIDIA H100 80GB HBM3", "SECURE"), ("NVIDIA H100 PCIe", "SECURE"),
             ("NVIDIA H100 PCIe", "COMMUNITY"), ("NVIDIA A100 80GB PCIe", "COMMUNITY")]
 BASE = "Qwen/Qwen3-8B"
 WORK = "/workspace/fl"
+WANDB_PROJECT = "rl-future-lens"
 LAYERS = "4,8,12,16,20,24"
 
 
@@ -86,29 +90,44 @@ def stage_cmd(stage: str, a) -> str:
         cmds = []
         for ad in a.adapters.split(","):
             name = ad.replace("/", "_")
+            # `group` = run family (seed stripped) so plots.py pools seeds; `seed` from the run name.
+            run = ad.split("/")[0]
+            m = re.search(r"_s(\d+)$", run)
+            seed = int(m.group(1)) if m else a.seed
+            group = run[: m.start()] if m else run
             cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{ad} "
                         f"--parquet {D}/eval.parquet --out {E}/{name}.jsonl "
                         f"--conditions real,shuffled,none,wrong_layer --wrong-layer 4 --batch-size 64 "
-                        f"--tag '{json.dumps({'checkpoint': name, 'seed': a.seed})}' {a.extra}")
+                        f"--layers 8,12,16,20,24 --dump-readouts {E}/readouts_{name}.jsonl "
+                        f"--seed {seed} --tag {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed})} {a.extra}")
         return " && ".join(cmds)
     if stage == "baselines":
-        return (f"python -m nla.future_lens.baselines ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl && "
+        return (f"python -m nla.future_lens.baselines ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
+                f"--base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 && "
                 f"python -m nla.future_lens.baselines probe --train-parquet {D}/train.parquet --parquet {D}/eval.parquet "
-                f"--base-ckpt {BASE} --leakage --epochs 3 --batch 1024 --out {E}/baselines.jsonl")
+                f"--base-ckpt {BASE} --leakage --epochs 3 --batch 1024 --out {E}/baselines.jsonl && "
+                f"for f in {E}/readouts_*.jsonl; do python -m nla.future_lens.baselines leakage --parquet {D}/eval.parquet "
+                f"--readouts $f --out {E}/leakage.jsonl --base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb "
+                f"--hf-config sample-10BT --hf-docs 20000; done")
     raise SystemExit(f"unknown stage {stage}")
 
 
+def _tag_arg(d: dict) -> str:
+    """JSON for --tag that survives inside the single-quoted `bash -lc '...'` wrapper."""
+    return '"' + json.dumps(d, separators=(",", ":")).replace('"', '\\"') + '"'
+
+
 def bootstrap(stage_command: str, stage: str, keep: bool) -> str:
+    assert "'" not in stage_command, f"stage command contains a single quote (breaks bash -lc quoting): {stage_command}"
     log = f"{WORK}/logs/{stage}_$(date +%Y%m%d_%H%M%S).log"
-    finish = "" if keep else ("python -c \"import runpod,os; runpod.api_key=os.environ['RUNPOD_API_KEY']; "
-                              "runpod.terminate_pod(os.environ['RUNPOD_POD_ID'])\"")
+    finish = "" if keep else "python scripts/pod_terminate.py"
     return (
         "/start.sh >/dev/null 2>&1 & "
         f"mkdir -p {WORK}/logs {WORK}/data {WORK}/ckpts {WORK}/evals && exec > >(tee -a {log}) 2>&1; set -x; "
         f"cd /workspace && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
         "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "
         f"export HF_HOME=/workspace/hf && ({stage_command}) ; echo STAGE_EXIT=$? ; "
-        f"wandb artifact put --type evals --name fl-evals-{stage} {WORK}/evals >/dev/null 2>&1 || true; "
+        f"wandb artifact put --type evals --name {WANDB_PROJECT}/fl-evals-{stage} {WORK}/evals >/dev/null 2>&1 || true; "
         f"{finish}; echo FINISHED; sleep infinity"
     )
 
@@ -129,7 +148,7 @@ def cmd_launch(a):
     if a.dry_run:
         print(cmd); return
     runpod = _runpod()
-    env = {"WANDB_API_KEY": _read("~/.wandb_key"), "HF_TOKEN": _read("~/.hf_token"),
+    env = {"WANDB_API_KEY": _read("~/.wandb_key"), "WANDB_PROJECT": WANDB_PROJECT, "HF_TOKEN": _read("~/.hf_token"),
            "RUNPOD_API_KEY": runpod.api_key, "PYTHONUNBUFFERED": "1", "TOKENIZERS_PARALLELISM": "false",
            "HF_HUB_ENABLE_HF_TRANSFER": "0"}
     attempts = [(a.gpu, a.cloud)] if a.gpu else GPU_PREF
