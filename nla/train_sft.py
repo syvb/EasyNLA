@@ -49,6 +49,10 @@ from nla.schema import (
     normalize_activation,
     resolve_target_scale,
 )
+from nla.future_lens.data import chat_prompt_text, load_fl_meta, load_fl_rows, shuffle_activations
+from nla.future_lens.inject import (
+    INJECTION_MODES, AffineInjector, prepare_vectors, register_replace_embed_hook,
+)
 
 
 # ----------------------------------------------------------------------------
@@ -184,16 +188,24 @@ def av_generate_samples(model, tokenizer, rows, cfg, device, *,
     model.eval()
     out = []
     vref = getattr(model, "_nla_vectors_ref", None)
+    fl = "target_ids" in rows[0] if rows else False
+    inj_mode = getattr(model, "_nla_injection_mode", "karvonen")
     for i, row in enumerate(rows):
-        msgs = [
-            {**m, "content": m["content"].replace(INJECT_PLACEHOLDER, cfg.injection_char)}
-            if isinstance(m.get("content"), str) else m
-            for m in row["prompt"]
-        ]
-        ptxt = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        if fl:
+            ptxt = chat_prompt_text(tokenizer, row["prompt"], cfg.injection_char)
+        else:
+            msgs = [
+                {**m, "content": m["content"].replace(INJECT_PLACEHOLDER, cfg.injection_char)}
+                if isinstance(m.get("content"), str) else m
+                for m in row["prompt"]
+            ]
+            ptxt = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
         ids = tokenizer.encode(ptxt, add_special_tokens=False)
         pt = torch.tensor([ids], dtype=torch.long, device=device)
-        act = torch.tensor(row["activation_vector"], dtype=torch.float32).unsqueeze(0).to(device)
+        act = torch.tensor(np.asarray(row["activation_vector"], dtype=np.float32)).unsqueeze(0)
+        if fl:
+            act = prepare_vectors(act, float(row.get("inject_alpha", 1.0)), inj_mode)
+        act = act.to(device)
         if vref is not None:
             vref[0] = act
         try:
@@ -206,7 +218,9 @@ def av_generate_samples(model, tokenizer, rows, cfg, device, *,
             if vref is not None:
                 vref[0] = None
         resp = tokenizer.decode(gen.sequences[0, pt.shape[1]:], skip_special_tokens=True)
-        expl = extract_explanation(resp)
+        expl = resp if fl else extract_explanation(resp)
+        if fl:
+            expl = f"{resp!r}  || gold {row['response']!r}"
         out.append({
             "idx": i,
             "gen_len": int(gen.sequences.shape[1] - pt.shape[1]),
@@ -358,7 +372,7 @@ def build_lr_lambda(warmup_steps, total_steps, min_lr_ratio):
 
 @torch.no_grad()
 def heldout_av_ce(model, tokenizer, rows, cfg, vectors_ref, device, *,
-                  max_len=1024, micro_batch=16):
+                  max_len=1024, micro_batch=16, fl=False, injection_mode="karvonen"):
     """Held-out AV val loss: mean token-CE on response tokens over doc-disjoint
     held-out AV rows — the SAME per-response-token CE the AV trains on, so it's
     directly comparable to the train `loss` (train loss is a memorization proxy;
@@ -368,7 +382,7 @@ def heldout_av_ce(model, tokenizer, rows, cfg, vectors_ref, device, *,
         chunk = rows[cs:cs + micro_batch]
         ids, attn, loss_mask, v_batch = _av_prepare_chunk(
             chunk, tokenizer, cfg.injection_char, device,
-            max_len=max_len)
+            max_len=max_len, fl=fl, injection_mode=injection_mode)
         vectors_ref[0] = v_batch
         try:
             logits = model(input_ids=ids, attention_mask=attn).logits.float()
@@ -385,26 +399,39 @@ def heldout_av_ce(model, tokenizer, rows, cfg, vectors_ref, device, *,
     return (tot_loss / max(tot_tok, 1)), len(rows)
 
 
-def _av_prepare_chunk(rows, tokenizer, inject_char, device, max_len=1024):
-    """Return (input_ids, attn, loss_mask, v_batch) — all [B, T] (or [B, d])."""
+def _av_prepare_chunk(rows, tokenizer, inject_char, device, max_len=1024, *,
+                      fl=False, injection_mode="karvonen"):
+    """Return (input_ids, attn, loss_mask, v_batch) — all [B, T] (or [B, d]).
+
+    fl=True (future lens): the prompt is chat-formatted with thinking disabled and
+    the response is the row's `target_ids[:k]` token ids VERBATIM (+EOS) — no
+    decode/re-encode round trip (leading-space merges would corrupt the labels).
+    With injection_mode="replace_embed" v_batch is pre-scaled to alpha*h/|h|
+    using the per-row `inject_alpha`."""
     full_ids_list = []
     prompt_lens = []
     for row in rows:
-        # row["prompt"] is list[{"role","content"}] with INJECT_PLACEHOLDER inside.
-        # Replace with the actual injection char so the tokenizer emits the
-        # marker token id at the right position.
-        msgs = [
-            {**m, "content": m["content"].replace(INJECT_PLACEHOLDER, inject_char)}
-            if isinstance(m.get("content"), str) else m
-            for m in row["prompt"]
-        ]
-        prompt_str = tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True,
-        )
+        if fl:
+            prompt_str = chat_prompt_text(tokenizer, row["prompt"], inject_char)
+        else:
+            # row["prompt"] is list[{"role","content"}] with INJECT_PLACEHOLDER inside.
+            # Replace with the actual injection char so the tokenizer emits the
+            # marker token id at the right position.
+            msgs = [
+                {**m, "content": m["content"].replace(INJECT_PLACEHOLDER, inject_char)}
+                if isinstance(m.get("content"), str) else m
+                for m in row["prompt"]
+            ]
+            prompt_str = tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
+            )
         prompt_ids = tokenizer.encode(prompt_str, add_special_tokens=False)
         # Response gets a trailing EOS so the model learns to stop.
-        resp = row["response"] + (tokenizer.eos_token or "")
-        resp_ids = tokenizer.encode(resp, add_special_tokens=False)
+        if "target_ids" in row:
+            resp_ids = [int(x) for x in row["target_ids"][: int(row["k"])]] + [tokenizer.eos_token_id]
+        else:
+            resp = row["response"] + (tokenizer.eos_token or "")
+            resp_ids = tokenizer.encode(resp, add_special_tokens=False)
         full = prompt_ids + resp_ids
         if len(full) > max_len:
             # Truncate response from the right to fit. Prompt is fixed.
@@ -427,10 +454,13 @@ def _av_prepare_chunk(rows, tokenizer, inject_char, device, max_len=1024):
         # "target token" space — positions whose CE we want to count.
         loss_mask[i, prompt_lens[i]:L] = 1
     v_batch = torch.tensor(
-        np.stack([r["activation_vector"] for r in rows]),
-        dtype=torch.float32, device=device,
+        np.stack([np.asarray(r["activation_vector"], dtype=np.float32) for r in rows]),
+        dtype=torch.float32,
     )
-    return batch_ids, attn, loss_mask, v_batch
+    if fl:
+        alphas = torch.tensor([float(r.get("inject_alpha", 1.0)) for r in rows])
+        v_batch = prepare_vectors(v_batch, alphas, injection_mode)
+    return batch_ids, attn, loss_mask, v_batch.to(device)
 
 
 # ----------------------------------------------------------------------------
@@ -584,13 +614,45 @@ def main():
     p.add_argument("--wandb-tags", default=None,
                    help="comma-separated wandb tags for explicit experiments (e.g. 'sweep,lr3e5').")
     p.add_argument("--no-wandb", action="store_true")
+    # ---- future lens (nla/future_lens) ----
+    p.add_argument("--future-lens", action="store_true", default=False,
+                   help="AV mode on a future-lens parquet (nla.future_lens.collect): labels "
+                        "are target_ids[:k], prompts have thinking disabled, injection "
+                        "defaults to NLA embedding replacement with per-layer alpha.")
+    p.add_argument("--injection", choices=INJECTION_MODES, default=None,
+                   help="karvonen (EasyNLA default, layer-1 additive norm-matched) or "
+                        "replace_embed (NLA paper: alpha*h/|h| replaces the marker's input "
+                        "embedding). Default: karvonen, or replace_embed with --future-lens.")
+    p.add_argument("--alpha-mult", type=float, default=1.0,
+                   help="replace_embed: multiply the sidecar's per-layer alpha (alpha sweep).")
+    p.add_argument("--affine", action="store_true", default=False,
+                   help="replace_embed: learnable identity-init affine map before injection "
+                        "(saved as affine.pt in each checkpoint).")
+    p.add_argument("--shuffle-activations", action="store_true", default=False,
+                   help="CONTROL: train on shuffled (same-layer) activations. Used with "
+                        "--future-lens for the alpha-selection proxy L(shuffled) - L(true).")
+    p.add_argument("--layers", default=None,
+                   help="--future-lens: comma list of activation layers to train on "
+                        "(default: all layers in the parquet).")
+    p.add_argument("--heldout-gen-rows", type=int, default=256,
+                   help="--future-lens: rows for the greedy precision@offset monitor.")
+    p.add_argument("--heldout-gen-batch", type=int, default=32)
+    p.add_argument("--device", default="cuda",
+                   help="cuda (default) or cpu (smoke tests; fp32 weights).")
     apply_config_defaults(p)   # YAML (--config) -> argparse defaults; CLI still overrides
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    device = "cuda"
-    dtype = torch.bfloat16
+    device = args.device
+    on_cuda = device.startswith("cuda")
+    dtype = torch.bfloat16 if on_cuda else torch.float32
+    if args.injection is None:
+        args.injection = "replace_embed" if args.future_lens else "karvonen"
+    if args.future_lens:
+        assert args.mode == "av", "--future-lens is an AV-mode option"
+    if args.affine:
+        assert args.injection == "replace_embed", "--affine needs --injection replace_embed"
     if args.lr is None:
         # Mode-aware default: non-comp AV warmstart is 1e-4 (2x-data 1-epoch best, held-out
         # val ppl 3.86; optimum dropped from the old 1x 2e-4 after the data doubled);
@@ -601,10 +663,10 @@ def main():
     # fp32 master weights for full fine-tuning (see --full-ft-dtype help).
     full_ft = (not args.use_lora) and args.quant != "4bit"
     param_dtype = torch.float32 if (full_ft and args.full_ft_dtype == "fp32") else dtype
-    amp_enabled = param_dtype is torch.float32
+    amp_enabled = full_ft and args.full_ft_dtype == "fp32"   # fp32 master weights + bf16 compute
 
     def amp():
-        return torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled)
+        return torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled and on_cuda)
 
     if amp_enabled:
         print("[dtype] full-FT: fp32 params + bf16 autocast compute "
@@ -670,18 +732,35 @@ def main():
             ))
             model.print_trainable_parameters()
         vectors_ref = [None]
-        register_karvonen_hook(
-            model, vectors_ref,
-            cfg.injection_token_id,
-            cfg.injection_left_neighbor_id,
-            cfg.injection_right_neighbor_id,
-        )
+        affine = None
+        if args.injection == "replace_embed":
+            if args.affine:
+                affine = AffineInjector(cfg.d_model).to(device)   # fp32 side module
+            register_replace_embed_hook(
+                model, vectors_ref,
+                cfg.injection_token_id,
+                cfg.injection_left_neighbor_id,
+                cfg.injection_right_neighbor_id,
+                affine,
+            )
+            print(f"[av] injection = replace_embed (alpha_mult={args.alpha_mult}, "
+                  f"affine={affine is not None})")
+        else:
+            register_karvonen_hook(
+                model, vectors_ref,
+                cfg.injection_token_id,
+                cfg.injection_left_neighbor_id,
+                cfg.injection_right_neighbor_id,
+            )
+            print("[av] injection = karvonen (layer-1 additive, norm-matched)")
         model._nla_vectors_ref = vectors_ref  # av_generate_samples reaches it here
+        model._nla_injection_mode = args.injection
         if args.gradient_checkpointing:
             model.gradient_checkpointing_enable()
             model.enable_input_require_grads()
             print("[av] gradient_checkpointing ENABLED")
     else:  # ar
+        affine = None
         quant_config = None
         if args.quant == "4bit":
             quant_config = BitsAndBytesConfig(
@@ -763,7 +842,21 @@ def main():
 
     # ---- data ----
     print(f"[data] loading {args.parquet} (max_rows={args.max_rows})", flush=True)
-    rows = load_sft_dataset(args.parquet, n_max=args.max_rows, mode=args.mode)
+    fl_meta = None
+    if args.future_lens:
+        fl_meta = load_fl_meta(args.sidecar)
+        _layers = [int(x) for x in args.layers.split(",")] if args.layers else None
+        rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=_layers)
+        for r in rows:
+            r["inject_alpha"] = fl_meta.alpha(int(r["activation_layer"]), args.alpha_mult)
+        if args.shuffle_activations:
+            shuffle_activations(rows, seed=args.seed)
+            print("[data] CONTROL: activations shuffled within layer", flush=True)
+        print(f"[data] future-lens: layers={sorted({int(r['activation_layer']) for r in rows})} "
+              f"alpha_by_layer={ {l: round(fl_meta.alpha(l, args.alpha_mult), 1) for l in fl_meta.layer_indices} }",
+              flush=True)
+    else:
+        rows = load_sft_dataset(args.parquet, n_max=args.max_rows, mode=args.mode)
     print(f"[data] {len(rows)} rows", flush=True)
     if args.num_steps is None:
         eff_batch = args.batch_size * args.gradient_accumulation_steps
@@ -790,6 +883,8 @@ def main():
         optim_cls = torch.optim.AdamW
         print("[optim] bitsandbytes unavailable, falling back to torch AdamW (fp32 m,v)")
     trainable = [p for p in model.parameters() if p.requires_grad]
+    if affine is not None:
+        trainable += list(affine.parameters())
     assert trainable, (
         "no trainable parameters — --freeze-backbone freezes the whole AR, so "
         "there is nothing to optimize in AR-SFT. Drop --freeze-backbone."
@@ -822,7 +917,15 @@ def main():
     heldout_pairs = None
     heldout_baseline = None
     heldout_av_rows = None
-    if args.mode == "av" and args.heldout_parquet:
+    heldout_shuf_rows = None
+    if args.mode == "av" and args.heldout_parquet and args.future_lens:
+        _hl = [int(x) for x in args.layers.split(",")] if args.layers else None
+        heldout_av_rows = load_fl_rows(args.heldout_parquet, args.heldout_rows, layers=_hl)
+        for r in heldout_av_rows:
+            r["inject_alpha"] = fl_meta.alpha(int(r["activation_layer"]), args.alpha_mult)
+        heldout_shuf_rows = [dict(r) for r in heldout_av_rows]
+        shuffle_activations(heldout_shuf_rows, seed=args.seed + 1)
+    elif args.mode == "av" and args.heldout_parquet:
         heldout_av_rows = load_sft_dataset(
             args.heldout_parquet, args.heldout_rows, mode="av")
         print(f"[av] {len(heldout_av_rows)} held-out AV rows from {args.heldout_parquet} "
@@ -889,7 +992,7 @@ def main():
             if args.mode == "av":
                 ids, attn, loss_mask, v_batch = _av_prepare_chunk(
                     chunk_rows, tokenizer, cfg.injection_char, device,
-                    max_len=args.max_len,
+                    max_len=args.max_len, fl=args.future_lens, injection_mode=args.injection,
                 )
                 # vectors_ref stays set through .backward() below: AV mode runs
                 # gradient checkpointing BY DEFAULT, the backward-time recompute
@@ -1029,12 +1132,38 @@ def main():
             with amp():
                 h_ce, h_n = heldout_av_ce(
                     model, tokenizer, heldout_av_rows, cfg, vectors_ref, device,
-                    max_len=args.max_len)
-            model.train()
+                    max_len=args.max_len, fl=args.future_lens, injection_mode=args.injection)
             log["heldout_loss"] = h_ce
             log["heldout_ppl"] = math.exp(h_ce) if h_ce < 30 else float("inf")
             print(f"  [heldout@{step}] val_loss {h_ce:.4f} | val_ppl "
                   f"{log['heldout_ppl']:.3f} (n={h_n})", flush=True)
+            if heldout_shuf_rows is not None:
+                # alpha-selection proxy (NLA paper): L(shuffled) - L(true). Also the
+                # first "is the decoder reading the state?" number.
+                with amp():
+                    s_ce, _ = heldout_av_ce(
+                        model, tokenizer, heldout_shuf_rows, cfg, vectors_ref, device,
+                        max_len=args.max_len, fl=True, injection_mode=args.injection)
+                log["heldout/shuffled_loss"] = s_ce
+                log["heldout/ce_gap"] = s_ce - h_ce
+                from nla.future_lens.eval import generate_readouts, stop_ids, summarize_by_offset
+                _g_rows = heldout_av_rows[: args.heldout_gen_rows]
+                _jobs = [{"prompt": r["prompt"], "k": int(r["k"]), "vector": r["activation_vector"],
+                          "alpha": r["inject_alpha"]} for r in _g_rows]
+                with amp():
+                    _ro = generate_readouts(
+                        model, tokenizer, _jobs, inject_char=cfg.injection_char,
+                        vectors_ref=vectors_ref, injection_mode=args.injection, device=device,
+                        eos_ids=stop_ids(tokenizer, model), batch_size=args.heldout_gen_batch)
+                _summ = summarize_by_offset(_g_rows, _ro, [int(r["k"]) for r in _g_rows])
+                for _k2, _v2 in _summ.items():
+                    if not _k2.startswith("n_"):
+                        log[f"heldout/{_k2}"] = _v2
+                _offs = " ".join(f"p1@{j}={_summ.get(f'p1_off{j}', float('nan')):.2f}"
+                                 for j in range(9) if f"p1_off{j}" in _summ)
+                print(f"  [heldout@{step}] shuffled_loss {s_ce:.4f} | gap {s_ce - h_ce:+.4f} | "
+                      f"exact {_summ.get('exact', float('nan')):.3f} | {_offs}", flush=True)
+            model.train()
         # ---- held-out FVE (AR mode, doc-disjoint) ----
         if heldout_pairs is not None and (
             (step + 1) % args.heldout_every == 0 or (step + 1) == args.num_steps
@@ -1063,6 +1192,14 @@ def main():
             if args.mode == "av":
                 model.save_pretrained(str(out_dir))
                 tokenizer.save_pretrained(str(out_dir))
+                if affine is not None:
+                    torch.save(affine.state_dict(), str(out_dir / "affine.pt"))
+                if args.future_lens:
+                    (out_dir / "future_lens.json").write_text(json.dumps({
+                        "injection": args.injection, "alpha_mult": args.alpha_mult,
+                        "affine": affine is not None, "layers": args.layers,
+                        "shuffle_activations": args.shuffle_activations,
+                    }, indent=2))
             elif args.use_lora:
                 # AR + LoRA: save just the adapter weights + value_head (NOT the
                 # 4-bit backbone). RL reloads via init_critic_from_base + inject.
