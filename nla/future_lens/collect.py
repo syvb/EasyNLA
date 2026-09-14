@@ -399,3 +399,10 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+    # The `datasets` streaming iterator (aiohttp/pyarrow threads) can abort the interpreter
+    # during finalisation *after* every file has been written ("PyGILState_Release ... must be
+    # current"), which turns a successful run into exit 134. Everything is flushed by now.
+    import os
+    import sys
+    sys.stdout.flush(); sys.stderr.flush()
+    os._exit(0)

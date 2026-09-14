@@ -66,7 +66,8 @@ def stage_cmd(stage: str, a) -> str:
                 f"--batch-size 8 --out-dir {D} && "
                 f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
-        runs = []
+        # mirror data/ to HF in the background (idempotent) while the sweep runs
+        runs = [f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} > {WORK}/logs/hf_upload_data.log 2>&1 &) ; true"]
         for inj, mults in (("replace_embed", (0.5, 1.0, 2.0, 4.0)), ("karvonen", (1.0,))):
             for m in mults:
                 for shuf in ("", "--shuffle-activations"):
