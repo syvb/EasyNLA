@@ -76,7 +76,9 @@ def stage_cmd(stage: str, a) -> str:
             inj, ms = spec.split(":")
             for m in [float(x) for x in ms.split(",")]:
                 for shuf in ("", "--shuffle-activations") if m in a.sweep_shuffle_mults else ("",):
-                    tag = f"{inj}_a{m}{'_shuf' if shuf else ''}"
+                    # run names carry the data split: the finished-run guard below must not match a
+                    # sweep done on another split (it skipped every run of the base-model check once)
+                    tag = f"{a.data_dir}_{inj}_a{m}{'_shuf' if shuf else ''}"
                     runs.append(
                         f"[ -d {C}/sweep_{tag}/iter_0000400 ] || python -m nla.train_sft --config configs/future_lens/sft_alpha_sweep.yaml "
                         f"--base-ckpt {BASE} --parquet {D}/train.parquet --heldout-parquet {D}/eval.parquet "
