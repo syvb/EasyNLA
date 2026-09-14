@@ -118,14 +118,14 @@ def stage_cmd(stage: str, a) -> str:
         parts = ["filt", "unf"] if a.part == "all" else [a.part]
         cmds = []
         if "unf" in parts:
-            cmds += [f"python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
+            cmds += [f"[ -f {U}/DONE ] || (python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
                      f"--corpus-config sample-10BT --corpus-start 6000 --n-train-docs 2700 --n-eval-docs 300 "
                      f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
-                     f"--batch-size 8 --no-require-top1 --out-dir {U} && touch {U}/DONE",
+                     f"--batch-size 8 --no-require-top1 --out-dir {U} && touch {U}/DONE)",
                      f"(python scripts/hf_upload.py {U} data_unf --repo {a.hf_repo} > {WORK}/logs/hf_upload_data_unf.log 2>&1 &) ; true"]
         for name in parts:
             data, run = sets[name], f"sft_{name}_2k"
-            cmds.append(f"python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
+            cmds.append(f"[ -d {C}/{run}/iter_0002000 ] || python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
                         f"--parquet {data}/train.parquet --heldout-parquet {data}/eval.parquet "
                         f"--save-dir {C}/{run} --injection {a.injection} --alpha-mult {a.alpha_mult} "
                         f"--num-steps 2000 --save-every 2000 --wandb-name {run} --seed {a.seed} {a.extra}")
@@ -137,7 +137,7 @@ def stage_cmd(stage: str, a) -> str:
             for ename, edata in sets.items():
                 tag = _tag_arg({"checkpoint": run, "group": run, "seed": a.seed, "evalset": ename})
                 cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{run}/iter_0002000 "
-                            f"--parquet {edata}/eval.parquet --sidecar {data}/train.parquet.nla_meta.yaml "
+                            f"--parquet {edata}/eval.parquet --sidecar {data}/train.parquet "
                             f"--out {E}/ablation_{run}_on_{ename}.jsonl --conditions real,shuffled,none "
                             f"--layers 8,12,16,20,24 --max-rows 800 --batch-size 64 --seed {a.seed} --tag-kv {tag} "
                             f"--dump-readouts {E}/readouts_ablation_{run}_on_{ename}.jsonl")
@@ -168,7 +168,8 @@ def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str) -> str:
     return (
         "/start.sh >/dev/null 2>&1 & "
         f"mkdir -p {WORK}/logs {WORK}/data {WORK}/ckpts {WORK}/evals && exec > >(tee -a {log}) 2>&1; set -x; "
-        f"cd /workspace && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
+        # clone onto the pod's own container disk: two pods sharing the volume must not rm -rf each other's repo
+        f"cd /root && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
         "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "
         f"export HF_HOME=/workspace/hf && ({stage_command}) ; echo STAGE_EXIT=$? ; "
         f"python scripts/hf_upload.py {WORK}/evals evals --repo {hf_repo} || true; "
