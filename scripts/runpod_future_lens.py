@@ -103,7 +103,7 @@ def stage_cmd(stage: str, a) -> str:
                         f"--parquet {D}/eval.parquet --out {E}/{name}.jsonl "
                         f"--conditions real,shuffled,none,wrong_layer --wrong-layer 4 --batch-size 64 "
                         f"--layers 8,12,16,20,24 --dump-readouts {E}/readouts_{name}.jsonl "
-                        f"--seed {seed} --tag {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed})} {a.extra}")
+                        f"--seed {seed} --tag-kv {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed})} {a.extra}")
         return " && ".join(cmds)
     if stage == "filter_ablation":
         # How much does the top-1-correct position filter matter? Unfiltered split from fresh
@@ -139,7 +139,7 @@ def stage_cmd(stage: str, a) -> str:
                 cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{run}/iter_0002000 "
                             f"--parquet {edata}/eval.parquet --sidecar {data}/train.parquet.nla_meta.yaml "
                             f"--out {E}/ablation_{run}_on_{ename}.jsonl --conditions real,shuffled,none "
-                            f"--layers 8,12,16,20,24 --max-rows 800 --batch-size 64 --seed {a.seed} --tag {tag} "
+                            f"--layers 8,12,16,20,24 --max-rows 800 --batch-size 64 --seed {a.seed} --tag-kv {tag} "
                             f"--dump-readouts {E}/readouts_ablation_{run}_on_{ename}.jsonl")
         return " && ".join(cmds)
     if stage == "baselines":
@@ -154,8 +154,11 @@ def stage_cmd(stage: str, a) -> str:
 
 
 def _tag_arg(d: dict) -> str:
-    """JSON for --tag that survives inside the single-quoted `bash -lc '...'` wrapper."""
-    return '"' + json.dumps(d, separators=(",", ":")).replace('"', '\\"') + '"'
+    """eval.py --tag-kv value: k=v,k=v. No quotes or braces — the runpod SDK pastes dockerArgs
+    into a GraphQL string unescaped, and the bash -lc wrapper is single-quoted."""
+    for k, v in d.items():
+        assert "," not in f"{k}{v}" and "=" not in f"{k}{v}", (k, v)
+    return ",".join(f"{k}={v}" for k, v in d.items())
 
 
 def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str) -> str:
@@ -187,6 +190,7 @@ def cmd_volume(a):
 
 def cmd_launch(a):
     cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep, a.hf_repo)
+    assert '"' not in cmd and "{" not in cmd and "}" not in cmd, "dockerArgs is pasted into GraphQL unescaped"
     if a.dry_run:
         print(cmd); return
     runpod = _runpod()

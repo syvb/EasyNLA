@@ -289,6 +289,8 @@ def main(argv=None):
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--tag", default=None, help="JSON dict merged into every record (e.g. checkpoint name)")
+    p.add_argument("--tag-kv", default=None,
+                   help="quote-free alternative to --tag: k=v,k=v (ints parsed); survives RunPod dockerArgs")
     p.add_argument("--checkpoint-name", default=None, help="record `checkpoint` (default: adapter path)")
     p.add_argument("--group", default=None, help="record `group` (seed-agnostic run family; plots pool seeds by it)")
     p.add_argument("--dump-readouts", default=None,
@@ -326,6 +328,9 @@ def main(argv=None):
     register_injection(model, args.injection, vectors_ref, cfg.injection_token_id,
                        cfg.injection_left_neighbor_id, cfg.injection_right_neighbor_id, affine)
     tag = json.loads(args.tag) if args.tag else {}
+    for kv in (args.tag_kv.split(",") if args.tag_kv else []):
+        k, v = kv.split("=", 1)
+        tag[k] = int(v) if v.lstrip("-").isdigit() else v
     if args.checkpoint_name:
         tag["checkpoint"] = args.checkpoint_name
     if args.group:
