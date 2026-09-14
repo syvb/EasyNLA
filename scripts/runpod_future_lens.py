@@ -64,7 +64,9 @@ def stage_cmd(stage: str, a) -> str:
                 f"--corpus-config sample-10BT --n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
                 f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
                 f"--batch-size 8 --out-dir {D} && "
-                f"(huggingface-cli upload {a.hf_repo} {D} data --repo-type dataset --private || true)")
+                f"(wandb artifact put --type data-stats --name {WANDB_PROJECT}/fl-collect-stats {D}/collect_stats.json || true) && "
+                f"(wandb artifact put --type data-stats --name {WANDB_PROJECT}/fl-collect-sidecar {D}/train.nla_meta.yaml || true) && "
+                f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
         runs = []
         for inj, mults in (("replace_embed", (0.5, 1.0, 2.0, 4.0)), ("karvonen", (1.0,))):
@@ -75,17 +77,20 @@ def stage_cmd(stage: str, a) -> str:
                         f"python -m nla.train_sft --config configs/future_lens/sft_alpha_sweep.yaml "
                         f"--base-ckpt {BASE} --parquet {D}/train.parquet --heldout-parquet {D}/eval.parquet "
                         f"--save-dir {C}/sweep_{tag} --injection {inj} --alpha-mult {m} {shuf} "
-                        f"--wandb-name sweep_{tag} --seed 0")
+                        f"--wandb-name sweep_{tag} --seed 0 && "
+                        f"(python scripts/hf_upload.py {C}/sweep_{tag} ckpts/sweep_{tag} --repo {a.hf_repo} || true)")
         return " && ".join(runs)
     if stage == "sft":
         return (f"python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
                 f"--parquet {D}/train.parquet --heldout-parquet {D}/eval.parquet "
                 f"--save-dir {C}/{a.run_name} --injection {a.injection} --alpha-mult {a.alpha_mult} "
-                f"{'--affine' if a.affine else ''} --wandb-name {a.run_name} --seed {a.seed} {a.extra}")
+                f"{'--affine' if a.affine else ''} --wandb-name {a.run_name} --seed {a.seed} {a.extra} && "
+                f"(python scripts/hf_upload.py {C}/{a.run_name} ckpts/{a.run_name} --repo {a.hf_repo} || true)")
     if stage == "rl":
         return (f"python -m nla.future_lens.train_rl --config configs/future_lens/rl.yaml --base-ckpt {BASE} "
                 f"--av-ckpt {C}/{a.av_ckpt} --parquet {D}/train.parquet --eval-parquet {D}/eval.parquet "
-                f"--save-dir {C}/{a.run_name} --reward {a.reward} --seed {a.seed} --wandb-name {a.run_name} {a.extra}")
+                f"--save-dir {C}/{a.run_name} --reward {a.reward} --seed {a.seed} --wandb-name {a.run_name} {a.extra} && "
+                f"(python scripts/hf_upload.py {C}/{a.run_name} ckpts/{a.run_name} --repo {a.hf_repo} || true)")
     if stage == "eval":
         cmds = []
         for ad in a.adapters.split(","):
@@ -117,7 +122,7 @@ def _tag_arg(d: dict) -> str:
     return '"' + json.dumps(d, separators=(",", ":")).replace('"', '\\"') + '"'
 
 
-def bootstrap(stage_command: str, stage: str, keep: bool) -> str:
+def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str) -> str:
     assert "'" not in stage_command, f"stage command contains a single quote (breaks bash -lc quoting): {stage_command}"
     log = f"{WORK}/logs/{stage}_$(date +%Y%m%d_%H%M%S).log"
     finish = "" if keep else "python scripts/pod_terminate.py"
@@ -128,6 +133,8 @@ def bootstrap(stage_command: str, stage: str, keep: bool) -> str:
         "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "
         f"export HF_HOME=/workspace/hf && ({stage_command}) ; echo STAGE_EXIT=$? ; "
         f"wandb artifact put --type evals --name {WANDB_PROJECT}/fl-evals-{stage} {WORK}/evals >/dev/null 2>&1 || true; "
+        f"python scripts/hf_upload.py {WORK}/evals evals --repo {hf_repo} || true; "
+        f"python scripts/hf_upload.py {WORK}/logs logs --repo {hf_repo} || true; "
         f"{finish}; echo FINISHED; sleep infinity"
     )
 
@@ -144,7 +151,7 @@ def cmd_volume(a):
 
 
 def cmd_launch(a):
-    cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep)
+    cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep, a.hf_repo)
     if a.dry_run:
         print(cmd); return
     runpod = _runpod()
