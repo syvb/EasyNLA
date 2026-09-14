@@ -64,8 +64,6 @@ def stage_cmd(stage: str, a) -> str:
                 f"--corpus-config sample-10BT --n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
                 f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
                 f"--batch-size 8 --out-dir {D} && "
-                f"(wandb artifact put --type data-stats --name {WANDB_PROJECT}/fl-collect-stats {D}/collect_stats.json || true) && "
-                f"(wandb artifact put --type data-stats --name {WANDB_PROJECT}/fl-collect-sidecar {D}/train.nla_meta.yaml || true) && "
                 f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
         runs = []
@@ -132,7 +130,6 @@ def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str) -> str:
         f"cd /workspace && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
         "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "
         f"export HF_HOME=/workspace/hf && ({stage_command}) ; echo STAGE_EXIT=$? ; "
-        f"wandb artifact put --type evals --name {WANDB_PROJECT}/fl-evals-{stage} {WORK}/evals >/dev/null 2>&1 || true; "
         f"python scripts/hf_upload.py {WORK}/evals evals --repo {hf_repo} || true; "
         f"python scripts/hf_upload.py {WORK}/logs logs --repo {hf_repo} || true; "
         f"{finish}; echo FINISHED; sleep infinity"
