@@ -1,7 +1,7 @@
 # Future-lens GRPO (nla.future_lens.train_rl), Qwen3-8B, 1x H100/A100 80GB.
 # Pass --av-ckpt (SFT iter dir), --parquet, --eval-parquet, --save-dir, --seed, --reward.
 quant: none
-layers: "8,12,16,20,24"   # layer 4 is the wrong-layer control, never trained on
+layers: "8,12,16,20,24,28,32"   # layer 4 is the wrong-layer control, never trained on
 reward: exact_match           # second arm: target_logp
 length_penalty: 0.1
 num_steps: 4000

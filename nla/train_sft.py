@@ -629,6 +629,9 @@ def main():
                    help="karvonen (EasyNLA default, layer-1 additive norm-matched) or "
                         "replace_embed (NLA paper: alpha*h/|h| replaces the marker's input "
                         "embedding). Default: karvonen, or replace_embed with --future-lens.")
+    p.add_argument("--label", choices=("text", "greedy"), default="text",
+                   help="future-lens readout label: corpus continuation (text) or the target's own greedy "
+                        "continuation (greedy; Future Lens convention). Recorded in future_lens.json")
     p.add_argument("--alpha-mult", type=float, default=1.0,
                    help="replace_embed: multiply the sidecar's per-layer alpha (alpha sweep).")
     p.add_argument("--affine", action="store_true", default=False,
@@ -856,9 +859,10 @@ def main():
     if args.future_lens:
         fl_meta = load_fl_meta(args.sidecar)
         _layers = [int(x) for x in args.layers.split(",")] if args.layers else None
-        rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=_layers,
+        rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=_layers, label=args.label,
                             columns=["prompt", "response", "activation_vector", "activation_layer",
                                      "target_ids", "k", "doc_id"])
+        print(f"[data] future-lens label = {args.label}", flush=True)
         for r in rows:
             r["inject_alpha"] = fl_meta.alpha(int(r["activation_layer"]), args.alpha_mult)
         if args.shuffle_activations:
@@ -933,7 +937,7 @@ def main():
     if args.mode == "av" and args.heldout_parquet and args.future_lens:
         _hl = [int(x) for x in args.layers.split(",")] if args.layers else None
         heldout_av_rows = load_fl_rows(
-            args.heldout_parquet, args.heldout_rows, layers=_hl,
+            args.heldout_parquet, args.heldout_rows, layers=_hl, label=args.label,
             columns=["prompt", "response", "activation_vector", "activation_layer", "target_ids",
                      "target_top5", "k", "doc_id", "p_top1"])
         for r in heldout_av_rows:
@@ -1221,7 +1225,7 @@ def main():
                 if args.future_lens:
                     (out_dir / "future_lens.json").write_text(json.dumps({
                         "injection": args.injection, "alpha_mult": args.alpha_mult,
-                        "affine": affine is not None, "layers": args.layers,
+                        "affine": affine is not None, "layers": args.layers, "label": args.label,
                         "shuffle_activations": args.shuffle_activations,
                     }, indent=2))
             elif args.use_lora:

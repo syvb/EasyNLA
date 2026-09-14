@@ -230,3 +230,52 @@ def test_target_logp_reward_prefers_true_continuation():
     lp2 = target_logp_reward(model, [prefix, long_prefix], [true_next, true_next], "cpu",
                              pad_id=tok.eos_token_id, micro_batch=2, disable_adapter=False)
     assert abs(lp2[0] - lp[0]) < 1e-3
+
+
+def test_load_fl_rows_label_swap(tmp_path):
+    """label=greedy swaps target_* for greedy_* at load and keeps the corpus ids as text_ids."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from nla.future_lens.data import fl_schema, load_fl_rows
+    d, nf, npv = 4, 3, 2
+    sch = fl_schema(d, nf, npv)
+    row = {"prompt": [{"role": "user", "content": "x"}], "response": "y",
+           "activation_vector": np.zeros(d, np.float16), "activation_layer": 8, "doc_id": "a",
+           "n_raw_tokens": 10, "target_ids": [1, 2, 3], "k": 2, "doc_idx": 0, "t": 9, "p_top1": 0.5,
+           "target_top5": list(range(15)), "target_logp": [-1.0, -1.0, -1.0], "prev_ids": [7, 8],
+           "greedy_ids": [4, 5, 6], "greedy_top5": list(range(100, 115)), "greedy_logp": [-2.0, -2.0, -2.0]}
+    pq.write_table(pa.Table.from_pylist([row], schema=sch), str(tmp_path / "e.parquet"))
+    r_text = load_fl_rows(tmp_path / "e.parquet")[0]
+    r_greedy = load_fl_rows(tmp_path / "e.parquet", label="greedy")[0]
+    assert list(r_text["target_ids"]) == [1, 2, 3] and "text_ids" not in r_text
+    assert list(r_greedy["target_ids"]) == [4, 5, 6] and list(r_greedy["text_ids"]) == [1, 2, 3]
+    assert r_greedy["target_top5"].shape == (nf, 5) and int(r_greedy["target_top5"][0, 0]) == 100
+    assert float(r_greedy["target_logp"][0]) == -2.0
+    # a column subset that asks for target_ids only still gets the swap
+    r_sub = load_fl_rows(tmp_path / "e.parquet", label="greedy", columns=["target_ids", "k"])[0]
+    assert list(r_sub["target_ids"]) == [4, 5, 6]
+
+
+@needs_model
+def test_teacher_forced_hits_recover_own_greedy_continuation():
+    """With no injection, teacher-forcing the model on its OWN greedy continuation of the
+    prompt must score 1 at every offset (argmax_j == greedy_j); a wrong label scores 0 there."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from nla.future_lens.data import DEFAULT_TEMPLATE, build_prompt_messages, encode_prompt
+    from nla.future_lens.eval import teacher_forced_hits
+    tok = AutoTokenizer.from_pretrained(SMALL)
+    model = AutoModelForCausalLM.from_pretrained(SMALL, torch_dtype=torch.float32).eval()
+    k = 4
+    msgs = build_prompt_messages(DEFAULT_TEMPLATE, 8, k)
+    ids = torch.tensor([encode_prompt(tok, msgs, "㈎")])
+    with torch.no_grad():
+        gen = model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=k,
+                             min_new_tokens=k, do_sample=False, pad_token_id=tok.eos_token_id, eos_token_id=None)
+    greedy = gen[0, ids.shape[1]:].tolist()
+    jobs = [{"prompt": msgs, "k": k, "vector": None, "alpha": 0.0, "label": greedy},
+            {"prompt": msgs, "k": k, "vector": None, "alpha": 0.0, "label": [(g + 1) % 1000 for g in greedy]}]
+    vref = [None]
+    hits = teacher_forced_hits(model, tok, jobs, inject_char="㈎", vectors_ref=vref, injection_mode="replace_embed",
+                               device="cpu", batch_size=2)
+    assert hits[0] == [1] * k, hits
+    assert hits[1][0] == 0, hits   # first label token differs from the argmax

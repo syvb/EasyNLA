@@ -7,7 +7,7 @@ use_lora: true
 lora_r: 64
 lora_alpha: 16                # rsLoRA scale alpha/sqrt(r) = 2.0
 quant: none
-layers: "8,12,16,20,24"   # layer 4 is collected for the wrong-layer control only
+layers: "8,12,16,20,24,28,32"   # layer 4 is collected for the wrong-layer control only
 batch_size: 32
 gradient_accumulation_steps: 1
 num_steps: 400

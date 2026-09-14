@@ -1,6 +1,7 @@
 # Future-lens SFT warm-start (nla.train_sft --mode av --future-lens), Qwen3-8B, 1x H100/A100 80GB.
 # Keys are argparse dests. CLI flags override. Pass --parquet/--heldout-parquet/--save-dir/--base-ckpt.
 mode: av
+label: greedy                 # Future Lens convention: read out the target's own greedy continuation
 future_lens: true
 injection: replace_embed      # ablation arm: karvonen
 alpha_mult: 1.0               # alpha sweep: 0.5 / 1 / 2 / 4
@@ -8,7 +9,7 @@ use_lora: true
 lora_r: 64
 lora_alpha: 16                # rsLoRA is ON in train_sft: scale = alpha/sqrt(r) = 2.0 (repo default r128/a16 = 1.4)
 quant: none
-layers: "8,12,16,20,24"   # layer 4 is collected for the wrong-layer control only                   # bf16 base; 8B fits on 48-80 GB with LoRA
+layers: "8,12,16,20,24,28,32"   # layer 4 is collected for the wrong-layer control only                   # bf16 base; 8B fits on 48-80 GB with LoRA
 batch_size: 32
 gradient_accumulation_steps: 2  # eff. batch 64 rows (~15 readout tokens each)
 lr: 1.0e-4

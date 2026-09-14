@@ -127,7 +127,7 @@ def build_ngram(order: int, sources) -> tuple[NGramModel, int]:
 def run_ngram(args):
     fl = load_fl_meta(args.sidecar or args.parquet)
     docs = load_docs(resolve_docs_path(args.parquet, fl))
-    eval_rows = load_fl_rows(args.parquet, keep_activations=False,
+    eval_rows = load_fl_rows(args.parquet, keep_activations=False, label=args.label,
                              columns=["doc_idx", "t", "target_ids", "target_top5", "p_top1", "activation_layer"])
     eval_docs = {int(r["doc_idx"]) for r in eval_rows}
     # one row per position (layers duplicate the position)
@@ -137,21 +137,27 @@ def run_ngram(args):
         t0 = time.time()
         m, n_tok = build_ngram(order, ngram_sources(args, fl, docs, eval_docs))
         nf = fl.n_future
-        hits = defaultdict(list); hits5 = defaultdict(list)
+        hits = defaultdict(list); hits5 = defaultdict(list); hits_tf = defaultdict(list)
         for (di, t), r in positions.items():
-            ro = m.greedy(docs[di][: t + 1], nf)
+            ctx = docs[di][: t + 1]
+            ro = m.greedy(ctx, nf)
             tgt = np.asarray(r["target_ids"]); top5 = np.asarray(r["target_top5"]).reshape(-1, 5)
+            ctx_l = [int(x) for x in ctx]
             for j in range(nf):
                 hits[j].append(int(ro[j] == int(tgt[j])))
                 hits5[j].append(int(ro[j] in set(int(x) for x in top5[j])))
+                # teacher-forced (Future Lens convention): predict x_{t+1+j} given the LABEL prefix
+                hits_tf[j].append(int(m.predict(ctx_l + [int(x) for x in tgt[:j]]) == int(tgt[j])))
         for k in fl.k_choices:
             N = k - 1
             base = {"layer": -1, "N": N, "k": k, "condition": "baseline", "injection": "none",
                     "seed": 0, "checkpoint": f"{order}gram", "n_train_tokens": n_tok}
             recs.append({**base, "metric": "p1", "value": float(np.mean(hits[N])), "n": len(hits[N])})
             recs.append({**base, "metric": "p5", "value": float(np.mean(hits5[N])), "n": len(hits5[N])})
-        print(f"[ngram] order={order} tokens={n_tok} " +
-              " ".join(f"p1@{N}={np.mean(hits[N]):.3f}" for N in range(nf)) + f" ({time.time() - t0:.0f}s)")
+            recs.append({**base, "metric": "tf_p1", "value": float(np.mean(hits_tf[N])), "n": len(hits_tf[N])})
+        print(f"[ngram] order={order} tokens={n_tok} label={args.label} " +
+              " ".join(f"p1@{N}={np.mean(hits[N]):.3f}" for N in range(nf)) + " | tf " +
+              " ".join(f"{np.mean(hits_tf[N]):.3f}" for N in range(nf)) + f" ({time.time() - t0:.0f}s)")
     write_records(recs, args.out)
     print(f"[ngram] wrote {len(recs)} records -> {args.out}")
 
@@ -168,7 +174,7 @@ def run_leakage(args):
     """
     fl = load_fl_meta(args.sidecar or args.parquet)
     docs = load_docs(resolve_docs_path(args.parquet, fl))
-    eval_rows = load_fl_rows(args.parquet, keep_activations=False, columns=["doc_idx", "t", "target_ids"])
+    eval_rows = load_fl_rows(args.parquet, keep_activations=False, columns=["doc_idx", "t", "target_ids"], label=args.label)
     eval_docs = {int(r["doc_idx"]) for r in eval_rows}
     tgt = {(int(r["doc_idx"]), int(r["t"])): np.asarray(r["target_ids"]) for r in eval_rows}
     m, n_tok = build_ngram(args.order, ngram_sources(args, fl, docs, eval_docs))
@@ -267,9 +273,9 @@ def run_probe(args):
     if vocab is None:
         from transformers import AutoTokenizer
         vocab = len(AutoTokenizer.from_pretrained(args.base_ckpt))
-    train = load_fl_rows(args.train_parquet, n_max=args.max_train_rows, layers=layers,
+    train = load_fl_rows(args.train_parquet, n_max=args.max_train_rows, layers=layers, label=args.label,
                          columns=["activation_vector", "activation_layer", "target_ids", "prev_ids", "doc_idx", "t"])
-    ev = load_fl_rows(args.parquet, layers=layers,
+    ev = load_fl_rows(args.parquet, layers=layers, label=args.label,
                       columns=["activation_vector", "activation_layer", "target_ids", "prev_ids", "doc_idx", "t"])
     recs = []
     offsets = [k - 1 for k in fl.k_choices]
@@ -304,6 +310,7 @@ def run_probe(args):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
+    p.add_argument("--label", choices=("text", "greedy"), default="text", help="readout label (see data.py)")
     n = sub.add_parser("ngram")
     n.add_argument("--parquet", required=True, help="eval.parquet")
     n.add_argument("--sidecar", default=None)

@@ -125,10 +125,11 @@ def forward_docs(model, docs: list[list[int]], layers: list[int], device, pad_id
 
 @torch.no_grad()
 def greedy_continuations(model, tokenizer, prefixes: list[list[int]], n_new: int, device,
-                         batch_size: int = 16) -> list[list[int]]:
-    """Greedy `n_new` tokens after each prefix (left-padded batches)."""
+                         batch_size: int = 16) -> tuple[list[list[int]], list[np.ndarray], list[np.ndarray]]:
+    """Greedy `n_new` tokens after each prefix (left-padded batches), plus the target's
+    top-5 ids and the log-prob of the chosen token at every step (under its own prefix)."""
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
-    outs: list[list[int]] = []
+    outs: list[list[int]] = []; top5s: list[np.ndarray] = []; logps: list[np.ndarray] = []
     for cs in range(0, len(prefixes), batch_size):
         chunk = prefixes[cs: cs + batch_size]
         L = max(len(p) for p in chunk)
@@ -140,11 +141,17 @@ def greedy_continuations(model, tokenizer, prefixes: list[list[int]], n_new: int
         gen = model.generate(
             input_ids=ids.to(device), attention_mask=attn.to(device),
             max_new_tokens=n_new, min_new_tokens=n_new, do_sample=False,
-            pad_token_id=pad_id, eos_token_id=None,
+            pad_token_id=pad_id, eos_token_id=None, output_scores=True, return_dict_in_generate=True,
         )
+        seqs = gen.sequences
+        lsm = torch.stack([F.log_softmax(sc.float(), dim=-1) for sc in gen.scores], dim=1)  # [B, n_new, V]
+        top5 = lsm.topk(5, dim=-1).indices.cpu()                                          # [B, n_new, 5]
         for i in range(len(chunk)):
-            outs.append(gen[i, L: L + n_new].tolist())
-    return outs
+            toks = seqs[i, L: L + n_new]
+            outs.append(toks.tolist())
+            top5s.append(top5[i].reshape(-1).numpy().astype(np.int64))
+            logps.append(lsm[i].gather(1, toks.to(lsm.device).unsqueeze(1)).squeeze(1).cpu().numpy().astype(np.float32))
+    return outs, top5s, logps
 
 
 # ----------------------------------------------------------------------------
@@ -179,8 +186,10 @@ def main(argv=None):
     p.add_argument("--template", default=DEFAULT_TEMPLATE)
     p.add_argument("--require-top1", action=argparse.BooleanOptionalAction, default=True,
                    help="keep only positions where the target's top-1 prediction of x_{t+1} is correct")
-    p.add_argument("--greedy-eval", action=argparse.BooleanOptionalAction, default=True,
-                   help="store the target's greedy n_future continuation for eval rows")
+    p.add_argument("--greedy", choices=["none", "eval", "all"], default="all",
+                   help="store the target's greedy n_future continuation (+ top-5, log-probs) for eval "
+                        "rows or for all rows (needed for label=greedy training; ~+1 H100-h per 200k positions)")
+    p.add_argument("--greedy-batch", type=int, default=32)
     p.add_argument("--alpha-quantile", default="p75",
                    help="which norm quantile becomes injection_scale_by_layer (NLA paper: p75)")
     p.add_argument("--batch-size", type=int, default=4)
@@ -275,10 +284,10 @@ def main(argv=None):
                 stats["n_docs"][split] += 1
                 stats["n_positions"][split] += len(pos)
                 # per-position target statistics from the single teacher-forced pass
-                greedy = None
-                if split == "eval" and args.greedy_eval:
-                    greedy = greedy_continuations(model, tokenizer, [ids[: t + 1] for t in pos],
-                                                  nf, device, batch_size=16)
+                greedy = g_top5 = g_logp = None
+                if args.greedy == "all" or (split == "eval" and args.greedy == "eval"):
+                    greedy, g_top5, g_logp = greedy_continuations(
+                        model, tokenizer, [ids[: t + 1] for t in pos], nf, device, batch_size=args.greedy_batch)
                 for pi, t in enumerate(pos):
                     lg = logits[bi, t: t + nf].float()            # [nf, V]
                     lsm = F.log_softmax(lg, dim=-1)
@@ -313,6 +322,10 @@ def main(argv=None):
                         pending["prev_ids"].append(prev.numpy())
                         pending["greedy_ids"].append(
                             np.asarray(greedy[pi] if greedy is not None else [-1] * nf, dtype=np.int64))
+                        pending["greedy_top5"].append(
+                            g_top5[pi] if g_top5 is not None else np.full(5 * nf, -1, dtype=np.int64))
+                        pending["greedy_logp"].append(
+                            g_logp[pi] if g_logp is not None else np.full(nf, np.nan, dtype=np.float32))
                         stats["n_rows"][split] += 1
                     del text_full
                 counter["doc_idx"] += 1
@@ -368,7 +381,7 @@ def main(argv=None):
         layer_indices=layers, n_future=nf, n_prev=npv, k_choices=k_choices,
         template=args.template, norm_quantiles=norm_q, injection_scale_by_layer=alpha,
         docs_parquet="docs.parquet", discard_fraction=discard, d_model=d_model,
-        extra={"base_model": args.base_ckpt, "require_top1": bool(args.require_top1),
+        extra={"base_model": args.base_ckpt, "require_top1": bool(args.require_top1), "greedy": args.greedy,
                "max_len": args.max_len, "min_pos": args.min_pos,
                "corpus": args.corpus, "corpus_config": args.corpus_config,
                "corpus_slice": {"start": args.corpus_start, "length": args.n_train_docs + args.n_eval_docs}},

@@ -136,6 +136,8 @@ def main(argv=None):
     p.add_argument("--device", default="cuda")
     p.add_argument("--injection", choices=INJECTION_MODES, default=None, help="default: read from <av-ckpt>/future_lens.json")
     p.add_argument("--alpha-mult", type=float, default=None, help="default: read from <av-ckpt>/future_lens.json")
+    p.add_argument("--label", choices=("text", "greedy"), default=None,
+                   help="readout label (see data.py); default: read from <av-ckpt>/future_lens.json")
     p.add_argument("--layers", default=None, help="comma list; default all layers in the parquet")
     p.add_argument("--max-rows", type=int, default=None)
     # --- GRPO ---
@@ -208,7 +210,9 @@ def main(argv=None):
         args.injection = ck.get("injection", "replace_embed")
     if args.alpha_mult is None:
         args.alpha_mult = float(ck.get("alpha_mult", 1.0))
-    print(f"[cfg] injection={args.injection} alpha_mult={args.alpha_mult} reward={args.reward} "
+    if args.label is None:
+        args.label = ck.get("label", "text")
+    print(f"[cfg] label={args.label} injection={args.injection} alpha_mult={args.alpha_mult} reward={args.reward} "
           f"adv_norm={args.adv_norm} kl_beta={args.kl_beta}", flush=True)
 
     torch.manual_seed(args.seed)
@@ -263,7 +267,7 @@ def main(argv=None):
 
     # ---- data ----
     layers = [int(x) for x in args.layers.split(",")] if args.layers else None
-    rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=layers)
+    rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=layers, label=args.label)
     for r in rows:
         r["inject_alpha"] = fl.alpha(int(r["activation_layer"]), args.alpha_mult)
     print(f"[data] {len(rows)} train rows, layers={sorted({int(r['activation_layer']) for r in rows})}", flush=True)
@@ -276,7 +280,7 @@ def main(argv=None):
     if args.eval_parquet and args.eval_every > 0:
         # seeded random subsample PER LAYER (the parquet is doc-major, so "first N rows"
         # would be a handful of documents, the same ones at every layer)
-        all_eval = load_fl_rows(args.eval_parquet, layers=layers,
+        all_eval = load_fl_rows(args.eval_parquet, layers=layers, label=args.label,
                                 columns=["prompt", "activation_vector", "activation_layer", "target_ids",
                                          "target_top5", "k", "doc_idx", "t", "p_top1"])
         by_layer: dict[int, list[dict]] = defaultdict(list)
@@ -474,7 +478,8 @@ def main(argv=None):
                 torch.save(affine.state_dict(), str(out / "affine.pt"))
             (out / "future_lens.json").write_text(json.dumps({
                 "injection": args.injection, "alpha_mult": args.alpha_mult, "affine": affine is not None,
-                "reward": args.reward, "step": step + 1, "av_ckpt": args.av_ckpt, "seed": args.seed}, indent=2))
+                "label": args.label, "reward": args.reward, "step": step + 1, "av_ckpt": args.av_ckpt,
+                "seed": args.seed}, indent=2))
             shutil.copy2(side_dst, out / "nla_meta.yaml")
             tmp, dst = save_dir / "optim_latest.pt.tmp", save_dir / "optim_latest.pt"
             torch.save({"step": step + 1, "actor_optim": optim.state_dict()}, str(tmp))

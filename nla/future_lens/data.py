@@ -19,7 +19,14 @@ per (position, layer):
     target_top5        fixed_size_list<int64,5nf>  teacher-forced top-5 at t..t+nf-1, row-major
     target_logp        fixed_size_list<float32,nf> log p(x_{t+1+j} | x_<=t+j)
     prev_ids           fixed_size_list<int64,np>   x_{t-np+1} .. x_t   (NEVER fed to the decoder)
-    greedy_ids         fixed_size_list<int64,nf>   target's greedy continuation (eval split; -1 if absent)
+    greedy_ids         fixed_size_list<int64,nf>   target's greedy continuation from x_<=t (-1 if absent)
+    greedy_top5        fixed_size_list<int64,5nf>  target's top-5 at each greedy step (its own prefix)
+    greedy_logp        fixed_size_list<float32,nf> log p of each greedy token (its own prefix)
+
+Labels. `label="text"` reads out the corpus continuation (target_*); `label="greedy"`
+(Future Lens, Pal et al. 2023: "the generated tokens outputs of GPT-J through greedy
+decoding") swaps target_ids/top5/logp for greedy_ids/top5/logp at load time, so every
+consumer keeps using the target_* names. The corpus ids stay available as `text_ids`.
 
 `docs.parquet` (doc_idx, doc_id, split, ids) holds each document's token ids once;
 the target-logprob reward and the surprisal metric read prefixes from it.
@@ -172,6 +179,8 @@ def fl_schema(d_model: int, n_future: int, n_prev: int) -> pa.Schema:
         ("target_logp", pa.list_(pa.float32(), n_future)),
         ("prev_ids", pa.list_(pa.int64(), n_prev)),
         ("greedy_ids", pa.list_(pa.int64(), n_future)),
+        ("greedy_top5", pa.list_(pa.int64(), 5 * n_future)),
+        ("greedy_logp", pa.list_(pa.float32(), n_future)),
     ])
 
 
@@ -191,19 +200,30 @@ def _fixed_col(rg, name):
 
 ROW_COLUMNS = ["prompt", "response", "activation_vector", "activation_layer", "doc_id",
                "n_raw_tokens", "target_ids", "k", "doc_idx", "t", "p_top1", "target_top5",
-               "target_logp", "prev_ids", "greedy_ids"]
+               "target_logp", "prev_ids", "greedy_ids", "greedy_top5", "greedy_logp"]
+LABELS = ("text", "greedy")
+_GREEDY_FOR = {"target_ids": "greedy_ids", "target_top5": "greedy_top5", "target_logp": "greedy_logp"}
 
 
 def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
                  layers: list[int] | None = None, keep_activations: bool = True,
-                 columns: list[str] | None = None) -> list[dict]:
+                 columns: list[str] | None = None, label: str = "text") -> list[dict]:
     """Row-group-streamed load. Activations stay float16 numpy (half the RAM of
-    fp32; every consumer converts per batch). `layers` filters by activation_layer."""
+    fp32; every consumer converts per batch). `layers` filters by activation_layer.
+    `label="greedy"` swaps target_ids/top5/logp for the target's own greedy continuation
+    (see module doc); the corpus ids are kept as `text_ids`."""
+    assert label in LABELS, f"label must be one of {LABELS}, got {label!r}"
     pf = pq.ParquetFile(str(parquet_path))
     cols = list(columns or ROW_COLUMNS)
     if not keep_activations and "activation_vector" in cols:
         cols.remove("activation_vector")
     avail = set(pf.schema_arrow.names)
+    if label == "greedy":
+        for tc, gc in _GREEDY_FOR.items():
+            if tc in cols and gc not in cols:
+                cols.append(gc)
+        missing = [gc for tc, gc in _GREEDY_FOR.items() if tc in cols and gc not in avail]
+        assert not missing, f"{parquet_path}: label=greedy needs columns {missing} (re-run collect with --greedy all)"
     cols = [c for c in cols if c in avail]
     rows: list[dict] = []
     for rg_idx in range(pf.num_row_groups):
@@ -223,7 +243,8 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
         fixed = {}
         for name, dt in (("activation_vector", np.float16), ("target_ids", np.int64),
                          ("target_top5", np.int64), ("target_logp", np.float32),
-                         ("prev_ids", np.int64), ("greedy_ids", np.int64)):
+                         ("prev_ids", np.int64), ("greedy_ids", np.int64),
+                         ("greedy_top5", np.int64), ("greedy_logp", np.float32)):
             if name in cols:
                 arr = _fixed_col(rg, name).astype(dt, copy=False)
                 # Compact to the kept rows: per-row slices are VIEWS into the row-group
@@ -239,6 +260,13 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
             for name, arr in fixed.items():
                 row[name] = arr[j]
             j += 1
+            if label == "greedy":
+                assert int(row["greedy_ids"][0]) >= 0, "greedy_ids absent for this row (collect --greedy all)"
+                if "target_ids" in row:
+                    row["text_ids"] = row["target_ids"]
+                for tc, gc in _GREEDY_FOR.items():
+                    if gc in row:
+                        row[tc] = row.pop(gc)
             if "target_top5" in row:
                 row["target_top5"] = row["target_top5"].reshape(-1, 5)
             rows.append(row)

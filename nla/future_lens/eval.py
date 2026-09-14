@@ -120,6 +120,57 @@ def generate_readouts(model, tokenizer, jobs: list[dict], *, inject_char: str, v
     return (outs, viols) if return_violations else outs
 
 
+@torch.no_grad()
+def teacher_forced_hits(model, tokenizer, jobs: list[dict], *, inject_char: str, vectors_ref,
+                        injection_mode: str, device, batch_size: int = 64) -> list[list[int]]:
+    """Future Lens-style precision: feed the LABEL prefix (row target_ids[:k]) after the prompt
+    and take the decoder's argmax at each label position. Returns per-job hit flags per offset.
+    Same injection path as generation (marker scan in the prompt)."""
+    was_training = model.training
+    model.eval()
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    outs: list[list[int]] = [None] * len(jobs)  # type: ignore[list-item]
+    order = sorted(range(len(jobs)), key=lambda i: (jobs[i]["vector"] is None, jobs[i]["k"]))
+    for cs in range(0, len(order), batch_size):
+        idx = order[cs: cs + batch_size]
+        chunk = [jobs[i] for i in idx]
+        has_vec = [j["vector"] is not None for j in chunk]
+        if any(has_vec) and not all(has_vec):
+            for sub in ([i for i, h in zip(idx, has_vec) if h], [i for i, h in zip(idx, has_vec) if not h]):
+                if sub:
+                    for i, r in zip(sub, teacher_forced_hits(
+                            model, tokenizer, [jobs[i] for i in sub], inject_char=inject_char, vectors_ref=vectors_ref,
+                            injection_mode=injection_mode, device=device, batch_size=batch_size)):
+                        outs[i] = r
+            continue
+        labels = [[int(x) for x in j["label"][: j["k"]]] for j in chunk]
+        enc = [encode_prompt(tokenizer, j["prompt"], inject_char) + lab for j, lab in zip(chunk, labels)]
+        L = max(len(e) for e in enc)
+        ids = torch.full((len(chunk), L), pad_id, dtype=torch.long)
+        attn = torch.zeros((len(chunk), L), dtype=torch.long)
+        for r, e in enumerate(enc):
+            ids[r, L - len(e):] = torch.tensor(e, dtype=torch.long)
+            attn[r, L - len(e):] = 1
+        if all(has_vec):
+            raw = torch.tensor(np.stack([np.asarray(j["vector"], dtype=np.float32) for j in chunk]))
+            alphas = torch.tensor([float(j["alpha"]) for j in chunk])
+            vectors_ref[0] = prepare_vectors(raw, alphas, injection_mode).to(device)
+        else:
+            vectors_ref[0] = None
+        try:
+            logits = model(input_ids=ids.to(device), attention_mask=attn.to(device)).logits
+        finally:
+            vectors_ref[0] = None
+        pred = logits.argmax(-1).cpu()   # pred[:, p] predicts token p+1
+        for r, i in enumerate(idx):
+            k = len(labels[r])
+            # label tokens sit at positions L-k .. L-1; predicted from positions L-k-1 .. L-2
+            outs[i] = [int(pred[r, L - k - 1 + j] == labels[r][j]) for j in range(k)]
+    if was_training:
+        model.train()
+    return outs
+
+
 def score_readout(readout: list[int], row: dict, k: int, length_violation: bool | None = None) -> dict:
     """Per-offset hit/top-5 flags for one readout against the row's targets. A readout
     shorter than K is a miss at the missing offsets. `len_ok` = no length violation
@@ -161,7 +212,7 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
              batch_size: int = 32, seed: int = 0, tag: dict | None = None,
              eos_ids: set[int] | None = None, verbose: bool = True,
              dump: list | None = None, surprisal_rows: int | None = 256,
-             surprisal_ctx: int = 512) -> list[dict]:
+             surprisal_ctx: int = 512, teacher_forced: bool = True) -> list[dict]:
     """Full controlled eval -> list of JSON records. If `dump` is a list, one dict per
     (row, condition, K) with the raw readout is appended to it (for baselines.py leakage).
 
@@ -218,6 +269,11 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
                 n = len(scores)
                 p1 = [s["p1"][N] for s in scores]
                 records.append({**base, "metric": "p1", "value": float(np.mean(p1)), "n": n})
+                if teacher_forced:
+                    tf = teacher_forced_hits(model, tokenizer, [dict(j, label=row["target_ids"]) for j, row in zip(jobs, srows)],
+                                             inject_char=cfg.injection_char, vectors_ref=vectors_ref, injection_mode=injection_mode,
+                                             device=device, batch_size=batch_size)
+                    records.append({**base, "metric": "tf_p1", "value": float(np.mean([h[N] for h in tf])), "n": n})
                 records.append({**base, "metric": "p5", "value": float(np.mean([s["p5"][N] for s in scores])), "n": n})
                 records.append({**base, "metric": "exact", "value": float(np.mean([s["exact"] for s in scores])), "n": n})
                 records.append({**base, "metric": "len_ok", "value": float(np.mean([s["len_ok"] for s in scores])), "n": n})
@@ -292,6 +348,10 @@ def main(argv=None):
                    help="score readouts under the frozen target (needs docs.parquet)")
     p.add_argument("--surprisal-rows", type=int, default=256, help="rows per cell scored for surprisal (0 = all)")
     p.add_argument("--surprisal-ctx", type=int, default=512, help="true-prefix length for the surprisal forward")
+    p.add_argument("--label", choices=("text", "greedy"), default=None,
+                   help="readout label (see data.py); default: the adapter's future_lens.json, else text")
+    p.add_argument("--teacher-forced", action=argparse.BooleanOptionalAction, default=True,
+                   help="also record tf_p1: argmax at offset N given the label prefix (Future Lens convention)")
     p.add_argument("--merge-adapter", action=argparse.BooleanOptionalAction, default=True,
                    help="merge the LoRA into the base weights for ~1.7x faster generation; forced off "
                         "with --surprisal, which needs the adapter-disabled base model")
@@ -318,7 +378,11 @@ def main(argv=None):
     ks = [int(x) for x in args.ks.split(",")] if args.ks else fl.k_choices
     conditions = args.conditions.split(",")
     need_layers = set(layers) | ({args.wrong_layer} if "wrong_layer" in conditions else set())
-    rows = load_fl_rows(args.parquet, layers=sorted(need_layers))
+    if args.label is None:
+        fl_json = Path(args.adapter) / "future_lens.json" if args.adapter else None
+        args.label = (json.loads(fl_json.read_text()).get("label", "text") if fl_json and fl_json.exists() else "text")
+    print(f"[eval] label = {args.label}", flush=True)
+    rows = load_fl_rows(args.parquet, layers=sorted(need_layers), label=args.label)
     if args.max_rows:
         # seeded random subsample of POSITIONS (doc_idx, t), shared across layers, so every
         # layer scores the same positions and the cap does not mean "the first 40 documents"
@@ -341,6 +405,7 @@ def main(argv=None):
     register_injection(model, args.injection, vectors_ref, cfg.injection_token_id,
                        cfg.injection_left_neighbor_id, cfg.injection_right_neighbor_id, affine)
     tag = json.loads(args.tag) if args.tag else {}
+    tag.setdefault("label", args.label)
     for kv in (args.tag_kv.split(",") if args.tag_kv else []):
         k, v = kv.split("=", 1)
         tag[k] = int(v) if v.lstrip("-").isdigit() else v
@@ -354,6 +419,7 @@ def main(argv=None):
                     device=device, conditions=conditions, ks=ks, layers=layers, alpha_mult=args.alpha_mult,
                     wrong_layer=args.wrong_layer, docs=docs, batch_size=args.batch_size, seed=args.seed, tag=tag,
                     surprisal_rows=args.surprisal_rows or None, surprisal_ctx=args.surprisal_ctx,
+                    teacher_forced=args.teacher_forced,
                     dump=dump)
     write_records(recs, args.out)
     if dump is not None:

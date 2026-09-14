@@ -40,7 +40,8 @@ GPU_PREF = [("NVIDIA H100 80GB HBM3", "SECURE"), ("NVIDIA H100 PCIe", "SECURE"),
 BASE = "Qwen/Qwen3-8B"
 WORK = "/workspace/fl"
 WANDB_PROJECT = "rl-future-lens"
-LAYERS = "4,8,12,16,20,24"
+LAYERS = "4,8,12,16,20,24,28,32"       # collected; 4 = wrong-layer control only
+TRAIN_LAYERS = "8,12,16,20,24,28,32"    # Future Lens: N>=1 peaks mid-depth, N=0 late; 24 was still rising
 
 
 def _read(path):
@@ -63,7 +64,7 @@ def stage_cmd(stage: str, a) -> str:
         return (f"python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
                 f"--corpus-config sample-10BT --n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
                 f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
-                f"--batch-size 8 --out-dir {D} && "
+                f"--batch-size 8 --greedy all --out-dir {D} && "
                 f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
         # mirror data/ to HF in the background (idempotent) while the sweep runs
@@ -76,6 +77,7 @@ def stage_cmd(stage: str, a) -> str:
                         f"python -m nla.train_sft --config configs/future_lens/sft_alpha_sweep.yaml "
                         f"--base-ckpt {BASE} --parquet {D}/train.parquet --heldout-parquet {D}/eval.parquet "
                         f"--save-dir {C}/sweep_{tag} --injection {inj} --alpha-mult {m} {shuf} "
+                        f"--layers {TRAIN_LAYERS} --label {a.label} "
                         f"--wandb-name sweep_{tag} --seed 0 && "
                         f"(python scripts/hf_upload.py {C}/sweep_{tag} ckpts/sweep_{tag} --repo {a.hf_repo} || true)")
         return " && ".join(runs)
@@ -83,12 +85,14 @@ def stage_cmd(stage: str, a) -> str:
         return (f"python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
                 f"--parquet {D}/train.parquet --heldout-parquet {D}/eval.parquet "
                 f"--save-dir {C}/{a.run_name} --injection {a.injection} --alpha-mult {a.alpha_mult} "
+                f"--layers {TRAIN_LAYERS} --label {a.label} "
                 f"{'--affine' if a.affine else ''} --wandb-name {a.run_name} --seed {a.seed} {a.extra} && "
                 f"(python scripts/hf_upload.py {C}/{a.run_name} ckpts/{a.run_name} --repo {a.hf_repo} || true)")
     if stage == "rl":
         return (f"python -m nla.future_lens.train_rl --config configs/future_lens/rl.yaml --base-ckpt {BASE} "
                 f"--av-ckpt {C}/{a.av_ckpt} --parquet {D}/train.parquet --eval-parquet {D}/eval.parquet "
-                f"--save-dir {C}/{a.run_name} --reward {a.reward} --seed {a.seed} --wandb-name {a.run_name} {a.extra} && "
+                f"--save-dir {C}/{a.run_name} --reward {a.reward} --seed {a.seed} --layers {TRAIN_LAYERS} "
+                f"--wandb-name {a.run_name} {a.extra} && "
                 f"(python scripts/hf_upload.py {C}/{a.run_name} ckpts/{a.run_name} --repo {a.hf_repo} || true)")
     if stage == "eval":
         cmds = []
@@ -102,7 +106,7 @@ def stage_cmd(stage: str, a) -> str:
             cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{ad} "
                         f"--parquet {D}/eval.parquet --out {E}/{name}.jsonl "
                         f"--conditions real,shuffled,none,wrong_layer --wrong-layer 4 --batch-size 128 --surprisal --surprisal-rows 256 "
-                        f"--layers 8,12,16,20,24 --dump-readouts {E}/readouts_{name}.jsonl "
+                        f"--layers {TRAIN_LAYERS} --dump-readouts {E}/readouts_{name}.jsonl "
                         f"--seed {seed} --tag-kv {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed})} {a.extra}")
         return " && ".join(cmds)
     if stage == "filter_ablation":
@@ -143,11 +147,11 @@ def stage_cmd(stage: str, a) -> str:
                             f"--dump-readouts {E}/readouts_ablation_{run}_on_{ename}.jsonl")
         return " && ".join(cmds)
     if stage == "baselines":
-        return (f"python -m nla.future_lens.baselines ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
+        return (f"python -m nla.future_lens.baselines --label {a.label} ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
                 f"--base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 && "
-                f"python -m nla.future_lens.baselines probe --train-parquet {D}/train.parquet --parquet {D}/eval.parquet "
-                f"--base-ckpt {BASE} --leakage --epochs 3 --batch 1024 --out {E}/baselines.jsonl && "
-                f"for f in {E}/readouts_*.jsonl; do python -m nla.future_lens.baselines leakage --parquet {D}/eval.parquet "
+                f"python -m nla.future_lens.baselines --label {a.label} probe --train-parquet {D}/train.parquet --parquet {D}/eval.parquet "
+                f"--base-ckpt {BASE} --leakage --epochs 3 --batch 1024 --layers {TRAIN_LAYERS} --out {E}/baselines.jsonl && "
+                f"for f in {E}/readouts_*.jsonl; do python -m nla.future_lens.baselines --label {a.label} leakage --parquet {D}/eval.parquet "
                 f"--readouts $f --out {E}/leakage.jsonl --base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb "
                 f"--hf-config sample-10BT --hf-docs 20000; done")
     raise SystemExit(f"unknown stage {stage}")
@@ -244,6 +248,8 @@ def main(argv=None):
     l.add_argument("--n-train-docs", type=int, default=5500); l.add_argument("--n-eval-docs", type=int, default=300)
     l.add_argument("--hf-repo", default="syvb/rl-future-lens-qwen3-8b")
     l.add_argument("--injection", default="replace_embed"); l.add_argument("--alpha-mult", type=float, default=1.0)
+    l.add_argument("--label", default="greedy", choices=["text", "greedy"],
+                   help="readout label for sft/alpha_sweep/baselines (rl and eval read it from the checkpoint)")
     l.add_argument("--affine", action="store_true")
     l.add_argument("--av-ckpt", default=None, help="rl: SFT iter dir relative to ckpts/")
     l.add_argument("--reward", default="exact_match")
@@ -253,7 +259,7 @@ def main(argv=None):
     t = sub.add_parser("terminate"); t.add_argument("pod_id")
     a = p.parse_args(argv)
     if a.cmd == "launch" and a.run_name is None:
-        a.run_name = {"sft": f"sft_{a.injection}_a{a.alpha_mult}", "rl": f"rl_{a.reward}_s{a.seed}",
+        a.run_name = {"sft": f"sft_{a.injection}_a{a.alpha_mult}_{a.label}", "rl": f"rl_{a.reward}_s{a.seed}",
                       "filter_ablation": f"ablation_{a.part}"}.get(a.stage, a.stage)
     {"volume": cmd_volume, "launch": cmd_launch, "status": cmd_status, "terminate": cmd_terminate}[a.cmd](a)
 
