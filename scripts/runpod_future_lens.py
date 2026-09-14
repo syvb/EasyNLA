@@ -60,16 +60,16 @@ def _runpod():
 # ----------------------------------------------------------------------------
 
 def stage_cmd(stage: str, a) -> str:
-    D, C, E = f"{WORK}/data", f"{WORK}/ckpts", f"{WORK}/evals"
+    D, C, E = f"{WORK}/{a.data_dir}", f"{WORK}/ckpts", f"{WORK}/evals"
     if stage == "collect":
         return (f"python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
                 f"--corpus-config sample-10BT --n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
                 f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
                 f"--batch-size 8 --greedy all --prompt-format {PROMPT_FORMAT} --out-dir {D} && "
-                f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} || true)")
+                f"(python scripts/hf_upload.py {D} {a.data_dir} --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
         # mirror data/ to HF in the background (idempotent) while the sweep runs
-        runs = [f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} > {WORK}/logs/hf_upload_data.log 2>&1 &) ; true"]
+        runs = [f"(python scripts/hf_upload.py {D} {a.data_dir} --repo {a.hf_repo} > {WORK}/logs/hf_upload_data.log 2>&1 &) ; true"]
         # --sweep "replace_embed:0.5,1,2,4;karvonen:1" ; shuffled-control runs for --sweep-shuffle-mults
         for spec in a.sweep.split(";"):
             inj, ms = spec.split(":")
@@ -250,6 +250,8 @@ def main(argv=None):
     l.add_argument("--extra", default="", help="extra CLI flags appended to the stage command")
     l.add_argument("--n-train-docs", type=int, default=5500); l.add_argument("--n-eval-docs", type=int, default=300)
     l.add_argument("--hf-repo", default="syvb/rl-future-lens-qwen3-8b")
+    l.add_argument("--data-dir", default="data_base", help="split dir under the volume and path in the HF repo "
+                   "(data = the earlier Qwen3-8B chat-model split with text labels only)")
     l.add_argument("--injection", default="replace_embed"); l.add_argument("--alpha-mult", type=float, default=1.0)
     l.add_argument("--sweep", default="replace_embed:0.5,1,2,4;karvonen:1", help="alpha_sweep: inj:mults;inj:mults")
     l.add_argument("--sweep-shuffle-mults", default="0.5,1,2,4", help="alpha_sweep: mults that also get a shuffled-control run")
