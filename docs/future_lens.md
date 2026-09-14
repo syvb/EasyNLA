@@ -50,6 +50,11 @@ Everything is model-size generic: the whole chain runs on CPU with Qwen3-0.6B
   [Σ log p_target over produced slots − 4 nats per empty slot] / K: summed, not averaged,
   so stopping early is never the best move. The eval `surprisal` is the plain per-token
   mean over non-empty readouts (read it together with `len_ok`).
+* **Eval cost.** `future_lens.eval` merges the LoRA into the base weights (1.7x faster
+  generation) unless `--surprisal` is on, which needs the adapter-disabled base as the frozen
+  target. Surprisal is opt-in (a true-prefix forward per readout costs ~5x the generation) and
+  scored on `--surprisal-rows` per cell with a `--surprisal-ctx`-token prefix. `--max-rows` is a
+  seeded random subsample of positions shared across layers.
 * **Preceding tokens** (`prev_ids`) and document token ids (`docs.parquet`) exist for
   the leakage probe and the target-logprob reward / surprisal only. No decoder code
   path reads them.

@@ -101,7 +101,7 @@ def stage_cmd(stage: str, a) -> str:
             group = run[: m.start()] if m else run
             cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{ad} "
                         f"--parquet {D}/eval.parquet --out {E}/{name}.jsonl "
-                        f"--conditions real,shuffled,none,wrong_layer --wrong-layer 4 --batch-size 64 "
+                        f"--conditions real,shuffled,none,wrong_layer --wrong-layer 4 --batch-size 128 --surprisal --surprisal-rows 256 "
                         f"--layers 8,12,16,20,24 --dump-readouts {E}/readouts_{name}.jsonl "
                         f"--seed {seed} --tag-kv {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed})} {a.extra}")
         return " && ".join(cmds)
@@ -139,7 +139,7 @@ def stage_cmd(stage: str, a) -> str:
                 cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{run}/iter_0002000 "
                             f"--parquet {edata}/eval.parquet --sidecar {data}/train.parquet "
                             f"--out {E}/ablation_{run}_on_{ename}.jsonl --conditions real,shuffled,none "
-                            f"--layers 8,12,16,20,24 --max-rows 800 --batch-size 64 --seed {a.seed} --tag-kv {tag} "
+                            f"--layers 8,12,16,20,24 --max-rows 800 --batch-size 128 --seed {a.seed} --tag-kv {tag} "
                             f"--dump-readouts {E}/readouts_ablation_{run}_on_{ename}.jsonl")
         return " && ".join(cmds)
     if stage == "baselines":

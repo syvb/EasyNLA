@@ -160,7 +160,8 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
              alpha_mult: float = 1.0, wrong_layer: int = 4, docs: dict | None = None,
              batch_size: int = 32, seed: int = 0, tag: dict | None = None,
              eos_ids: set[int] | None = None, verbose: bool = True,
-             dump: list | None = None) -> list[dict]:
+             dump: list | None = None, surprisal_rows: int | None = 256,
+             surprisal_ctx: int = 512) -> list[dict]:
     """Full controlled eval -> list of JSON records. If `dump` is a list, one dict per
     (row, condition, K) with the raw readout is appended to it (for baselines.py leakage).
 
@@ -225,9 +226,13 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
                     if sel:
                         records.append({**base, "metric": f"p1_{name}", "value": float(np.mean(sel)), "n": len(sel)})
                 if docs is not None:
-                    prefixes = [docs[int(row["doc_idx"])][: int(row["t"]) + 1] for row in srows]
-                    lp = target_logp_reward(model, prefixes, ro, device, pad_id=pad_id,
-                                            micro_batch=max(1, batch_size // 4))
+                    # a 1024-token target forward per readout costs ~5x the generation itself;
+                    # score a subsample (srows are already a seeded random subsample) with a
+                    # shorter true prefix
+                    ns = surprisal_rows or len(srows)
+                    prefixes = [docs[int(row["doc_idx"])][: int(row["t"]) + 1] for row in srows[:ns]]
+                    lp = target_logp_reward(model, prefixes, ro[:ns], device, pad_id=pad_id,
+                                            micro_batch=max(1, batch_size // 4), max_prefix=surprisal_ctx)
                     # mean over NON-EMPTY readouts only (selection bias if the policy stops first;
                     # `len_ok` records how often that happens)
                     vals = [-v for v in lp if v is not None]
@@ -283,8 +288,13 @@ def main(argv=None):
     p.add_argument("--layers", default=None)
     p.add_argument("--wrong-layer", type=int, default=4)
     p.add_argument("--max-rows", type=int, default=None, help="cap rows PER LAYER")
-    p.add_argument("--surprisal", action=argparse.BooleanOptionalAction, default=True,
+    p.add_argument("--surprisal", action=argparse.BooleanOptionalAction, default=False,
                    help="score readouts under the frozen target (needs docs.parquet)")
+    p.add_argument("--surprisal-rows", type=int, default=256, help="rows per cell scored for surprisal (0 = all)")
+    p.add_argument("--surprisal-ctx", type=int, default=512, help="true-prefix length for the surprisal forward")
+    p.add_argument("--merge-adapter", action=argparse.BooleanOptionalAction, default=True,
+                   help="merge the LoRA into the base weights for ~1.7x faster generation; forced off "
+                        "with --surprisal, which needs the adapter-disabled base model")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
@@ -324,6 +334,9 @@ def main(argv=None):
             print("[eval] docs.parquet not found — skipping surprisal")
     affine_path = Path(args.adapter) / "affine.pt" if args.adapter else None
     model, affine = load_decoder(args.base_ckpt, args.adapter, device, dtype, affine_path=affine_path)
+    if args.adapter and args.merge_adapter and not args.surprisal:
+        model = model.merge_and_unload(); model.eval()
+        print("[eval] LoRA merged into the base weights (generation only; no surprisal)")
     vectors_ref = [None]
     register_injection(model, args.injection, vectors_ref, cfg.injection_token_id,
                        cfg.injection_left_neighbor_id, cfg.injection_right_neighbor_id, affine)
@@ -340,6 +353,7 @@ def main(argv=None):
     recs = evaluate(model, tokenizer, rows, fl, cfg, injection_mode=args.injection, vectors_ref=vectors_ref,
                     device=device, conditions=conditions, ks=ks, layers=layers, alpha_mult=args.alpha_mult,
                     wrong_layer=args.wrong_layer, docs=docs, batch_size=args.batch_size, seed=args.seed, tag=tag,
+                    surprisal_rows=args.surprisal_rows or None, surprisal_ctx=args.surprisal_ctx,
                     dump=dump)
     write_records(recs, args.out)
     if dump is not None:
