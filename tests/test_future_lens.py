@@ -243,17 +243,25 @@ def test_load_fl_rows_label_swap(tmp_path):
            "activation_vector": np.zeros(d, np.float16), "activation_layer": 8, "doc_id": "a",
            "n_raw_tokens": 10, "target_ids": [1, 2, 3], "k": 2, "doc_idx": 0, "t": 9, "p_top1": 0.5,
            "target_top5": list(range(15)), "target_logp": [-1.0, -1.0, -1.0], "prev_ids": [7, 8],
-           "greedy_ids": [4, 5, 6], "greedy_top5": list(range(100, 115)), "greedy_logp": [-2.0, -2.0, -2.0]}
-    pq.write_table(pa.Table.from_pylist([row], schema=sch), str(tmp_path / "e.parquet"))
+           "greedy_ids": [1, 5, 6], "greedy_top5": list(range(100, 115)), "greedy_logp": [-2.0, -2.0, -2.0]}
+    # second row: greedy first token disagrees with the corpus token -> dropped under label=greedy
+    row2 = dict(row, t=20, target_ids=[7, 8, 9], greedy_ids=[4, 8, 9])
+    # third row: greedy continuation contains a stop id -> dropped when drop_label_ids is given
+    row3 = dict(row, t=30, target_ids=[2, 3, 4], greedy_ids=[2, 99, 4])
+    pq.write_table(pa.Table.from_pylist([row, row2, row3], schema=sch), str(tmp_path / "e.parquet"))
+    assert len(load_fl_rows(tmp_path / "e.parquet")) == 3
+    rg = load_fl_rows(tmp_path / "e.parquet", label="greedy")
+    assert [int(r["t"]) for r in rg] == [9, 30]          # mismatch row dropped
     r_text = load_fl_rows(tmp_path / "e.parquet")[0]
-    r_greedy = load_fl_rows(tmp_path / "e.parquet", label="greedy")[0]
+    r_greedy = rg[0]
     assert list(r_text["target_ids"]) == [1, 2, 3] and "text_ids" not in r_text
-    assert list(r_greedy["target_ids"]) == [4, 5, 6] and list(r_greedy["text_ids"]) == [1, 2, 3]
+    assert list(r_greedy["target_ids"]) == [1, 5, 6] and list(r_greedy["text_ids"]) == [1, 2, 3]
     assert r_greedy["target_top5"].shape == (nf, 5) and int(r_greedy["target_top5"][0, 0]) == 100
     assert float(r_greedy["target_logp"][0]) == -2.0
-    # a column subset that asks for target_ids only still gets the swap
-    r_sub = load_fl_rows(tmp_path / "e.parquet", label="greedy", columns=["target_ids", "k"])[0]
-    assert list(r_sub["target_ids"]) == [4, 5, 6]
+    assert [int(r["t"]) for r in load_fl_rows(tmp_path / "e.parquet", label="greedy", drop_label_ids={99})] == [9]
+    # a column subset that asks for target_ids only still gets the swap; `layers=` adds activation_layer
+    r_sub = load_fl_rows(tmp_path / "e.parquet", label="greedy", columns=["target_ids", "k"], layers=[8])
+    assert list(r_sub[0]["target_ids"]) == [1, 5, 6] and len(r_sub) == 2
 
 
 @needs_model

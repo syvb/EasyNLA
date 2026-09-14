@@ -41,7 +41,7 @@ from nla.future_lens.data import (
 from nla.future_lens.inject import INJECTION_MODES, prepare_vectors, register_injection
 from nla.future_lens.rewards import target_logp_reward, truncate_readout
 
-CONDITIONS = ("real", "shuffled", "none", "wrong_layer")
+CONDITIONS = ("real", "shuffled", "none", "wrong_layer", "cross_layer")
 CONF_BUCKETS = ((0.0, 0.3, "conf_00_30"), (0.3, 0.6, "conf_30_60"), (0.6, 0.9, "conf_60_90"),
                 (0.9, 1.01, "conf_90_100"))
 
@@ -206,13 +206,19 @@ def _wrong_layer_lookup(rows: list[dict], wrong_layer: int) -> dict[tuple[int, i
             for r in rows if int(r["activation_layer"]) == wrong_layer}
 
 
+def far_layer(layer: int, layers: list[int]) -> int:
+    """cross_layer control: the TRAINED layer farthest from `layer` (in-distribution vector,
+    wrong layer; the layer-4 wrong_layer control is out-of-distribution for the decoder)."""
+    return max((l for l in layers if l != layer), key=lambda l: abs(l - layer))
+
+
 def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str, vectors_ref,
              device, conditions: list[str], ks: list[int], layers: list[int] | None = None,
              alpha_mult: float = 1.0, wrong_layer: int = 4, docs: dict | None = None,
              batch_size: int = 32, seed: int = 0, tag: dict | None = None,
              eos_ids: set[int] | None = None, verbose: bool = True,
              dump: list | None = None, surprisal_rows: int | None = 256,
-             surprisal_ctx: int = 512, teacher_forced: bool = True) -> list[dict]:
+             surprisal_ctx: int = 1024, teacher_forced: bool = True) -> list[dict]:
     """Full controlled eval -> list of JSON records. If `dump` is a list, one dict per
     (row, condition, K) with the raw readout is appended to it (for baselines.py leakage).
 
@@ -225,13 +231,27 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
     records: list[dict] = []
     tag = tag or {}
     wl = _wrong_layer_lookup(rows, wrong_layer) if "wrong_layer" in conditions else {}
+    if "wrong_layer" in conditions:
+        assert wrong_layer not in layers, f"--wrong-layer {wrong_layer} is also an evaluated layer"
+        assert wl, f"no layer-{wrong_layer} rows loaded for the wrong_layer control"
     by_layer = {l: [r for r in rows if int(r["activation_layer"]) == l] for l in layers}
+    cross = {l: _wrong_layer_lookup(rows, far_layer(l, layers)) for l in layers} if "cross_layer" in conditions else {}
+    # surprisal: one seeded random set of positions shared by every cell (parquet order is
+    # doc-major, so "first n rows" would be a dozen documents)
+    surp_keys = None
+    if docs is not None and surprisal_rows:
+        keys = sorted({(int(r["doc_idx"]), int(r["t"])) for r in rows})
+        pick = np.random.default_rng(seed + 7).choice(len(keys), size=min(surprisal_rows, len(keys)), replace=False)
+        surp_keys = {keys[i] for i in pick}
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     for cond in conditions:
         assert cond in CONDITIONS, f"unknown condition {cond!r}; choices {CONDITIONS}"
         for layer in layers:
             lrows = by_layer[layer]
             if not lrows:
+                continue
+            if cond == "shuffled" and len(lrows) < 2:
+                print(f"[eval] shuffled: layer {layer} has {len(lrows)} row(s); skipped", flush=True)
                 continue
             if cond == "shuffled":
                 # cyclic derangement over a random order: every row gets ANOTHER row's vector
@@ -242,6 +262,11 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
                 vec_src = src
             elif cond == "wrong_layer":
                 vec_src = [wl.get((int(r["doc_idx"]), int(r["t"]))) for r in lrows]
+                n_missing = sum(v is None for v in vec_src)
+                if n_missing:
+                    print(f"[eval] wrong_layer: layer {layer}: {n_missing}/{len(lrows)} rows have no layer-{wrong_layer} vector; dropped", flush=True)
+            elif cond == "cross_layer":
+                vec_src = [cross[layer].get((int(r["doc_idx"]), int(r["t"]))) for r in lrows]
             elif cond == "none":
                 vec_src = [None] * len(lrows)
             else:
@@ -285,9 +310,10 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
                     # a 1024-token target forward per readout costs ~5x the generation itself;
                     # score a subsample (srows are already a seeded random subsample) with a
                     # shorter true prefix
-                    ns = surprisal_rows or len(srows)
-                    prefixes = [docs[int(row["doc_idx"])][: int(row["t"]) + 1] for row in srows[:ns]]
-                    lp = target_logp_reward(model, prefixes, ro[:ns], device, pad_id=pad_id,
+                    sel = [i for i, row in enumerate(srows)
+                           if surp_keys is None or (int(row["doc_idx"]), int(row["t"])) in surp_keys]
+                    prefixes = [docs[int(srows[i]["doc_idx"])][: int(srows[i]["t"]) + 1] for i in sel]
+                    lp = target_logp_reward(model, prefixes, [ro[i] for i in sel], device, pad_id=pad_id,
                                             micro_batch=max(1, batch_size // 4), max_prefix=surprisal_ctx)
                     # mean over NON-EMPTY readouts only (selection bias if the policy stops first;
                     # `len_ok` records how often that happens)
@@ -337,9 +363,11 @@ def main(argv=None):
     p.add_argument("--parquet", required=True, help="eval.parquet from nla.future_lens.collect")
     p.add_argument("--sidecar", default=None)
     p.add_argument("--out", required=True, help="JSONL to append records to")
-    p.add_argument("--injection", choices=INJECTION_MODES, default="replace_embed")
-    p.add_argument("--alpha-mult", type=float, default=1.0)
-    p.add_argument("--conditions", default="real,shuffled,none")
+    p.add_argument("--injection", choices=INJECTION_MODES, default=None,
+                   help="default: the adapter's future_lens.json, else replace_embed")
+    p.add_argument("--alpha-mult", type=float, default=None, help="default: the adapter's future_lens.json, else 1.0")
+    p.add_argument("--conditions", default="real,shuffled,none",
+                   help=f"comma list from {CONDITIONS}; cross_layer = the farthest evaluated layer's vector")
     p.add_argument("--ks", default=None, help="readout lengths (default: sidecar k_choices)")
     p.add_argument("--layers", default=None)
     p.add_argument("--wrong-layer", type=int, default=4)
@@ -347,7 +375,9 @@ def main(argv=None):
     p.add_argument("--surprisal", action=argparse.BooleanOptionalAction, default=False,
                    help="score readouts under the frozen target (needs docs.parquet)")
     p.add_argument("--surprisal-rows", type=int, default=256, help="rows per cell scored for surprisal (0 = all)")
-    p.add_argument("--surprisal-ctx", type=int, default=512, help="true-prefix length for the surprisal forward")
+    p.add_argument("--surprisal-ctx", type=int, default=1024,
+                   help="true-prefix length for the surprisal forward (= the collector's max_len, so the "
+                        "target sees the same context that produced the labels)")
     p.add_argument("--label", choices=("text", "greedy"), default=None,
                    help="readout label (see data.py); default: the adapter's future_lens.json, else text")
     p.add_argument("--teacher-forced", action=argparse.BooleanOptionalAction, default=True,
@@ -378,11 +408,19 @@ def main(argv=None):
     ks = [int(x) for x in args.ks.split(",")] if args.ks else fl.k_choices
     conditions = args.conditions.split(",")
     need_layers = set(layers) | ({args.wrong_layer} if "wrong_layer" in conditions else set())
+    # label / injection / alpha travel with the checkpoint
+    fl_json = Path(args.adapter) / "future_lens.json" if args.adapter else None
+    ck = json.loads(fl_json.read_text()) if fl_json and fl_json.exists() else {}
     if args.label is None:
-        fl_json = Path(args.adapter) / "future_lens.json" if args.adapter else None
-        args.label = (json.loads(fl_json.read_text()).get("label", "text") if fl_json and fl_json.exists() else "text")
-    print(f"[eval] label = {args.label}", flush=True)
-    rows = load_fl_rows(args.parquet, layers=sorted(need_layers), label=args.label)
+        args.label = ck.get("label", "text")
+    if args.injection is None:
+        args.injection = ck.get("injection", "replace_embed")
+    if args.alpha_mult is None:
+        args.alpha_mult = float(ck.get("alpha_mult", 1.0))
+    print(f"[eval] label={args.label} injection={args.injection} alpha_mult={args.alpha_mult}"
+          f"{' (from ' + str(fl_json) + ')' if ck else ''}", flush=True)
+    rows = load_fl_rows(args.parquet, layers=sorted(need_layers), label=args.label,
+                        drop_label_ids={tokenizer.eos_token_id})
     if args.max_rows:
         # seeded random subsample of POSITIONS (doc_idx, t), shared across layers, so every
         # layer scores the same positions and the cap does not mean "the first 40 documents"

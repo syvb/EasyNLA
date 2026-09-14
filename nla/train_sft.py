@@ -49,7 +49,7 @@ from nla.schema import (
     normalize_activation,
     resolve_target_scale,
 )
-from nla.future_lens.data import chat_prompt_text, load_fl_meta, load_fl_rows, shuffle_activations
+from nla.future_lens.data import chat_prompt_text, load_fl_meta, load_fl_rows, subsample_positions, shuffle_activations
 from nla.future_lens.inject import (
     INJECTION_MODES, AffineInjector, prepare_vectors, register_replace_embed_hook,
 )
@@ -860,6 +860,7 @@ def main():
         fl_meta = load_fl_meta(args.sidecar)
         _layers = [int(x) for x in args.layers.split(",")] if args.layers else None
         rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=_layers, label=args.label,
+                            drop_label_ids={tokenizer.eos_token_id},
                             columns=["prompt", "response", "activation_vector", "activation_layer",
                                      "target_ids", "k", "doc_id"])
         print(f"[data] future-lens label = {args.label}", flush=True)
@@ -936,10 +937,14 @@ def main():
     heldout_shuf_rows = None
     if args.mode == "av" and args.heldout_parquet and args.future_lens:
         _hl = [int(x) for x in args.layers.split(",")] if args.layers else None
-        heldout_av_rows = load_fl_rows(
-            args.heldout_parquet, args.heldout_rows, layers=_hl, label=args.label,
+        # seeded random subsample of positions shared across layers (the parquet is doc-major:
+        # "first N rows" would be ~4 documents repeated at every layer)
+        heldout_av_rows = subsample_positions(load_fl_rows(
+            args.heldout_parquet, layers=_hl, label=args.label, drop_label_ids={tokenizer.eos_token_id},
             columns=["prompt", "response", "activation_vector", "activation_layer", "target_ids",
-                     "target_top5", "k", "doc_id", "p_top1"])
+                     "target_top5", "k", "doc_id", "doc_idx", "t", "p_top1"]), args.heldout_rows, seed=args.seed)
+        print(f"[data] held-out: {len(heldout_av_rows)} rows over "
+              f"{len({(int(r['doc_idx']), int(r['t'])) for r in heldout_av_rows})} positions", flush=True)
         for r in heldout_av_rows:
             r["inject_alpha"] = fl_meta.alpha(int(r["activation_layer"]), args.alpha_mult)
         heldout_shuf_rows = [dict(r) for r in heldout_av_rows]
@@ -973,6 +978,10 @@ def main():
 
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+    _existing = sorted(save_dir.glob("iter_*"))
+    if _existing and not getattr(args, "resume_from_lora", None):
+        raise SystemExit(f"[save] {save_dir} already has {len(_existing)} iter_* checkpoints; "
+                         "use a new --save-dir (a relaunch would overwrite them and duplicate the wandb run)")
     save_resolved_config(args, save_dir)   # snapshot merged config for reproducibility
 
     # ---- debug sampling: fixed example set + accumulating table ----

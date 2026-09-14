@@ -234,16 +234,23 @@ _GREEDY_FOR = {"target_ids": "greedy_ids", "target_top5": "greedy_top5", "target
 
 def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
                  layers: list[int] | None = None, keep_activations: bool = True,
-                 columns: list[str] | None = None, label: str = "text") -> list[dict]:
+                 columns: list[str] | None = None, label: str = "text",
+                 drop_label_ids: set[int] | None = None) -> list[dict]:
     """Row-group-streamed load. Activations stay float16 numpy (half the RAM of
     fp32; every consumer converts per batch). `layers` filters by activation_layer.
     `label="greedy"` swaps target_ids/top5/logp for the target's own greedy continuation
-    (see module doc); the corpus ids are kept as `text_ids`."""
+    (see module doc); the corpus ids are kept as `text_ids`. Under greedy labels, rows
+    whose greedy first token disagrees with the corpus token (a bf16 near-tie flip between
+    the teacher-forced filter pass and the batched generate) and rows whose greedy
+    continuation contains one of `drop_label_ids` (EOS: unreachable for the decoder) are
+    dropped and counted."""
     assert label in LABELS, f"label must be one of {LABELS}, got {label!r}"
     pf = pq.ParquetFile(str(parquet_path))
     cols = list(columns or ROW_COLUMNS)
     if not keep_activations and "activation_vector" in cols:
         cols.remove("activation_vector")
+    if layers is not None and "activation_layer" not in cols:
+        cols.append("activation_layer")
     avail = set(pf.schema_arrow.names)
     if label == "greedy":
         for tc, gc in _GREEDY_FOR.items():
@@ -253,6 +260,7 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
         assert not missing, f"{parquet_path}: label=greedy needs columns {missing} (re-run collect with --greedy all)"
     cols = [c for c in cols if c in avail]
     rows: list[dict] = []
+    dropped = {"greedy_first_token_mismatch": 0, "greedy_contains_stop_id": 0}
     for rg_idx in range(pf.num_row_groups):
         if n_max is not None and len(rows) >= n_max:
             break
@@ -287,17 +295,40 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
             for name, arr in fixed.items():
                 row[name] = arr[j]
             j += 1
-            if label == "greedy":
-                assert int(row["greedy_ids"][0]) >= 0, "greedy_ids absent for this row (collect --greedy all)"
+            if label == "greedy" and "greedy_ids" in row:
+                g = row["greedy_ids"]
+                assert int(g[0]) >= 0, "greedy_ids absent for this row (collect --greedy all)"
                 if "target_ids" in row:
+                    if int(g[0]) != int(row["target_ids"][0]):
+                        dropped["greedy_first_token_mismatch"] += 1
+                        continue
                     row["text_ids"] = row["target_ids"]
+                if drop_label_ids and any(int(x) in drop_label_ids for x in g):
+                    dropped["greedy_contains_stop_id"] += 1
+                    continue
                 for tc, gc in _GREEDY_FOR.items():
                     if gc in row:
                         row[tc] = row.pop(gc)
             if "target_top5" in row:
                 row["target_top5"] = row["target_top5"].reshape(-1, 5)
             rows.append(row)
+    if any(dropped.values()):
+        print(f"[data] {parquet_path}: dropped rows under label=greedy: {dropped} (kept {len(rows)})", flush=True)
     return rows
+
+
+def subsample_positions(rows: list[dict], n_rows: int, seed: int) -> list[dict]:
+    """Seeded random subsample of POSITIONS (doc_idx, t), shared across layers, sized so that
+    about `n_rows` rows survive. Parquet order is doc-major, so "first n rows" would be a
+    handful of documents repeated at every layer."""
+    if n_rows is None or len(rows) <= n_rows:
+        return rows
+    keys = sorted({(int(r["doc_idx"]), int(r["t"])) for r in rows})
+    n_layers = max(1, len({int(r["activation_layer"]) for r in rows}))
+    n_pos = max(1, int(np.ceil(n_rows / n_layers)))
+    rng = np.random.default_rng(seed)
+    pick = {keys[i] for i in rng.choice(len(keys), size=min(n_pos, len(keys)), replace=False)}
+    return [r for r in rows if (int(r["doc_idx"]), int(r["t"])) in pick]
 
 
 def load_docs(docs_parquet: str | Path) -> dict[int, np.ndarray]:

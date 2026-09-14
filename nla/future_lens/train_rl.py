@@ -267,7 +267,7 @@ def main(argv=None):
 
     # ---- data ----
     layers = [int(x) for x in args.layers.split(",")] if args.layers else None
-    rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=layers, label=args.label)
+    rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=layers, label=args.label, drop_label_ids=eos_ids)
     for r in rows:
         r["inject_alpha"] = fl.alpha(int(r["activation_layer"]), args.alpha_mult)
     print(f"[data] {len(rows)} train rows, layers={sorted({int(r['activation_layer']) for r in rows})}", flush=True)
@@ -280,7 +280,7 @@ def main(argv=None):
     if args.eval_parquet and args.eval_every > 0:
         # seeded random subsample PER LAYER (the parquet is doc-major, so "first N rows"
         # would be a handful of documents, the same ones at every layer)
-        all_eval = load_fl_rows(args.eval_parquet, layers=layers, label=args.label,
+        all_eval = load_fl_rows(args.eval_parquet, layers=layers, label=args.label, drop_label_ids=eos_ids,
                                 columns=["prompt", "activation_vector", "activation_layer", "target_ids",
                                          "target_top5", "k", "doc_idx", "t", "p_top1"])
         by_layer: dict[int, list[dict]] = defaultdict(list)
@@ -377,7 +377,9 @@ def main(argv=None):
         n = len(samples)
 
         # ---- rewards ----
-        marker_ok = [marker_well_formed(s["prompt_ids"], inj_id, left_id, right_id) for s in samples]
+        # the update forward scans prompt+response: a rollout that emits the marker/neighbours
+        # must be masked here, not crash there
+        marker_ok = [marker_well_formed(s["prompt_ids"] + s["resp_ids"], inj_id, left_id, right_id) for s in samples]
         readouts, viols = [], []
         for s in samples:
             ro, viol = truncate_readout(s["resp_ids"], s["job"]["k"], eos_ids)

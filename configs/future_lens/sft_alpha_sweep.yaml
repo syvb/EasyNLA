@@ -3,6 +3,7 @@
 # the largest heldout/ce_gap. ~10 runs x ~10 min on one H100.
 mode: av
 future_lens: true
+label: greedy
 use_lora: true
 lora_r: 64
 lora_alpha: 16                # rsLoRA scale alpha/sqrt(r) = 2.0
@@ -22,3 +23,4 @@ heldout_gen_rows: 128
 save_every: 400
 wandb_project: rl-future-lens
 wandb_group: alpha_sweep
+sample_every: 0             # no wandb Table (wandb is metrics-only)

@@ -31,8 +31,6 @@ runs.sort(key=lambda r: r.name)
 short = [m.split("/")[-1] for m in metrics]
 print(f'{"run":<32} {"state":<9} {"step":>6} ' + " ".join(f"{s:>14}" for s in short))
 for r in runs:
-    hist = r.history(keys=metrics, pandas=False, samples=10000)
-    hist = [h for h in hist if any(h.get(m) is not None for m in metrics)]
-    last = hist[-1] if hist else {}
+    last = r.summary   # last logged value per key (history(keys=[...]) drops rows missing any key)
     vals = [f'{last[m]:>14.4f}' if isinstance(last.get(m), (int, float)) else f'{"-":>14}' for m in metrics]
     print(f'{r.name:<32} {r.state:<9} {last.get("_step", "-"):>6} ' + " ".join(vals))

@@ -5,7 +5,7 @@ repo's launcher: the pod boots the official PyTorch image, clones this repo's
 branch, `pip install -e .`, runs ONE stage command with logs to wandb and to the
 network volume, then terminates itself (unless --keep).
 
-  python scripts/runpod_future_lens.py volume --size 150 --dc EU-RO-1      # once
+  python scripts/runpod_future_lens.py volume --size 150 --dc US-CA-2      # once (a DC with H100 stock that supports volumes)
   python scripts/runpod_future_lens.py launch collect  --volume <id>
   python scripts/runpod_future_lens.py launch alpha_sweep --volume <id>
   python scripts/runpod_future_lens.py launch sft      --volume <id> --alpha-mult 1 --injection replace_embed
@@ -41,6 +41,7 @@ BASE = "Qwen/Qwen3-8B-Base"   # pretrained base + plain prompt (spec: "base / no
 PROMPT_FORMAT = "plain"
 WORK = "/workspace/fl"
 WANDB_PROJECT = "rl-future-lens"
+MAX_POD_HOURS = 16   # watchdog: the longest stage (RL, ~4-5 h) plus a wide margin
 LAYERS = "4,8,12,16,20,24,28,32"       # collected; 4 = wrong-layer control only
 TRAIN_LAYERS = "8,12,16,20,24,28,32"    # Future Lens: N>=1 peaks mid-depth, N=0 late; 24 was still rising
 
@@ -69,7 +70,7 @@ def stage_cmd(stage: str, a) -> str:
                 f"(python scripts/hf_upload.py {D} {a.data_dir} --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
         # mirror data/ to HF in the background (idempotent) while the sweep runs
-        runs = [f"(python scripts/hf_upload.py {D} {a.data_dir} --repo {a.hf_repo} > {WORK}/logs/hf_upload_data.log 2>&1 &) ; true"]
+        runs = [f"python scripts/hf_upload.py {D} {a.data_dir} --repo {a.hf_repo} > {WORK}/logs/hf_upload_data.log 2>&1 & UP=$!"]
         # --sweep "replace_embed:0.5,1,2,4;karvonen:1" ; shuffled-control runs for --sweep-shuffle-mults
         for spec in a.sweep.split(";"):
             inj, ms = spec.split(":")
@@ -77,12 +78,13 @@ def stage_cmd(stage: str, a) -> str:
                 for shuf in ("", "--shuffle-activations") if m in a.sweep_shuffle_mults else ("",):
                     tag = f"{inj}_a{m}{'_shuf' if shuf else ''}"
                     runs.append(
-                        f"python -m nla.train_sft --config configs/future_lens/sft_alpha_sweep.yaml "
+                        f"[ -d {C}/sweep_{tag}/iter_0000400 ] || python -m nla.train_sft --config configs/future_lens/sft_alpha_sweep.yaml "
                         f"--base-ckpt {BASE} --parquet {D}/train.parquet --heldout-parquet {D}/eval.parquet "
                         f"--save-dir {C}/sweep_{tag} --injection {inj} --alpha-mult {m} {shuf} "
                         f"--layers {TRAIN_LAYERS} --label {a.label} "
                         f"--wandb-name sweep_{tag} --seed 0 && "
                         f"(python scripts/hf_upload.py {C}/sweep_{tag} ckpts/sweep_{tag} --repo {a.hf_repo} || true)")
+        runs.append("wait $UP")
         return " && ".join(runs)
     if stage == "sft":
         return (f"python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
@@ -106,9 +108,10 @@ def stage_cmd(stage: str, a) -> str:
             m = re.search(r"_s(\d+)$", run)
             seed = int(m.group(1)) if m else a.seed
             group = run[: m.start()] if m else run
-            cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{ad} "
+            cmds.append(f"rm -f {E}/{name}.jsonl {E}/readouts_{name}.jsonl && "
+                        f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{ad} "
                         f"--parquet {D}/eval.parquet --out {E}/{name}.jsonl "
-                        f"--conditions real,shuffled,none,wrong_layer --wrong-layer 4 --batch-size 128 --surprisal --surprisal-rows 256 "
+                        f"--conditions real,shuffled,none,wrong_layer,cross_layer --wrong-layer 4 --batch-size 128 --surprisal --surprisal-rows 256 "
                         f"--layers {TRAIN_LAYERS} --dump-readouts {E}/readouts_{name}.jsonl "
                         f"--seed {seed} --tag-kv {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed})} {a.extra}")
         return " && ".join(cmds)
@@ -128,8 +131,9 @@ def stage_cmd(stage: str, a) -> str:
             cmds += [f"[ -f {U}/DONE ] || (python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
                      f"--corpus-config sample-10BT --corpus-start 6000 --n-train-docs 2700 --n-eval-docs 300 "
                      f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
-                     f"--batch-size 8 --no-require-top1 --out-dir {U} && touch {U}/DONE)",
-                     f"(python scripts/hf_upload.py {U} data_unf --repo {a.hf_repo} > {WORK}/logs/hf_upload_data_unf.log 2>&1 &) ; true"]
+                     f"--batch-size 8 --no-require-top1 --greedy all --prompt-format {PROMPT_FORMAT} --out-dir {U} && touch {U}/DONE)",
+                     f"[ -f {U}/DONE ]",
+                     f"python scripts/hf_upload.py {U} data_unf --repo {a.hf_repo} > {WORK}/logs/hf_upload_data_unf.log 2>&1 & UP=$!"]
         for name in parts:
             data, run = sets[name], f"sft_{name}_2k"
             cmds.append(f"[ -d {C}/{run}/iter_0002000 ] || python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
@@ -146,17 +150,21 @@ def stage_cmd(stage: str, a) -> str:
                 cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{run}/iter_0002000 "
                             f"--parquet {edata}/eval.parquet --sidecar {data}/train.parquet "
                             f"--out {E}/ablation_{run}_on_{ename}.jsonl --conditions real,shuffled,none "
-                            f"--layers 8,12,16,20,24 --max-rows 800 --batch-size 128 --seed {a.seed} --tag-kv {tag} "
+                            f"--layers {TRAIN_LAYERS} --max-rows 800 --batch-size 128 --seed {a.seed} --tag-kv {tag} "
                             f"--dump-readouts {E}/readouts_ablation_{run}_on_{ename}.jsonl")
+        if "unf" in parts:
+            cmds.append("wait $UP")
         return " && ".join(cmds)
     if stage == "baselines":
         return (f"python -m nla.future_lens.baselines --label {a.label} ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
                 f"--base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 && "
                 f"python -m nla.future_lens.baselines --label {a.label} probe --train-parquet {D}/train.parquet --parquet {D}/eval.parquet "
                 f"--base-ckpt {BASE} --leakage --epochs 3 --batch 1024 --layers {TRAIN_LAYERS} --out {E}/baselines.jsonl && "
-                f"for f in {E}/readouts_*.jsonl; do python -m nla.future_lens.baselines --label {a.label} leakage --parquet {D}/eval.parquet "
-                f"--readouts $f --out {E}/leakage.jsonl --base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb "
-                f"--hf-config sample-10BT --hf-docs 20000; done")
+                f"python -m nla.future_lens.baselines --label {a.label} target_window --parquet {D}/eval.parquet "
+                f"--base-ckpt {BASE} --out {E}/baselines.jsonl && "
+                f"python -m nla.future_lens.baselines --label {a.label} leakage --parquet {D}/eval.parquet "
+                f"--readouts {E}/readouts_sft_*.jsonl {E}/readouts_rl_*.jsonl --out {E}/leakage.jsonl --base-ckpt {BASE} "
+                f"--hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000")
     raise SystemExit(f"unknown stage {stage}")
 
 
@@ -171,10 +179,12 @@ def _tag_arg(d: dict) -> str:
 def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str) -> str:
     assert "'" not in stage_command, f"stage command contains a single quote (breaks bash -lc quoting): {stage_command}"
     log = f"{WORK}/logs/{stage}_$(date +%Y%m%d_%H%M%S).log"
-    finish = "" if keep else "python scripts/pod_terminate.py"
+    finish = "" if keep else "python /root/EasyNLA/scripts/pod_terminate.py || runpodctl remove pod $RUNPOD_POD_ID"
     return (
         "/start.sh >/dev/null 2>&1 & "
-        f"mkdir -p {WORK}/logs {WORK}/data {WORK}/ckpts {WORK}/evals && exec > >(tee -a {log}) 2>&1; set -x; "
+        # watchdog: nothing here should take a day; a failed clone/pip/terminate must not bill forever
+        f"(sleep {MAX_POD_HOURS}h; runpodctl remove pod $RUNPOD_POD_ID) >/dev/null 2>&1 & "
+        f"mkdir -p {WORK}/logs {WORK}/data {WORK}/ckpts {WORK}/evals && exec > >(tee -a {log}) 2>&1; set -x; set -o pipefail; "
         # clone onto the pod's own container disk: two pods sharing the volume must not rm -rf each other's repo
         f"cd /root && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
         "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "

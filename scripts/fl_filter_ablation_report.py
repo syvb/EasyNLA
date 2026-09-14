@@ -26,10 +26,10 @@ offs = [int(x) for x in a.offsets.split(",")]
 
 
 def load_positions(path):
-    t = pq.read_table(path, columns=["doc_idx", "t", "activation_layer", "target_ids", "target_top5", "p_top1"]).to_pydict()
+    t = pq.read_table(path, columns=["doc_idx", "t", "activation_layer", "target_ids", "target_top5", "p_top1", "greedy_ids"]).to_pydict()
     out = {}
-    for d, tt, tid, top5, pt in zip(t["doc_idx"], t["t"], t["target_ids"], t["target_top5"], t["p_top1"]):
-        out[(int(d), int(tt))] = {"target": list(tid), "top1_ok": int(top5[0]) == int(tid[0]), "p_top1": float(pt)}
+    for d, tt, tid, top5, pt, gid in zip(t["doc_idx"], t["t"], t["target_ids"], t["target_top5"], t["p_top1"], t["greedy_ids"]):
+        out[(int(d), int(tt))] = {"text": list(tid), "greedy": list(gid), "top1_ok": int(top5[0]) == int(tid[0]), "p_top1": float(pt)}
     return out
 
 
@@ -41,7 +41,7 @@ for path in sorted(glob.glob(os.path.join(a.evals_dir, "readouts_ablation_*.json
             r = json.loads(line)
             info = pos[r["evalset"]][(r["doc_idx"], r["t"])]
             subsets = ["all"] + (["top1_ok" if info["top1_ok"] else "top1_wrong"] if r["evalset"] == "unf" else [])
-            k, ro, tgt = r["k"], r["readout"], info["target"]
+            k, ro, tgt = r["k"], r["readout"], info[r.get("label", "text")]   # score against the label the eval used
             for sub in subsets:
                 N = k - 1
                 if N in offs:

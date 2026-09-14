@@ -40,13 +40,27 @@ def key_of(r: dict) -> tuple:
     return (str(name), str(r.get("condition")), int(r.get("layer", -1)), int(r["N"]), r["metric"])
 
 
-def aggregate(recs: list[dict]) -> dict[tuple, dict]:
-    """One value per (key, seed) — the last record wins — then mean/std over seeds."""
+def aggregate_per_seed(recs: list[dict]) -> dict[tuple, dict]:
+    """key -> {seed: value}; the last record per (key, seed) wins."""
     per_seed: dict[tuple, dict] = defaultdict(dict)
     for r in recs:
         per_seed[key_of(r)][r.get("seed", 0)] = float(r["value"])
+    return per_seed
+
+
+def aggregate(recs: list[dict]) -> dict[tuple, dict]:
+    """One value per (key, seed) — the last record wins — then mean/std over seeds."""
+    per_seed = aggregate_per_seed(recs)
     return {k: {"mean": float(np.mean(list(v.values()))), "std": float(np.std(list(v.values()))),
                 "n_seeds": len(v)} for k, v in per_seed.items()}
+
+
+def partition(recs: list[dict]) -> dict[tuple, list[dict]]:
+    """Never pool across labels or eval sets: records are grouped by (label, evalset) first."""
+    parts: dict[tuple, list[dict]] = defaultdict(list)
+    for r in recs:
+        parts[(str(r.get("label", "text")), str(r.get("evalset", "")))].append(r)
+    return parts
 
 
 def table(agg: dict, metric: str = "p1") -> str:
@@ -75,10 +89,36 @@ def table(agg: dict, metric: str = "p1") -> str:
     return "\n".join(lines)
 
 
-def success_check(agg: dict, sft: str, rl: str, offsets=(2, 3), metric="p1") -> str:
-    """Spec: GRPO-SFT gain > 5pp at N=2 or N=3 on real activations, shuffled gains < 1/3 of it."""
+def success_check(agg: dict, sft: str, rl: str, offsets=(2, 3), metric="p1", per_seed: dict | None = None) -> str:
+    """Spec: GRPO-SFT gain > 5pp at N=2 or N=3 on real activations, shuffled gains < 1/3 of it.
+    Reported per layer AND pooled over layers (the pre-declared primary cell); with `per_seed`
+    (from aggregate_per_seed) the pooled line also states whether every RL seed beats SFT."""
     out = []
-    for layer in sorted({k[2] for k in agg if k[0] == rl}):
+    layers = sorted({k[2] for k in agg if k[0] == rl and k[2] >= 0})
+    for N in offsets:   # pooled over layers first
+        r_sft = [agg.get((sft, "real", l, N, metric)) for l in layers]
+        r_rl = [agg.get((rl, "real", l, N, metric)) for l in layers]
+        s_sft = [agg.get((sft, "shuffled", l, N, metric)) for l in layers]
+        s_rl = [agg.get((rl, "shuffled", l, N, metric)) for l in layers]
+        if not (all(r_sft) and all(r_rl)):
+            continue
+        gain = float(np.mean([x["mean"] for x in r_rl]) - np.mean([x["mean"] for x in r_sft]))
+        sgain = (float(np.mean([x["mean"] for x in s_rl]) - np.mean([x["mean"] for x in s_sft]))
+                 if all(s_sft) and all(s_rl) else float("nan"))
+        verdict = ("POSITIVE" if gain > 0.05 and (np.isnan(sgain) or sgain < gain / 3)
+                   else "priors-only" if gain > 0.05 else "no gain")
+        seeds_txt = ""
+        if per_seed:
+            sft_pool = np.mean([np.mean(list(per_seed[(sft, "real", l, N, metric)].values())) for l in layers])
+            rl_seeds = {}
+            for l in layers:
+                for sd, v in per_seed.get((rl, "real", l, N, metric), {}).items():
+                    rl_seeds.setdefault(sd, []).append(v)
+            gains = {sd: float(np.mean(v) - sft_pool) for sd, v in rl_seeds.items()}
+            seeds_txt = f"; per-seed gains {', '.join(f'{sd}:{g:+.3f}' for sd, g in sorted(gains.items()))}" + \
+                        (" (all > 0)" if gains and all(g > 0 for g in gains.values()) else " (NOT all > 0)")
+        out.append(f"POOLED layers {layers} N={N} [{metric}]: real gain {gain:+.3f}, shuffled gain {sgain:+.3f} -> {verdict}{seeds_txt}")
+    for layer in layers:
         for N in offsets:
             r_sft, r_rl = agg.get((sft, "real", layer, N, metric)), agg.get((rl, "real", layer, N, metric))
             s_sft, s_rl = agg.get((sft, "shuffled", layer, N, metric)), agg.get((rl, "shuffled", layer, N, metric))
@@ -135,16 +175,22 @@ def main(argv=None):
     p.add_argument("--rl", default=None, help="group/checkpoint name of the GRPO eval for the success check")
     p.add_argument("--offsets", default="2,3", help="N values for the success check (spec: 2 or 3)")
     args = p.parse_args(argv)
-    agg = aggregate(load(args.jsonl))
-    txt = table(agg, args.metric)
-    if args.sft and args.rl:
-        offs = tuple(int(x) for x in args.offsets.split(","))
-        txt += "\n\n### success criteria\n" + success_check(agg, args.sft, args.rl, offsets=offs, metric=args.metric)
-    print(txt)
-    if args.out:
-        out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
-        (out / "summary.md").write_text(txt)
-        maybe_plot(agg, out, args.metric)
+    parts = partition(load(args.jsonl))
+    txt_all = []
+    for (label, evalset), recs in sorted(parts.items()):
+        agg = aggregate(recs)
+        txt = f"## label={label}" + (f" evalset={evalset}" if evalset else "") + "\n\n" + table(agg, args.metric)
+        if args.sft and args.rl:
+            offs = tuple(int(x) for x in args.offsets.split(","))
+            for metric in dict.fromkeys([args.metric, "p1", "tf_p1"]):   # primary first, then both conventions
+                txt += f"\n\n### success criteria [{metric}]\n" + success_check(
+                    agg, args.sft, args.rl, offsets=offs, metric=metric, per_seed=aggregate_per_seed(recs))
+        txt_all.append(txt)
+        if args.out:
+            out = Path(args.out) / (f"{label}_{evalset}" if evalset else label); out.mkdir(parents=True, exist_ok=True)
+            (out / "summary.md").write_text(txt)
+            maybe_plot(agg, out, args.metric)
+    print("\n\n".join(txt_all))
 
 
 if __name__ == "__main__":

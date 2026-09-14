@@ -240,7 +240,9 @@ def main(argv=None):
     norms: dict[int, list[float]] = {l: [] for l in layers}
     max_abs: dict[int, float] = {l: 0.0 for l in layers}
     stats = {"n_candidates": 0, "n_top1_correct": 0, "n_docs": {"train": 0, "eval": 0},
-             "n_positions": {"train": 0, "eval": 0}, "n_rows": {"train": 0, "eval": 0}}
+             "n_positions": {"train": 0, "eval": 0}, "n_rows": {"train": 0, "eval": 0},
+             "n_fp16_overflow_positions": 0, "n_greedy_first_token_mismatch": 0}
+    open_writers: list = []   # closed in main's finally so an abort never leaves a footer-less parquet
     docs_rows = {"doc_idx": [], "doc_id": [], "split": [], "ids": []}
     corpus = iter_corpus(args, tokenizer)
     counter = {"doc_idx": 0}
@@ -250,6 +252,7 @@ def main(argv=None):
         if n_docs <= 0:
             return
         writer = pq.ParquetWriter(str(out_dir / f"{split}.parquet"), schema)
+        open_writers.append(writer)
         pending: dict[str, list] = {k: [] for k in schema.names}
         n_done = 0
 
@@ -300,17 +303,24 @@ def main(argv=None):
                     p_top1 = float(lsm[0, tgt[0]].exp())
                     prev = ids_t[t - npv + 1: t + 1]
                     text_full = tokenizer.decode(tgt.tolist())
+                    # all layers of a position are written together or not at all
+                    vecs = {l: hs[l][bi, t].float().cpu() for l in layers}
+                    if not all(torch.isfinite(v.to(torch.float16)).all() for v in vecs.values()):
+                        stats["n_fp16_overflow_positions"] += 1
+                        continue
+                    if greedy is not None and int(greedy[pi][0]) != int(tgt[0]):
+                        # bf16 near-tie flip between the teacher-forced pass and generate();
+                        # the loader drops these too, count them here
+                        stats["n_greedy_first_token_mismatch"] += 1
+                    label_ids = greedy[pi] if greedy is not None else tgt.tolist()
                     for l in layers:
-                        vec = hs[l][bi, t].float().cpu()
+                        vec = vecs[l]
                         norms[l].append(float(vec.norm()))
                         max_abs[l] = max(max_abs[l], float(vec.abs().max()))
                         vec16 = vec.to(torch.float16)
-                        assert torch.isfinite(vec16).all(), (
-                            f"layer {l} activation overflows float16 (max |h| = {vec.abs().max():.0f}) "
-                            f"at doc {did} t={t}; store fp32 or exclude this position")
                         k = int(rng.choice(k_choices))
                         pending["prompt"].append(build_prompt_messages(args.template, l, k))
-                        pending["response"].append(tokenizer.decode(tgt[:k].tolist()))
+                        pending["response"].append(tokenizer.decode([int(x) for x in label_ids[:k]]))
                         pending["activation_vector"].append(vec16.numpy())
                         pending["activation_layer"].append(l)
                         pending["doc_id"].append(did)
@@ -355,13 +365,20 @@ def main(argv=None):
             run_batch()
         flush()
         writer.close()
+        open_writers.remove(writer)
         # docs table after every split (a crash in eval leaves train.parquet usable)
         pq.write_table(pa.Table.from_pydict(docs_rows, schema=docs_schema()), str(out_dir / "docs.parquet"))
         print(f"[collect:{split}] done: {stats['n_docs'][split]} docs, "
               f"{stats['n_positions'][split]} positions, {stats['n_rows'][split]} rows", flush=True)
 
-    process_split("train", args.n_train_docs, args.positions_per_doc)
-    process_split("eval", args.n_eval_docs, args.eval_positions_per_doc or args.positions_per_doc)
+    try:
+        process_split("train", args.n_train_docs, args.positions_per_doc)
+        process_split("eval", args.n_eval_docs, args.eval_positions_per_doc or args.positions_per_doc)
+    finally:
+        for w in open_writers:
+            w.close()
+    print(f"[collect] fp16-overflow positions skipped: {stats['n_fp16_overflow_positions']}; "
+          f"greedy/teacher-forced first-token mismatches: {stats['n_greedy_first_token_mismatch']}", flush=True)
 
     # ---- norm quantiles -> alpha ----
     norm_q = {l: {q: float(np.quantile(norms[l], f)) if norms[l] else float("nan")

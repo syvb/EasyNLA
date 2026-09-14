@@ -72,10 +72,29 @@ Everything is model-size generic: the whole chain runs on CPU with Qwen3-0.6B
   generation) unless `--surprisal` is on, which needs the adapter-disabled base as the frozen
   target. Surprisal is opt-in (a true-prefix forward per readout costs ~5x the generation) and
   scored on `--surprisal-rows` per cell with a `--surprisal-ctx`-token prefix. `--max-rows` is a
-  seeded random subsample of positions shared across layers.
+  seeded random subsample of positions shared across layers, and so is the SFT held-out set.
+  Under greedy labels the loader drops rows whose greedy first token disagrees with the
+  corpus token (bf16 near-tie flips between the filter pass and generate) or whose
+  continuation contains EOS, and prints the counts.
+* **Controls.** `shuffled` (another position's vector, same layer), `none` (no injection),
+  `wrong_layer` (the layer-4 vector, which the decoder never trained on: out-of-distribution),
+  `cross_layer` (the vector of the farthest *trained* layer at the same position: in-distribution,
+  wrong layer). Baselines: n-grams (free-running and teacher-forced), linear/leakage probes,
+  and `target_window`: the frozen target greedy-continues only the last m ∈ {1,2,4,8,32} tokens
+  before t. That last one bounds what a decoder could score by recovering a few recent tokens
+  from the state and re-simulating the model; `real − shuffled` alone cannot rule that out
+  because shuffling removes token identity along with everything else.
+* **What H1 can and cannot show.** GRPO continues the SFT adapter for 4k steps × 128
+  rollouts, and there is no SFT-continued arm with matched steps (deliberately skipped for
+  now), so a GRPO gain is "RL vs. stopping SFT here", not "RL vs. more SFT". The paper's own
+  Table 2 is flat beyond N=1 (48.4 / 43.7 / 46.9 at N=1/2/3), so there is no "N=2/3 gap" to
+  close; the question is simply whether the sequence-level objective reads more out at N=2,3.
+  The success check therefore reports both `p1` (free-running, what the reward optimises) and
+  `tf_p1` (teacher-forced, the paper's metric); a gain in `p1` without one in `tf_p1` means the
+  decoder became more self-consistent, not that the state became more readable.
 * **Preceding tokens** (`prev_ids`) and document token ids (`docs.parquet`) exist for
-  the leakage probe and the target-logprob reward / surprisal only. No decoder code
-  path reads them.
+  the leakage probe, the target-window baseline and the target-logprob reward / surprisal only.
+  No decoder code path reads them.
 
 ## Commands (Qwen3-8B-Base)
 
@@ -85,30 +104,41 @@ python -m nla.future_lens.collect --base-ckpt Qwen/Qwen3-8B-Base --corpus Huggin
     --corpus-config sample-10BT --n-train-docs 5500 --n-eval-docs 300 --layers 4,8,12,16,20,24 \
     --positions-per-doc 40 --eval-positions-per-doc 20 --batch-size 8 --greedy all --prompt-format plain --out-dir $D
 
-# 2. alpha / injection sweep (each ~10 min): pick the largest heldout/ce_gap
-for m in 0.5 1 2 4; do for s in "" --shuffle-activations; do
+# 2. alpha / injection sweep (each ~7 min): pick the largest heldout/readout_ce_gap among true-label runs
+L=8,12,16,20,24,28,32
+for m in 1 2 4; do for s in "" --shuffle-activations; do
   python -m nla.train_sft --config configs/future_lens/sft_alpha_sweep.yaml --base-ckpt Qwen/Qwen3-8B-Base \
-      --parquet $D/train.parquet --heldout-parquet $D/eval.parquet --alpha-mult $m $s --save-dir $C/sweep_a${m}${s}
-done; done   # + --injection karvonen (x2)
+      --parquet $D/train.parquet --heldout-parquet $D/eval.parquet --layers $L --label greedy \
+      --injection replace_embed --alpha-mult $m $s --save-dir $C/sweep_replace_embed_a${m}${s:+_shuf}
+done; done   # launcher: `launch alpha_sweep --sweep "replace_embed:1,2,4;karvonen:1" --sweep-shuffle-mults 2`
 
-# 3. SFT warm-start (1 epoch, ~2 h). Gate: heldout/p1_off0, p1_off1 > bigram baseline
+# 3. SFT warm-start (8000 steps ~ half an epoch, ~1.7 h). Gate: heldout/p1_off0, p1_off1 > bigram
+#    (free-running p1 vs the free-running bigram, tf_p1 vs the teacher-forced bigram ~0.23)
 python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt Qwen/Qwen3-8B-Base \
-    --parquet $D/train.parquet --heldout-parquet $D/eval.parquet --alpha-mult $ALPHA --save-dir $C/sft
+    --parquet $D/train.parquet --heldout-parquet $D/eval.parquet --layers $L --label greedy \
+    --alpha-mult $ALPHA --num-steps 8000 --save-dir $C/sft_replace_embed_a${ALPHA}_greedy
 
-# 4. GRPO (4k steps, ~4 h/seed). Gate: reward/group_std_mean > 0; eval/p1_gap grows
+# 4. GRPO (4k steps, ~4 h/seed). Gate: reward/group_std_mean > 0; eval/p1_gap grows.
+#    label / injection / alpha are read from the SFT checkpoint's future_lens.json
 python -m nla.future_lens.train_rl --config configs/future_lens/rl.yaml --base-ckpt Qwen/Qwen3-8B-Base \
-    --av-ckpt $C/sft/iter_XXXXXXX --parquet $D/train.parquet --eval-parquet $D/eval.parquet \
-    --save-dir $C/rl_em_s0 --reward exact_match --seed 0
+    --av-ckpt $C/sft_replace_embed_a${ALPHA}_greedy/iter_0002000 --parquet $D/train.parquet \
+    --eval-parquet $D/eval.parquet --layers $L --save-dir $C/rl_exact_match_s0 --reward exact_match --seed 0
 
-# 5. controls + baselines
-python -m nla.future_lens.eval --base-ckpt Qwen/Qwen3-8B-Base --adapter $C/rl_em_s0/iter_004000 \
-    --parquet $D/eval.parquet --out $E/rl_em_s0.jsonl --conditions real,shuffled,none,wrong_layer \
-    --layers 8,12,16,20,24 --group rl_em --seed 0 --dump-readouts $E/readouts_rl_em_s0.jsonl
-python -m nla.future_lens.baselines ngram --parquet $D/eval.parquet --out $E/baselines.jsonl \
+# 5. controls + baselines (eval reads label/injection/alpha from the adapter too)
+python -m nla.future_lens.eval --base-ckpt Qwen/Qwen3-8B-Base --adapter $C/rl_exact_match_s0/iter_004000 \
+    --parquet $D/eval.parquet --out $E/rl_exact_match_s0.jsonl --layers $L --wrong-layer 4 \
+    --conditions real,shuffled,none,wrong_layer,cross_layer --surprisal --surprisal-rows 256 \
+    --tag-kv checkpoint=rl_exact_match_s0_iter_004000,group=rl_exact_match,seed=0 \
+    --dump-readouts $E/readouts_rl_exact_match_s0_iter_004000.jsonl
+python -m nla.future_lens.baselines --label greedy ngram --parquet $D/eval.parquet --out $E/baselines.jsonl \
     --hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000   # never counts eval docs
-python -m nla.future_lens.baselines probe --train-parquet $D/train.parquet --parquet $D/eval.parquet --leakage --out $E/baselines.jsonl
-python -m nla.future_lens.baselines leakage --parquet $D/eval.parquet --readouts $E/readouts_rl_em_s0.jsonl --out $E/leakage.jsonl
-python -m nla.future_lens.plots $E/*.jsonl --out plots/ --sft sft --rl rl_em      # pools seeds by --group
+python -m nla.future_lens.baselines --label greedy probe --train-parquet $D/train.parquet --parquet $D/eval.parquet \
+    --layers $L --leakage --out $E/baselines.jsonl
+python -m nla.future_lens.baselines --label greedy target_window --parquet $D/eval.parquet --out $E/baselines.jsonl
+python -m nla.future_lens.baselines --label greedy leakage --parquet $D/eval.parquet \
+    --readouts $E/readouts_sft_*.jsonl $E/readouts_rl_*.jsonl --out $E/leakage.jsonl
+python -m nla.future_lens.plots $E/*.jsonl --out plots/ --sft sft_replace_embed_a2.0_greedy --rl rl_exact_match
+#   pools seeds by --group, never across labels/eval sets; success check pooled over layers + per layer, p1 and tf_p1
 ```
 
 ## Relation to Future Lens (Pal et al. 2023)
@@ -125,7 +155,7 @@ N=2/3 training fails at N=2/3, which the spec's motivation overstates.
 
 | Signal | Where | Healthy |
 |---|---|---|
-| `heldout/ce_gap` = L(shuffled) − L(true) | SFT | clearly > 0; the alpha with the largest gap wins |
+| `heldout/readout_ce_gap` = L(shuffled) − L(true) on readout tokens | SFT | clearly > 0; the alpha with the largest gap wins (`ce_gap` includes the EOS token) |
 | `heldout/p1_off0`, `p1_off1` | SFT | above the bigram baseline before starting RL |
 | `reward/group_std_mean`, `reward/frac_zero_var_groups` | RL | std > 0, zero-variance fraction well below 1 |
 | `av/kl_to_ref`, `av/len_violation_frac` | RL | KL small and stable; violations → 0 |

@@ -22,7 +22,7 @@ heldout_rows: 512
 heldout_every: 500
 heldout_gen_rows: 256
 heldout_gen_batch: 64
-sample_every: 1000
+sample_every: 0             # no wandb Table (wandb is metrics-only); samples print to stdout
 n_samples: 4
 sample_max_new_tokens: 12
 save_every: 2000

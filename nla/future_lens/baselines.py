@@ -151,7 +151,7 @@ def run_ngram(args):
         for k in fl.k_choices:
             N = k - 1
             base = {"layer": -1, "N": N, "k": k, "condition": "baseline", "injection": "none",
-                    "seed": 0, "checkpoint": f"{order}gram", "n_train_tokens": n_tok}
+                    "seed": 0, "checkpoint": f"{order}gram", "n_train_tokens": n_tok, "label": args.label}
             recs.append({**base, "metric": "p1", "value": float(np.mean(hits[N])), "n": len(hits[N])})
             recs.append({**base, "metric": "p5", "value": float(np.mean(hits5[N])), "n": len(hits5[N])})
             recs.append({**base, "metric": "tf_p1", "value": float(np.mean(hits_tf[N])), "n": len(hits_tf[N])})
@@ -179,7 +179,11 @@ def run_leakage(args):
     tgt = {(int(r["doc_idx"]), int(r["t"])): np.asarray(r["target_ids"]) for r in eval_rows}
     m, n_tok = build_ngram(args.order, ngram_sources(args, fl, docs, eval_docs))
     print(f"[leakage] {args.order}-gram on {n_tok} tokens")
-    dumps = [json.loads(l) for l in open(args.readouts) if l.strip()]
+    dumps = [json.loads(l) for path in args.readouts for l in open(path) if l.strip()]
+    if not dumps:
+        print(f"[leakage] no readouts in {args.readouts}; nothing written"); return
+    dump_labels = {d.get("label", "text") for d in dumps}
+    assert dump_labels == {args.label}, f"readouts were scored under label(s) {dump_labels}, but --label {args.label}"
     cache: dict[tuple, list[int]] = {}
     acc = defaultdict(lambda: defaultdict(list))
     for d in dumps:
@@ -205,7 +209,7 @@ def run_leakage(args):
             recs.append({"layer": layer, "N": j, "k": k, "condition": cond, "injection": "n/a",
                          "seed": int(dumps[0].get("seed", 0)), "checkpoint": ck, "group": group,
                          "metric": f"leak_{metric}", "value": float(np.mean(v)), "n": len(v),
-                         "ngram_order": args.order})
+                         "ngram_order": args.order, "label": args.label})
     write_records(recs, args.out)
     for (ck, group, cond, layer, k), stats in sorted(acc.items()):
         af = np.mean(stats[("agree_future", k - 1)]); an = np.mean(stats[("agree_ngram", k - 1)])
@@ -213,6 +217,64 @@ def run_leakage(args):
         print(f"[leakage] {ck} {cond:9s} L{layer:2d} K={k}: agree(future)={af:.3f} agree(ngram)={an:.3f} "
               f"agree(ngram | ngram wrong)={np.mean(aw) if aw else float('nan'):.3f} n={len(stats[('agree_future', k - 1)])}")
     print(f"[leakage] wrote {len(recs)} records -> {args.out}")
+
+
+def run_target_window(args):
+    """Past-only baseline with the FROZEN TARGET itself: greedy-continue the last m tokens
+    before t (prev_ids[-m:]) and score the readout metrics. This bounds what a decoder that
+    merely recovers a few recent tokens from h_t and re-simulates the model could achieve
+    (the shuffled control does not: it removes token identity along with everything else)."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from nla.future_lens.collect import greedy_continuations
+    fl = load_fl_meta(args.sidecar or args.parquet)
+    rows = load_fl_rows(args.parquet, keep_activations=False, label=args.label,
+                        columns=["doc_idx", "t", "target_ids", "target_top5", "prev_ids", "activation_layer"])
+    positions = {(int(r["doc_idx"]), int(r["t"])): r for r in rows}
+    keys = sorted(positions)
+    if args.max_positions and len(keys) > args.max_positions:
+        keys = [keys[i] for i in sorted(np.random.default_rng(args.seed).choice(len(keys), size=args.max_positions, replace=False))]
+    device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
+    tok = AutoTokenizer.from_pretrained(args.base_ckpt)
+    model = AutoModelForCausalLM.from_pretrained(args.base_ckpt, torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32).to(device).eval()
+    pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
+    nf = fl.n_future
+    recs = []
+    for m in [int(x) for x in args.windows.split(",")]:
+        t0 = time.time()
+        prefixes = [[int(x) for x in positions[k]["prev_ids"][-m:]] for k in keys]
+        outs, _, _ = greedy_continuations(model, tok, prefixes, nf, device, batch_size=args.batch)
+        hits = defaultdict(list); hits5 = defaultdict(list); hits_tf = defaultdict(list)
+        # teacher-forced: argmax at offset j given window + label[:j]
+        with torch.no_grad():
+            for cs in range(0, len(keys), args.batch):
+                chunk = keys[cs: cs + args.batch]
+                seqs = [prefixes[cs + i] + [int(x) for x in positions[k]["target_ids"][:nf]] for i, k in enumerate(chunk)]
+                L = max(len(q) for q in seqs)
+                ids = torch.full((len(seqs), L), pad_id, dtype=torch.long); attn = torch.zeros_like(ids)
+                for i, q in enumerate(seqs):
+                    ids[i, L - len(q):] = torch.tensor(q); attn[i, L - len(q):] = 1
+                pred = model(input_ids=ids.to(device), attention_mask=attn.to(device)).logits.argmax(-1).cpu()
+                for i, k in enumerate(chunk):
+                    tgt = positions[k]["target_ids"]
+                    for j in range(nf):
+                        hits_tf[j].append(int(pred[i, L - nf - 1 + j] == int(tgt[j])))
+        for k, ro in zip(keys, outs):
+            r = positions[k]; tgt = np.asarray(r["target_ids"]); top5 = np.asarray(r["target_top5"]).reshape(-1, 5)
+            for j in range(nf):
+                hits[j].append(int(ro[j] == int(tgt[j])))
+                hits5[j].append(int(ro[j] in set(int(x) for x in top5[j])))
+        for kk in fl.k_choices:
+            N = kk - 1
+            base = {"layer": -1, "N": N, "k": kk, "condition": "baseline", "injection": "none", "seed": 0,
+                    "checkpoint": f"target_window_{m}", "label": args.label, "window": m}
+            recs.append({**base, "metric": "p1", "value": float(np.mean(hits[N])), "n": len(hits[N])})
+            recs.append({**base, "metric": "p5", "value": float(np.mean(hits5[N])), "n": len(hits5[N])})
+            recs.append({**base, "metric": "tf_p1", "value": float(np.mean(hits_tf[N])), "n": len(hits_tf[N])})
+        print(f"[target_window] m={m:2d} n={len(keys)} p1 " + " ".join(f"{np.mean(hits[j]):.3f}" for j in range(nf))
+              + " | tf " + " ".join(f"{np.mean(hits_tf[j]):.3f}" for j in range(nf)) + f" ({time.time() - t0:.0f}s)", flush=True)
+    write_records(recs, args.out)
+    print(f"[target_window] wrote {len(recs)} records -> {args.out}")
 
 
 def _iter_extra_token_docs(path: str, max_docs: int):
@@ -297,7 +359,7 @@ def run_probe(args):
                               batch=args.batch, device=device, weight_decay=args.weight_decay)
             p1 = probe_p1(lin, Xte, torch.tensor(yte), device)
             p1_train = probe_p1(lin, Xtr[: min(len(tr), 5000)], torch.tensor(ytr[: min(len(tr), 5000)]), device)
-            rec = {"layer": layer, "N": N, "k": N + 1 if N >= 0 else None, "condition": "baseline",
+            rec = {"layer": layer, "N": N, "k": N + 1 if N >= 0 else None, "condition": "baseline", "label": args.label,
                    "injection": "none", "seed": 0, "checkpoint": f"linear_probe_{kind}",
                    "metric": "p1", "value": p1, "n": len(te), "train_p1": p1_train}
             recs.append(rec)
@@ -319,9 +381,15 @@ def main(argv=None):
     lk = sub.add_parser("leakage")
     lk.add_argument("--parquet", required=True, help="eval.parquet")
     lk.add_argument("--sidecar", default=None)
-    lk.add_argument("--readouts", required=True, help="JSONL from eval.py --dump-readouts")
+    lk.add_argument("--readouts", required=True, nargs="+", help="JSONL file(s) from eval.py --dump-readouts (one n-gram build for all)")
     lk.add_argument("--order", type=int, default=4)
     lk.add_argument("--out", required=True)
+    tw = sub.add_parser("target_window", help="frozen target greedy-continues the last m tokens before t")
+    tw.add_argument("--parquet", required=True, help="eval.parquet"); tw.add_argument("--sidecar", default=None)
+    tw.add_argument("--base-ckpt", default="Qwen/Qwen3-8B-Base"); tw.add_argument("--windows", default="1,2,4,8,32")
+    tw.add_argument("--max-positions", type=int, default=2000); tw.add_argument("--batch", type=int, default=64)
+    tw.add_argument("--device", default="auto"); tw.add_argument("--seed", type=int, default=0)
+    tw.add_argument("--out", required=True)
     for sp in (n, lk):
         sp.add_argument("--extra-docs", default=None, help="extra .jsonl with `ids` rows for counts")
         sp.add_argument("--extra-docs-max", type=int, default=0)
@@ -349,7 +417,7 @@ def main(argv=None):
     q.add_argument("--device", default="auto")
     q.add_argument("--out", required=True)
     args = p.parse_args(argv)
-    {"ngram": run_ngram, "probe": run_probe, "leakage": run_leakage}[args.cmd](args)
+    {"ngram": run_ngram, "probe": run_probe, "leakage": run_leakage, "target_window": run_target_window}[args.cmd](args)
 
 
 if __name__ == "__main__":
