@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -307,13 +308,12 @@ def main(argv=None):
     need_layers = set(layers) | ({args.wrong_layer} if "wrong_layer" in conditions else set())
     rows = load_fl_rows(args.parquet, layers=sorted(need_layers))
     if args.max_rows:
-        per: dict[int, int] = defaultdict(int)
-        kept = []
-        for r in rows:
-            l = int(r["activation_layer"])
-            if per[l] < args.max_rows:
-                kept.append(r); per[l] += 1
-        rows = kept
+        # seeded random subsample of POSITIONS (doc_idx, t), shared across layers, so every
+        # layer scores the same positions and the cap does not mean "the first 40 documents"
+        keys = sorted({(int(r["doc_idx"]), int(r["t"])) for r in rows})
+        random.Random(args.seed).shuffle(keys)
+        keep = set(keys[: args.max_rows])
+        rows = [r for r in rows if (int(r["doc_idx"]), int(r["t"])) in keep]
     docs = None
     if args.surprisal:
         dp = resolve_docs_path(args.parquet, fl)

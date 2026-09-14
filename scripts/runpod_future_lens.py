@@ -105,6 +105,43 @@ def stage_cmd(stage: str, a) -> str:
                         f"--layers 8,12,16,20,24 --dump-readouts {E}/readouts_{name}.jsonl "
                         f"--seed {seed} --tag {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed})} {a.extra}")
         return " && ".join(cmds)
+    if stage == "filter_ablation":
+        # How much does the top-1-correct position filter matter? Unfiltered split from fresh
+        # docs (corpus offset past the filtered slice), two identical 2000-step SFT runs
+        # (filtered vs unfiltered data), each evaluated on both eval sets. Readouts on the
+        # unfiltered eval set are dumped so the top-1-correct subset can be split off locally.
+        # --part unf: collect + train/eval the unfiltered arm; --part filt: train/eval the
+        # filtered arm (waits for the unf collection's DONE marker before its cross-eval);
+        # --part all: everything sequentially in one pod.
+        U = f"{WORK}/data_unf"
+        sets = {"filt": D, "unf": U}
+        parts = ["filt", "unf"] if a.part == "all" else [a.part]
+        cmds = []
+        if "unf" in parts:
+            cmds += [f"python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
+                     f"--corpus-config sample-10BT --corpus-start 6000 --n-train-docs 2700 --n-eval-docs 300 "
+                     f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
+                     f"--batch-size 8 --no-require-top1 --out-dir {U} && touch {U}/DONE",
+                     f"(python scripts/hf_upload.py {U} data_unf --repo {a.hf_repo} > {WORK}/logs/hf_upload_data_unf.log 2>&1 &) ; true"]
+        for name in parts:
+            data, run = sets[name], f"sft_{name}_2k"
+            cmds.append(f"python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
+                        f"--parquet {data}/train.parquet --heldout-parquet {data}/eval.parquet "
+                        f"--save-dir {C}/{run} --injection {a.injection} --alpha-mult {a.alpha_mult} "
+                        f"--num-steps 2000 --save-every 2000 --wandb-name {run} --seed {a.seed} {a.extra}")
+            cmds.append(f"(python scripts/hf_upload.py {C}/{run} ckpts/{run} --repo {a.hf_repo} || true)")
+        if a.part == "filt":
+            cmds.append(f"until [ -f {U}/DONE ]; do sleep 30; done")
+        for name in parts:
+            data, run = sets[name], f"sft_{name}_2k"
+            for ename, edata in sets.items():
+                tag = _tag_arg({"checkpoint": run, "group": run, "seed": a.seed, "evalset": ename})
+                cmds.append(f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{run}/iter_0002000 "
+                            f"--parquet {edata}/eval.parquet --sidecar {data}/train.parquet.nla_meta.yaml "
+                            f"--out {E}/ablation_{run}_on_{ename}.jsonl --conditions real,shuffled,none "
+                            f"--layers 8,12,16,20,24 --max-rows 800 --batch-size 64 --seed {a.seed} --tag {tag} "
+                            f"--dump-readouts {E}/readouts_ablation_{run}_on_{ename}.jsonl")
+        return " && ".join(cmds)
     if stage == "baselines":
         return (f"python -m nla.future_lens.baselines ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
                 f"--base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 && "
@@ -193,7 +230,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("volume"); v.add_argument("--name", default="fl-qwen3-8b"); v.add_argument("--size", type=int, default=150)
     v.add_argument("--dc", default="EU-RO-1")
-    l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines"])
+    l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation"])
     l.add_argument("--volume", required=True, help="network volume id")
     l.add_argument("--gpu", default=None); l.add_argument("--cloud", default="SECURE")
     l.add_argument("--keep", action="store_true"); l.add_argument("--dry-run", action="store_true")
@@ -205,12 +242,14 @@ def main(argv=None):
     l.add_argument("--affine", action="store_true")
     l.add_argument("--av-ckpt", default=None, help="rl: SFT iter dir relative to ckpts/")
     l.add_argument("--reward", default="exact_match")
+    l.add_argument("--part", default="all", choices=["all", "filt", "unf"], help="filter_ablation: which arm this pod runs")
     l.add_argument("--adapters", default="", help="eval: comma list of ckpt dirs relative to ckpts/")
     s = sub.add_parser("status")
     t = sub.add_parser("terminate"); t.add_argument("pod_id")
     a = p.parse_args(argv)
     if a.cmd == "launch" and a.run_name is None:
-        a.run_name = {"sft": f"sft_{a.injection}_a{a.alpha_mult}", "rl": f"rl_{a.reward}_s{a.seed}"}.get(a.stage, a.stage)
+        a.run_name = {"sft": f"sft_{a.injection}_a{a.alpha_mult}", "rl": f"rl_{a.reward}_s{a.seed}",
+                      "filter_ablation": f"ablation_{a.part}"}.get(a.stage, a.stage)
     {"volume": cmd_volume, "launch": cmd_launch, "status": cmd_status, "terminate": cmd_terminate}[a.cmd](a)
 
 
