@@ -279,3 +279,24 @@ def test_teacher_forced_hits_recover_own_greedy_continuation():
                                device="cpu", batch_size=2)
     assert hits[0] == [1] * k, hits
     assert hits[1][0] == 0, hits   # first label token differs from the argmax
+
+
+def test_plain_prompt_format_and_sidecar_default():
+    """plain = template text + newline; the marker neighbours are inside the template, so the
+    injection hook's neighbour check is format-independent."""
+    from transformers import AutoTokenizer
+    from nla.future_lens.data import (DEFAULT_TEMPLATE, build_prompt_messages, chat_prompt_text,
+                                      get_prompt_format, set_prompt_format)
+    tok = AutoTokenizer.from_pretrained(SMALL)
+    msgs = build_prompt_messages(DEFAULT_TEMPLATE, 8, 3)
+    plain = chat_prompt_text(tok, msgs, "㈎", fmt="plain")
+    chat = chat_prompt_text(tok, msgs, "㈎", fmt="chat")
+    assert plain == msgs[0]["content"].replace("<INJECT>", "㈎") + "\n"
+    assert "<concept>㈎</concept>" in plain and "<|im_start|>" not in plain and "<think>" not in plain
+    assert "<|im_start|>" in chat and "<concept>㈎</concept>" in chat
+    old = get_prompt_format()
+    try:
+        set_prompt_format("plain")
+        assert chat_prompt_text(tok, msgs, "㈎") == plain      # default follows the sidecar setting
+    finally:
+        set_prompt_format(old)

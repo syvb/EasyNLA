@@ -37,7 +37,8 @@ IMAGE = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
 GPU_PREF = [("NVIDIA H100 80GB HBM3", "SECURE"), ("NVIDIA H100 PCIe", "SECURE"),
             ("NVIDIA A100 80GB PCIe", "SECURE"), ("NVIDIA A100-SXM4-80GB", "SECURE"),
             ("NVIDIA H100 PCIe", "COMMUNITY"), ("NVIDIA A100 80GB PCIe", "COMMUNITY")]
-BASE = "Qwen/Qwen3-8B"
+BASE = "Qwen/Qwen3-8B-Base"   # pretrained base + plain prompt (spec: "base / non-thinking"; Future Lens used base GPT-J)
+PROMPT_FORMAT = "plain"
 WORK = "/workspace/fl"
 WANDB_PROJECT = "rl-future-lens"
 LAYERS = "4,8,12,16,20,24,28,32"       # collected; 4 = wrong-layer control only
@@ -64,14 +65,16 @@ def stage_cmd(stage: str, a) -> str:
         return (f"python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
                 f"--corpus-config sample-10BT --n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
                 f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
-                f"--batch-size 8 --greedy all --out-dir {D} && "
+                f"--batch-size 8 --greedy all --prompt-format {PROMPT_FORMAT} --out-dir {D} && "
                 f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
         # mirror data/ to HF in the background (idempotent) while the sweep runs
         runs = [f"(python scripts/hf_upload.py {D} data --repo {a.hf_repo} > {WORK}/logs/hf_upload_data.log 2>&1 &) ; true"]
-        for inj, mults in (("replace_embed", (0.5, 1.0, 2.0, 4.0)), ("karvonen", (1.0,))):
-            for m in mults:
-                for shuf in ("", "--shuffle-activations"):
+        # --sweep "replace_embed:0.5,1,2,4;karvonen:1" ; shuffled-control runs for --sweep-shuffle-mults
+        for spec in a.sweep.split(";"):
+            inj, ms = spec.split(":")
+            for m in [float(x) for x in ms.split(",")]:
+                for shuf in ("", "--shuffle-activations") if m in a.sweep_shuffle_mults else ("",):
                     tag = f"{inj}_a{m}{'_shuf' if shuf else ''}"
                     runs.append(
                         f"python -m nla.train_sft --config configs/future_lens/sft_alpha_sweep.yaml "
@@ -248,6 +251,8 @@ def main(argv=None):
     l.add_argument("--n-train-docs", type=int, default=5500); l.add_argument("--n-eval-docs", type=int, default=300)
     l.add_argument("--hf-repo", default="syvb/rl-future-lens-qwen3-8b")
     l.add_argument("--injection", default="replace_embed"); l.add_argument("--alpha-mult", type=float, default=1.0)
+    l.add_argument("--sweep", default="replace_embed:0.5,1,2,4;karvonen:1", help="alpha_sweep: inj:mults;inj:mults")
+    l.add_argument("--sweep-shuffle-mults", default="0.5,1,2,4", help="alpha_sweep: mults that also get a shuffled-control run")
     l.add_argument("--label", default="greedy", choices=["text", "greedy"],
                    help="readout label for sft/alpha_sweep/baselines (rl and eval read it from the checkpoint)")
     l.add_argument("--affine", action="store_true")
@@ -258,6 +263,8 @@ def main(argv=None):
     s = sub.add_parser("status")
     t = sub.add_parser("terminate"); t.add_argument("pod_id")
     a = p.parse_args(argv)
+    if a.cmd == "launch":
+        a.sweep_shuffle_mults = {float(x) for x in a.sweep_shuffle_mults.split(",") if x}
     if a.cmd == "launch" and a.run_name is None:
         a.run_name = {"sft": f"sft_{a.injection}_a{a.alpha_mult}_{a.label}", "rl": f"rl_{a.reward}_s{a.seed}",
                       "filter_ablation": f"ablation_{a.part}"}.get(a.stage, a.stage)

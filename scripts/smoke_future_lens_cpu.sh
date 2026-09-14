@@ -8,12 +8,13 @@ PY=${PY:-.venv/bin/python}
 CORPUS=${CORPUS:-$HOME/metamodelling/data/raw/docs.jsonl}   # .jsonl with `ids` or `text`
 OUT=${OUT:-/tmp/fl_smoke}
 LABEL=${LABEL:-greedy}     # text | greedy (Future Lens convention)
+PROMPT_FORMAT=${PROMPT_FORMAT:-plain}   # chat | plain (base checkpoints)
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1} TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 $PY -m nla.future_lens.collect --base-ckpt Qwen/Qwen3-0.6B --corpus "$CORPUS" \
     --n-train-docs 8 --n-eval-docs 4 --layers 4,8,12 --max-len 256 --positions-per-doc 5 \
-    --batch-size 4 --greedy all --greedy-batch 8 --out-dir "$OUT/data"
+    --batch-size 4 --greedy all --greedy-batch 8 --prompt-format "$PROMPT_FORMAT" --out-dir "$OUT/data"
 
 $PY -m nla.train_sft --mode av --future-lens --base-ckpt Qwen/Qwen3-0.6B \
     --parquet "$OUT/data/train.parquet" --heldout-parquet "$OUT/data/eval.parquet" \

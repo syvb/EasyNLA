@@ -60,6 +60,22 @@ DEFAULT_K_CHOICES = (1, 2, 3, 4, 5, 9)  # N in {0,1,2,3,4,8}: spec's {1,2,4,8} +
 DEFAULT_N_FUTURE = 9
 DEFAULT_N_PREV = 32
 FL_SIDECAR_KEY = "future_lens"
+PROMPT_FORMATS = ("chat", "plain")
+# Process-wide default prompt format, set from the dataset sidecar by load_fl_meta() so that
+# collect / SFT / RL / eval all render prompts the same way without threading a flag through
+# every call site. "chat" = the tokenizer's chat template with thinking off (post-trained
+# checkpoints); "plain" = the template text + "\n", then the readout (base checkpoints, for
+# which the chat template is meaningless).
+_PROMPT_FORMAT = {"fmt": "chat"}
+
+
+def set_prompt_format(fmt: str) -> None:
+    assert fmt in PROMPT_FORMATS, fmt
+    _PROMPT_FORMAT["fmt"] = fmt
+
+
+def get_prompt_format() -> str:
+    return _PROMPT_FORMAT["fmt"]
 
 
 @dataclass
@@ -75,6 +91,10 @@ class FLMeta:
     discard_fraction: float | None = None
     d_model: int | None = None
     extra: dict = field(default_factory=dict)
+
+    @property
+    def prompt_format(self) -> str:
+        return str(self.extra.get("prompt_format", "chat"))
 
     def alpha(self, layer: int, mult: float = 1.0) -> float:
         return float(self.injection_scale_by_layer[int(layer)]) * mult
@@ -108,6 +128,7 @@ def load_fl_meta(sidecar_source: str | Path) -> FLMeta:
     known = {"layer_indices", "n_future", "n_prev", "k_choices", "template",
              "norm_quantiles", "injection_scale_by_layer", "docs_parquet",
              "discard_fraction", "d_model"}
+    set_prompt_format(str(fl.get("prompt_format", "chat")))
     return FLMeta(
         layer_indices=[int(x) for x in fl["layer_indices"]],
         n_future=int(fl["n_future"]),
@@ -137,14 +158,20 @@ def build_prompt_messages(template: str, layer: int, k: int) -> list[dict]:
     return [{"role": "user", "content": fill_template(template, layer, k)}]
 
 
-def chat_prompt_text(tokenizer, messages: list[dict], inject_char: str) -> str:
-    """Chat-format a prompt with the real marker char. Thinking is OFF: the
-    decoder must read the state out directly, not reason about it."""
+def chat_prompt_text(tokenizer, messages: list[dict], inject_char: str, fmt: str | None = None) -> str:
+    """Render a prompt with the real marker char. fmt (default: the dataset's sidecar value
+    via set_prompt_format): "chat" = chat template with thinking OFF (the decoder must read
+    the state out directly, not reason about it); "plain" = the user text + newline, for base
+    checkpoints. The readout token ids are appended after this string's tokens."""
+    fmt = fmt or get_prompt_format()
     msgs = [
         {**m, "content": m["content"].replace(INJECT_PLACEHOLDER, inject_char)}
         if isinstance(m.get("content"), str) else m
         for m in messages
     ]
+    if fmt == "plain":
+        assert len(msgs) == 1 and msgs[0].get("role") == "user", msgs
+        return msgs[0]["content"] + "\n"
     return tokenizer.apply_chat_template(
         msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False,
     )

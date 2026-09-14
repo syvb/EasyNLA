@@ -184,6 +184,9 @@ def main(argv=None):
     p.add_argument("--n-prev", type=int, default=DEFAULT_N_PREV)
     p.add_argument("--k-choices", default=",".join(str(k) for k in DEFAULT_K_CHOICES))
     p.add_argument("--template", default=DEFAULT_TEMPLATE)
+    p.add_argument("--prompt-format", choices=["chat", "plain"], default="chat",
+                   help="how every stage renders the prompt (recorded in the sidecar): chat template with "
+                        "thinking off, or plain text + newline for base checkpoints")
     p.add_argument("--require-top1", action=argparse.BooleanOptionalAction, default=True,
                    help="keep only positions where the target's top-1 prediction of x_{t+1} is correct")
     p.add_argument("--greedy", choices=["none", "eval", "all"], default="all",
@@ -382,6 +385,7 @@ def main(argv=None):
         template=args.template, norm_quantiles=norm_q, injection_scale_by_layer=alpha,
         docs_parquet="docs.parquet", discard_fraction=discard, d_model=d_model,
         extra={"base_model": args.base_ckpt, "require_top1": bool(args.require_top1), "greedy": args.greedy,
+               "prompt_format": args.prompt_format,
                "max_len": args.max_len, "min_pos": args.min_pos,
                "corpus": args.corpus, "corpus_config": args.corpus_config,
                "corpus_slice": {"start": args.corpus_start, "length": args.n_train_docs + args.n_eval_docs}},
