@@ -237,9 +237,10 @@ def test_load_fl_rows_label_swap(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from nla.future_lens.data import fl_schema, load_fl_rows
-    d, nf, npv = 4, 3, 2
-    sch = fl_schema(d, nf, npv)
-    row = {"prompt": [{"role": "user", "content": "x"}], "response": "y",
+    d, nf, npv, K = 4, 3, 2, 2
+    sch = fl_schema(d, nf, npv, topk=K)
+    row = {"greedy_topk_ids": [1, 2, 5, 6, 6, 7], "greedy_topk_logp": [-0.1, -2.5, -0.2, -1.8, -0.3, -1.4],
+           "prompt": [{"role": "user", "content": "x"}], "response": "y",
            "activation_vector": np.zeros(d, np.float16), "activation_layer": 8, "doc_id": "a",
            "n_raw_tokens": 10, "target_ids": [1, 2, 3], "k": 2, "doc_idx": 0, "t": 9, "p_top1": 0.5,
            "target_top5": list(range(15)), "target_logp": [-1.0, -1.0, -1.0], "prev_ids": [7, 8],
@@ -262,6 +263,35 @@ def test_load_fl_rows_label_swap(tmp_path):
     # a column subset that asks for target_ids only still gets the swap; `layers=` adds activation_layer
     r_sub = load_fl_rows(tmp_path / "e.parquet", label="greedy", columns=["target_ids", "k"], layers=[8])
     assert list(r_sub[0]["target_ids"]) == [1, 5, 6] and len(r_sub) == 2
+    # top-K distillation columns are opt-in and come back as [nf, K]
+    from nla.future_lens.data import TOPK_COLUMNS
+    r_tk = load_fl_rows(tmp_path / "e.parquet", label="greedy", columns=["target_ids", "k"] + TOPK_COLUMNS)[0]
+    assert r_tk["greedy_topk_ids"].shape == (nf, K) and int(r_tk["greedy_topk_ids"][1, 0]) == 5
+    assert abs(float(r_tk["greedy_topk_logp"][0, 0]) - (-0.1)) < 1e-3
+
+
+def test_distill_loss_matches_kl_and_hard_limit():
+    """Soft CE = KL(q||p) + H(q) on the truncated support; with q one-hot it equals the hard CE."""
+    from nla.train_sft import distill_loss
+    torch.manual_seed(0)
+    V, K = 50, 4
+    z = torch.randn(1, 3, V)                       # shifted logits for 3 positions
+    ids = torch.tensor([[[3, 7, 11, 20], [0, 1, 2, 3], [5, 6, 7, 8]]])
+    lq = torch.log(torch.tensor([[[0.5, 0.3, 0.1, 0.05], [0.7, 0.2, 0.05, 0.05], [0.25, 0.25, 0.25, 0.25]]]))
+    mask = torch.tensor([[1.0, 1.0, 0.0]])
+    tot, n = distill_loss(z, ids, lq, mask)
+    assert n == 2
+    lp = torch.log_softmax(z[0], -1)
+    manual = 0.0
+    for pos in range(2):
+        q = lq[0, pos].exp(); q_rest = 1 - q.sum()
+        lp_k = lp[pos, ids[0, pos]]; p_rest = 1 - lp_k.exp().sum()
+        manual += float(-(q * lp_k).sum() - q_rest * torch.log(p_rest))
+    assert abs(float(tot) - manual) < 1e-5
+    # one-hot q -> hard CE on that token
+    lq1 = torch.log(torch.tensor([[[1.0, 1e-9, 1e-9, 1e-9]]]))
+    tot1, _ = distill_loss(z[:, :1], ids[:, :1], lq1, torch.tensor([[1.0]]))
+    assert abs(float(tot1) - float(-lp[0, 3])) < 1e-5
 
 
 @needs_model

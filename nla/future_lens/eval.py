@@ -36,8 +36,7 @@ import torch
 
 from nla.config import load_nla_config
 from nla.future_lens.data import (
-    build_prompt_messages, encode_prompt, load_docs, load_fl_meta, load_fl_rows, resolve_docs_path,
-)
+    build_prompt_messages, encode_prompt, load_docs, load_fl_meta, load_fl_rows, resolve_docs_path, ROW_COLUMNS, TOPK_COLUMNS)
 from nla.future_lens.inject import INJECTION_MODES, prepare_vectors, register_injection
 from nla.future_lens.rewards import target_logp_reward, truncate_readout
 
@@ -122,7 +121,7 @@ def generate_readouts(model, tokenizer, jobs: list[dict], *, inject_char: str, v
 
 @torch.no_grad()
 def teacher_forced_hits(model, tokenizer, jobs: list[dict], *, inject_char: str, vectors_ref,
-                        injection_mode: str, device, batch_size: int = 64) -> list[list[int]]:
+                        injection_mode: str, device, batch_size: int = 64, return_kl: bool = False):
     """Future Lens-style precision: feed the LABEL prefix (row target_ids[:k]) after the prompt
     and take the decoder's argmax at each label position. Returns per-job hit flags per offset.
     Same injection path as generation (marker scan in the prompt)."""
@@ -130,6 +129,7 @@ def teacher_forced_hits(model, tokenizer, jobs: list[dict], *, inject_char: str,
     model.eval()
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     outs: list[list[int]] = [None] * len(jobs)  # type: ignore[list-item]
+    kls: list[list[float] | None] = [None] * len(jobs)
     order = sorted(range(len(jobs)), key=lambda i: (jobs[i]["vector"] is None, jobs[i]["k"]))
     for cs in range(0, len(order), batch_size):
         idx = order[cs: cs + batch_size]
@@ -138,10 +138,11 @@ def teacher_forced_hits(model, tokenizer, jobs: list[dict], *, inject_char: str,
         if any(has_vec) and not all(has_vec):
             for sub in ([i for i, h in zip(idx, has_vec) if h], [i for i, h in zip(idx, has_vec) if not h]):
                 if sub:
-                    for i, r in zip(sub, teacher_forced_hits(
+                    res = teacher_forced_hits(
                             model, tokenizer, [jobs[i] for i in sub], inject_char=inject_char, vectors_ref=vectors_ref,
-                            injection_mode=injection_mode, device=device, batch_size=batch_size)):
-                        outs[i] = r
+                            injection_mode=injection_mode, device=device, batch_size=batch_size, return_kl=True)
+                    for i, r, kl in zip(sub, res[0], res[1]):
+                        outs[i], kls[i] = r, kl
             continue
         labels = [[int(x) for x in j["label"][: j["k"]]] for j in chunk]
         enc = [encode_prompt(tokenizer, j["prompt"], inject_char) + lab for j, lab in zip(chunk, labels)]
@@ -166,9 +167,20 @@ def teacher_forced_hits(model, tokenizer, jobs: list[dict], *, inject_char: str,
             k = len(labels[r])
             # label tokens sit at positions L-k .. L-1; predicted from positions L-k-1 .. L-2
             outs[i] = [int(pred[r, L - k - 1 + j] == labels[r][j]) for j in range(k)]
+            if chunk[r].get("topk_ids") is not None:
+                # KL(q_target || p_decoder) on the target's stored top-K (+ remainder bucket)
+                lp = torch.log_softmax(logits[r, L - k - 1: L - 1].float(), dim=-1)          # [k, V]
+                tid = torch.as_tensor(np.asarray(chunk[r]["topk_ids"][:k], dtype=np.int64), device=lp.device)
+                tlp = torch.as_tensor(np.asarray(chunk[r]["topk_logp"][:k], dtype=np.float32), device=lp.device)
+                q = tlp.exp(); q_rest = (1 - q.sum(-1)).clamp(min=0)
+                lp_k = lp.gather(1, tid)
+                lp_rest = torch.logsumexp(lp.scatter(1, tid, float("-inf")), dim=-1)   # exact remainder mass
+                ce = -(q * lp_k).sum(-1) - q_rest * lp_rest
+                ent = -(q * tlp).sum(-1) - torch.where(q_rest > 0, q_rest * q_rest.clamp(min=1e-12).log(), torch.zeros_like(q_rest))
+                kls[i] = (ce - ent).cpu().tolist()
     if was_training:
         model.train()
-    return outs
+    return (outs, kls) if return_kl else outs
 
 
 def score_readout(readout: list[int], row: dict, k: int, length_violation: bool | None = None) -> dict:
@@ -295,10 +307,16 @@ def evaluate(model, tokenizer, rows: list[dict], fl, cfg, *, injection_mode: str
                 p1 = [s["p1"][N] for s in scores]
                 records.append({**base, "metric": "p1", "value": float(np.mean(p1)), "n": n})
                 if teacher_forced:
-                    tf = teacher_forced_hits(model, tokenizer, [dict(j, label=row["target_ids"]) for j, row in zip(jobs, srows)],
-                                             inject_char=cfg.injection_char, vectors_ref=vectors_ref, injection_mode=injection_mode,
-                                             device=device, batch_size=batch_size)
+                    tf, kl = teacher_forced_hits(
+                        model, tokenizer,
+                        [dict(j, label=row["target_ids"], topk_ids=row.get("greedy_topk_ids"), topk_logp=row.get("greedy_topk_logp"))
+                         for j, row in zip(jobs, srows)],
+                        inject_char=cfg.injection_char, vectors_ref=vectors_ref, injection_mode=injection_mode,
+                        device=device, batch_size=batch_size, return_kl=True)
                     records.append({**base, "metric": "tf_p1", "value": float(np.mean([h[N] for h in tf])), "n": n})
+                    kl_n = [x[N] for x in kl if x is not None]
+                    if kl_n:
+                        records.append({**base, "metric": "tf_kl", "value": float(np.mean(kl_n)), "n": len(kl_n)})
                 records.append({**base, "metric": "p5", "value": float(np.mean([s["p5"][N] for s in scores])), "n": n})
                 records.append({**base, "metric": "exact", "value": float(np.mean([s["exact"] for s in scores])), "n": n})
                 records.append({**base, "metric": "len_ok", "value": float(np.mean([s["len_ok"] for s in scores])), "n": n})
@@ -420,7 +438,10 @@ def main(argv=None):
     print(f"[eval] label={args.label} injection={args.injection} alpha_mult={args.alpha_mult}"
           f"{' (from ' + str(fl_json) + ')' if ck else ''}", flush=True)
     rows = load_fl_rows(args.parquet, layers=sorted(need_layers), label=args.label,
-                        drop_label_ids={tokenizer.eos_token_id})
+                        drop_label_ids={tokenizer.eos_token_id},
+                        # tf_kl compares against the target's distribution under its GREEDY prefix,
+                        # which is only the teacher-forced context under greedy labels
+                        columns=ROW_COLUMNS + (TOPK_COLUMNS if fl.topk and args.label == "greedy" else []))
     if args.max_rows:
         # seeded random subsample of POSITIONS (doc_idx, t), shared across layers, so every
         # layer scores the same positions and the cap does not mean "the first 40 documents"

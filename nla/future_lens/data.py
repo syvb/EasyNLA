@@ -22,6 +22,8 @@ per (position, layer):
     greedy_ids         fixed_size_list<int64,nf>   target's greedy continuation from x_<=t (-1 if absent)
     greedy_top5        fixed_size_list<int64,5nf>  target's top-5 at each greedy step (its own prefix)
     greedy_logp        fixed_size_list<float32,nf> log p of each greedy token (its own prefix)
+    greedy_topk_ids    fixed_size_list<int32,nf*K>  target's top-K ids at each greedy step (distillation)
+    greedy_topk_logp   fixed_size_list<float16,nf*K> their log-probs (K = sidecar `topk`)
 
 Labels. `label="text"` reads out the corpus continuation (target_*); `label="greedy"`
 (Future Lens, Pal et al. 2023: "the generated tokens outputs of GPT-J through greedy
@@ -59,6 +61,7 @@ DEFAULT_TEMPLATE = (
 DEFAULT_K_CHOICES = (1, 2, 3, 4, 5, 9)  # N in {0,1,2,3,4,8}: spec's {1,2,4,8} + N=0 sanity + N=3 (success criterion)
 DEFAULT_N_FUTURE = 9
 DEFAULT_N_PREV = 32
+DEFAULT_TOPK = 64     # stored target top-K per greedy step (distillation targets)
 FL_SIDECAR_KEY = "future_lens"
 PROMPT_FORMATS = ("chat", "plain")
 # Process-wide default prompt format, set from the dataset sidecar by load_fl_meta() so that
@@ -95,6 +98,10 @@ class FLMeta:
     @property
     def prompt_format(self) -> str:
         return str(self.extra.get("prompt_format", "chat"))
+
+    @property
+    def topk(self) -> int:
+        return int(self.extra.get("topk", 0))
 
     def alpha(self, layer: int, mult: float = 1.0) -> float:
         return float(self.injection_scale_by_layer[int(layer)]) * mult
@@ -189,7 +196,7 @@ def encode_prompt(tokenizer, messages: list[dict], inject_char: str) -> list[int
 _PROMPT_STRUCT = pa.list_(pa.struct([("role", pa.string()), ("content", pa.string())]))
 
 
-def fl_schema(d_model: int, n_future: int, n_prev: int) -> pa.Schema:
+def fl_schema(d_model: int, n_future: int, n_prev: int, topk: int = DEFAULT_TOPK) -> pa.Schema:
     return pa.schema([
         ("prompt", _PROMPT_STRUCT),
         ("response", pa.string()),
@@ -208,7 +215,8 @@ def fl_schema(d_model: int, n_future: int, n_prev: int) -> pa.Schema:
         ("greedy_ids", pa.list_(pa.int64(), n_future)),
         ("greedy_top5", pa.list_(pa.int64(), 5 * n_future)),
         ("greedy_logp", pa.list_(pa.float32(), n_future)),
-    ])
+    ] + ([("greedy_topk_ids", pa.list_(pa.int32(), topk * n_future)),
+          ("greedy_topk_logp", pa.list_(pa.float16(), topk * n_future))] if topk > 0 else []))
 
 
 def docs_schema() -> pa.Schema:
@@ -229,6 +237,7 @@ ROW_COLUMNS = ["prompt", "response", "activation_vector", "activation_layer", "d
                "n_raw_tokens", "target_ids", "k", "doc_idx", "t", "p_top1", "target_top5",
                "target_logp", "prev_ids", "greedy_ids", "greedy_top5", "greedy_logp"]
 LABELS = ("text", "greedy")
+TOPK_COLUMNS = ["greedy_topk_ids", "greedy_topk_logp"]   # not in ROW_COLUMNS: request explicitly (SFT --distill, eval tf_kl)
 _GREEDY_FOR = {"target_ids": "greedy_ids", "target_top5": "greedy_top5", "target_logp": "greedy_logp"}
 
 
@@ -261,6 +270,7 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
     cols = [c for c in cols if c in avail]
     rows: list[dict] = []
     dropped = {"greedy_first_token_mismatch": 0, "greedy_contains_stop_id": 0}
+    nf_schema = pf.schema_arrow.field("target_ids").type.list_size if "target_ids" in avail else None
     for rg_idx in range(pf.num_row_groups):
         if n_max is not None and len(rows) >= n_max:
             break
@@ -279,7 +289,8 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
         for name, dt in (("activation_vector", np.float16), ("target_ids", np.int64),
                          ("target_top5", np.int64), ("target_logp", np.float32),
                          ("prev_ids", np.int64), ("greedy_ids", np.int64),
-                         ("greedy_top5", np.int64), ("greedy_logp", np.float32)):
+                         ("greedy_top5", np.int64), ("greedy_logp", np.float32),
+                         ("greedy_topk_ids", np.int32), ("greedy_topk_logp", np.float16)):
             if name in cols:
                 arr = _fixed_col(rg, name).astype(dt, copy=False)
                 # Compact to the kept rows: per-row slices are VIEWS into the row-group
@@ -311,6 +322,9 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
                         row[tc] = row.pop(gc)
             if "target_top5" in row:
                 row["target_top5"] = row["target_top5"].reshape(-1, 5)
+            if "greedy_topk_ids" in row:
+                row["greedy_topk_ids"] = row["greedy_topk_ids"].reshape(nf_schema, -1)
+                row["greedy_topk_logp"] = row["greedy_topk_logp"].reshape(nf_schema, -1)
             rows.append(row)
     if any(dropped.values()):
         print(f"[data] {parquet_path}: dropped rows under label=greedy: {dropped} (kept {len(rows)})", flush=True)

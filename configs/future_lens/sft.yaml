@@ -2,6 +2,7 @@
 # Keys are argparse dests. CLI flags override. Pass --parquet/--heldout-parquet/--save-dir/--base-ckpt.
 mode: av
 label: greedy                 # Future Lens convention: read out the target's own greedy continuation
+distill: true                 # soft targets = the target's stored top-K distribution (Future Lens Eq. 10)
 future_lens: true
 injection: replace_embed      # ablation arm: karvonen
 alpha_mult: 1.0               # alpha sweep: 0.5 / 1 / 2 / 4

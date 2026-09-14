@@ -45,6 +45,17 @@ Everything is model-size generic: the whole chain runs on CPU with Qwen3-0.6B
   which travels with the checkpoint (`future_lens.json`). The model's greedy continuation
   agrees with the text only ~48/30/20% of the time at N=1/2/3, so under text labels most of
   the target at N>=2 is unrecoverable from any state.
+* **Distillation.** SFT uses `--distill` (default in `sft.yaml`): at every readout position the
+  target is the frozen model's own next-token distribution under its greedy prefix (its top-64
+  ids and log-probs, stored by the collector with `--topk 64`, leftover mass in a remainder
+  bucket), i.e. Future Lens's KL objective (their Eq. 10) rather than a hard label on the argmax.
+  EOS stays a hard label. wandb logs `loss` (soft) and `hard_loss` (greedy-token CE) side by
+  side; eval adds `tf_kl`, the teacher-forced KL(target || decoder) on the same top-K (the SFT
+  objective on held-out; only under greedy labels). Stop ids get zero soft mass so EOS is
+  never taught mid-readout. **Pre-declared:** primary = free-running `p1` at N=2,3 pooled over
+  layers, real minus shuffled, exact-match arm; confirmatory = `tf_p1`; reported only =
+  `tf_kl`, surprisal, entropy — under a mode-seeking reward these are *expected* to get worse
+  (the policy sharpens toward the greedy continuation) and are not a success condition.
 * **Two precision conventions.** `p1` is free-running: the decoder generates all K tokens
   itself. `tf_p1` is Future Lens's teacher-forced version (their Eq. 11): the label prefix is
   fed after the prompt and the argmax at offset N is scored. The bigram baseline has both too;
@@ -99,29 +110,29 @@ Everything is model-size generic: the whole chain runs on CPU with Qwen3-0.6B
 ## Commands (Qwen3-8B-Base)
 
 ```bash
-# 1. data (1x H100, ~1.5 h): ~220k positions x 6 layers, 6k eval positions, top-1-correct filter
+# 1. data (1x H100, ~2 h): ~205k positions x 8 layers, greedy labels + top-64 distributions, 6k eval positions, top-1-correct filter
 python -m nla.future_lens.collect --base-ckpt Qwen/Qwen3-8B-Base --corpus HuggingFaceFW/fineweb \
-    --corpus-config sample-10BT --n-train-docs 5500 --n-eval-docs 300 --layers 4,8,12,16,20,24 \
-    --positions-per-doc 40 --eval-positions-per-doc 20 --batch-size 8 --greedy all --prompt-format plain --out-dir $D
+    --corpus-config sample-10BT --n-train-docs 5500 --n-eval-docs 300 --layers 4,8,12,16,20,24,28,32 \
+    --positions-per-doc 40 --eval-positions-per-doc 20 --batch-size 8 --greedy all --topk 64 --prompt-format plain --out-dir $D
 
 # 2. alpha / injection sweep (each ~7 min): pick the largest heldout/readout_ce_gap among true-label runs
 L=8,12,16,20,24,28,32
 for m in 1 2 4; do for s in "" --shuffle-activations; do
   python -m nla.train_sft --config configs/future_lens/sft_alpha_sweep.yaml --base-ckpt Qwen/Qwen3-8B-Base \
       --parquet $D/train.parquet --heldout-parquet $D/eval.parquet --layers $L --label greedy \
-      --injection replace_embed --alpha-mult $m $s --save-dir $C/sweep_replace_embed_a${m}${s:+_shuf}
+      --injection replace_embed --alpha-mult $m $s --save-dir $C/sweep_data_base_v2_replace_embed_a${m}${s:+_shuf}
 done; done   # launcher: `launch alpha_sweep --sweep "replace_embed:1,2,4;karvonen:1" --sweep-shuffle-mults 2`
 
 # 3. SFT warm-start (8000 steps ~ half an epoch, ~1.7 h). Gate: heldout/p1_off0, p1_off1 > bigram
 #    (free-running p1 vs the free-running bigram, tf_p1 vs the teacher-forced bigram ~0.23)
 python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt Qwen/Qwen3-8B-Base \
     --parquet $D/train.parquet --heldout-parquet $D/eval.parquet --layers $L --label greedy \
-    --alpha-mult $ALPHA --num-steps 8000 --save-dir $C/sft_replace_embed_a${ALPHA}_greedy
+    --alpha-mult $ALPHA --distill --num-steps 8000 --save-dir $C/sft_replace_embed_a${ALPHA}_greedy_distill
 
 # 4. GRPO (4k steps, ~4 h/seed). Gate: reward/group_std_mean > 0; eval/p1_gap grows.
 #    label / injection / alpha are read from the SFT checkpoint's future_lens.json
 python -m nla.future_lens.train_rl --config configs/future_lens/rl.yaml --base-ckpt Qwen/Qwen3-8B-Base \
-    --av-ckpt $C/sft_replace_embed_a${ALPHA}_greedy/iter_0002000 --parquet $D/train.parquet \
+    --av-ckpt $C/sft_replace_embed_a${ALPHA}_greedy_distill/iter_0008000 --parquet $D/train.parquet \
     --eval-parquet $D/eval.parquet --layers $L --save-dir $C/rl_exact_match_s0 --reward exact_match --seed 0
 
 # 5. controls + baselines (eval reads label/injection/alpha from the adapter too)
@@ -137,7 +148,7 @@ python -m nla.future_lens.baselines --label greedy probe --train-parquet $D/trai
 python -m nla.future_lens.baselines --label greedy target_window --parquet $D/eval.parquet --out $E/baselines.jsonl
 python -m nla.future_lens.baselines --label greedy leakage --parquet $D/eval.parquet \
     --readouts $E/readouts_sft_*.jsonl $E/readouts_rl_*.jsonl --out $E/leakage.jsonl
-python -m nla.future_lens.plots $E/*.jsonl --out plots/ --sft sft_replace_embed_a2.0_greedy --rl rl_exact_match
+python -m nla.future_lens.plots $E/*.jsonl --out plots/ --sft sft_replace_embed_a2.0_greedy_distill --rl rl_exact_match
 #   pools seeds by --group, never across labels/eval sets; success check pooled over layers + per layer, p1 and tf_p1
 ```
 

@@ -8,16 +8,16 @@ network volume, then terminates itself (unless --keep).
   python scripts/runpod_future_lens.py volume --size 150 --dc US-CA-2      # once (a DC with H100 stock that supports volumes)
   python scripts/runpod_future_lens.py launch collect  --volume <id>
   python scripts/runpod_future_lens.py launch alpha_sweep --volume <id>
-  python scripts/runpod_future_lens.py launch sft      --volume <id> --alpha-mult 1 --injection replace_embed
-  python scripts/runpod_future_lens.py launch rl       --volume <id> --av-ckpt sft_a1/iter_0018750 --seed 0
-  python scripts/runpod_future_lens.py launch eval     --volume <id> --adapters sft_a1/iter_0018750,rl_s0/iter_004000
+  python scripts/runpod_future_lens.py launch sft      --volume <id> --alpha-mult 2 --extra "--num-steps 8000"
+  python scripts/runpod_future_lens.py launch rl       --volume <id> --av-ckpt sft_replace_embed_a2.0_greedy_distill/iter_0008000 --seed 0
+  python scripts/runpod_future_lens.py launch eval     --volume <id> --adapters sft_replace_embed_a2.0_greedy_distill/iter_0008000,rl_exact_match_s0/iter_004000
   python scripts/runpod_future_lens.py launch baselines --volume <id>
   python scripts/runpod_future_lens.py status | terminate <pod_id>
 
 Quoting: the whole bootstrap runs inside `bash -lc '...'`, so stage commands must
 never contain single quotes; JSON tags use escaped double quotes (see _tag_arg).
 
-Credentials: ~/.runpod_key, ~/.wandb_key, ~/.hf_token. Layout on the volume
+Credentials: ~/.runpod_key, ~/.wandb_key, ~/.hf_token. Layout on the volume (data dir = --data-dir, default data_base_v2)
 (mounted at /workspace): fl/data (parquets), fl/ckpts/<run>, fl/evals/*.jsonl, fl/logs.
 """
 
@@ -39,6 +39,7 @@ GPU_PREF = [("NVIDIA H100 80GB HBM3", "SECURE"), ("NVIDIA H100 PCIe", "SECURE"),
             ("NVIDIA H100 PCIe", "COMMUNITY"), ("NVIDIA A100 80GB PCIe", "COMMUNITY")]
 BASE = "Qwen/Qwen3-8B-Base"   # pretrained base + plain prompt (spec: "base / non-thinking"; Future Lens used base GPT-J)
 PROMPT_FORMAT = "plain"
+TOPK = 64            # stored target top-K per greedy step: distillation targets for SFT --distill
 WORK = "/workspace/fl"
 WANDB_PROJECT = "rl-future-lens"
 MAX_POD_HOURS = 16   # watchdog: the longest stage (RL, ~4-5 h) plus a wide margin
@@ -66,7 +67,7 @@ def stage_cmd(stage: str, a) -> str:
         return (f"python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
                 f"--corpus-config sample-10BT --n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
                 f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
-                f"--batch-size 8 --greedy all --prompt-format {PROMPT_FORMAT} --out-dir {D} && "
+                f"--batch-size 8 --greedy all --topk {TOPK} --prompt-format {PROMPT_FORMAT} --out-dir {D} && "
                 f"(python scripts/hf_upload.py {D} {a.data_dir} --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
         # mirror data/ to HF in the background (idempotent) while the sweep runs
@@ -92,7 +93,7 @@ def stage_cmd(stage: str, a) -> str:
         return (f"python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
                 f"--parquet {D}/train.parquet --heldout-parquet {D}/eval.parquet "
                 f"--save-dir {C}/{a.run_name} --injection {a.injection} --alpha-mult {a.alpha_mult} "
-                f"--layers {TRAIN_LAYERS} --label {a.label} "
+                f"--layers {TRAIN_LAYERS} --label {a.label} {'--distill' if a.distill else '--no-distill'} "
                 f"{'--affine' if a.affine else ''} --wandb-name {a.run_name} --seed {a.seed} {a.extra} && "
                 f"(python scripts/hf_upload.py {C}/{a.run_name} ckpts/{a.run_name} --repo {a.hf_repo} || true)")
     if stage == "rl":
@@ -140,7 +141,7 @@ def stage_cmd(stage: str, a) -> str:
             data, run = sets[name], f"sft_{name}_2k"
             cmds.append(f"[ -d {C}/{run}/iter_0002000 ] || python -m nla.train_sft --config configs/future_lens/sft.yaml --base-ckpt {BASE} "
                         f"--parquet {data}/train.parquet --heldout-parquet {data}/eval.parquet "
-                        f"--save-dir {C}/{run} --injection {a.injection} --alpha-mult {a.alpha_mult} "
+                        f"--save-dir {C}/{run} --injection {a.injection} --alpha-mult {a.alpha_mult} --no-distill "
                         f"--num-steps 2000 --save-every 2000 --wandb-name {run} --seed {a.seed} {a.extra}")
             cmds.append(f"(python scripts/hf_upload.py {C}/{run} ckpts/{run} --repo {a.hf_repo} || true)")
         if a.part == "filt":
@@ -158,7 +159,8 @@ def stage_cmd(stage: str, a) -> str:
             cmds.append("wait $UP")
         return " && ".join(cmds)
     if stage == "baselines":
-        return (f"python -m nla.future_lens.baselines --label {a.label} ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
+        return (f"rm -f {E}/baselines.jsonl {E}/leakage.jsonl && "
+                f"python -m nla.future_lens.baselines --label {a.label} ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
                 f"--base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 && "
                 f"python -m nla.future_lens.baselines --label {a.label} probe --train-parquet {D}/train.parquet --parquet {D}/eval.parquet "
                 f"--base-ckpt {BASE} --leakage --epochs 3 --batch 1024 --layers {TRAIN_LAYERS} --out {E}/baselines.jsonl && "
@@ -262,11 +264,14 @@ def main(argv=None):
     l.add_argument("--extra", default="", help="extra CLI flags appended to the stage command")
     l.add_argument("--n-train-docs", type=int, default=5500); l.add_argument("--n-eval-docs", type=int, default=300)
     l.add_argument("--hf-repo", default="syvb/rl-future-lens-qwen3-8b")
-    l.add_argument("--data-dir", default="data_base", help="split dir under the volume and path in the HF repo "
-                   "(data = the earlier Qwen3-8B chat-model split with text labels only)")
+    l.add_argument("--data-dir", default="data_base_v2", help="split dir under the volume and path in the HF repo "
+                   "(data = chat-model split, text labels; data_base = base model, greedy labels, no top-K; "
+                   "data_base_v2 = base model, greedy labels, top-64 distillation targets)")
     l.add_argument("--injection", default="replace_embed"); l.add_argument("--alpha-mult", type=float, default=1.0)
     l.add_argument("--sweep", default="replace_embed:0.5,1,2,4;karvonen:1", help="alpha_sweep: inj:mults;inj:mults")
     l.add_argument("--sweep-shuffle-mults", default="0.5,1,2,4", help="alpha_sweep: mults that also get a shuffled-control run")
+    l.add_argument("--distill", action=argparse.BooleanOptionalAction, default=True,
+                   help="sft: soft targets from the stored top-K distributions (Future Lens KL objective)")
     l.add_argument("--label", default="greedy", choices=["text", "greedy"],
                    help="readout label for sft/alpha_sweep/baselines (rl and eval read it from the checkpoint)")
     l.add_argument("--affine", action="store_true")
@@ -280,7 +285,8 @@ def main(argv=None):
     if a.cmd == "launch":
         a.sweep_shuffle_mults = {float(x) for x in a.sweep_shuffle_mults.split(",") if x}
     if a.cmd == "launch" and a.run_name is None:
-        a.run_name = {"sft": f"sft_{a.injection}_a{a.alpha_mult}_{a.label}", "rl": f"rl_{a.reward}_s{a.seed}",
+        a.run_name = {"sft": f"sft_{a.injection}_a{a.alpha_mult}_{a.label}{'_distill' if a.distill else ''}",
+                      "rl": f"rl_{a.reward}_s{a.seed}",
                       "filter_ablation": f"ablation_{a.part}"}.get(a.stage, a.stage)
     {"volume": cmd_volume, "launch": cmd_launch, "status": cmd_status, "terminate": cmd_terminate}[a.cmd](a)
 

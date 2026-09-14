@@ -51,7 +51,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from nla.config import load_nla_config
 from nla.future_lens.data import (
-    encode_prompt, load_docs, load_fl_meta, load_fl_rows, resolve_docs_path,
+    encode_prompt, load_docs, load_fl_meta, load_fl_rows, TOPK_COLUMNS, resolve_docs_path,
 )
 from nla.future_lens.eval import evaluate, stop_ids, write_records
 from nla.future_lens.inject import INJECTION_MODES, AffineInjector, prepare_vectors, register_injection
@@ -125,7 +125,7 @@ def rollout_batch(actor, tokenizer, jobs: list[dict], *, inject_char, vectors_re
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_config_arg(p)
-    p.add_argument("--base-ckpt", default="Qwen/Qwen3-8B")
+    p.add_argument("--base-ckpt", default="Qwen/Qwen3-8B-Base")
     p.add_argument("--av-ckpt", required=True, help="future-lens SFT LoRA dir (iter_*): policy init + KL reference")
     p.add_argument("--parquet", required=True, help="train.parquet")
     p.add_argument("--sidecar", default=None)
@@ -282,7 +282,8 @@ def main(argv=None):
         # would be a handful of documents, the same ones at every layer)
         all_eval = load_fl_rows(args.eval_parquet, layers=layers, label=args.label, drop_label_ids=eos_ids,
                                 columns=["prompt", "activation_vector", "activation_layer", "target_ids",
-                                         "target_top5", "k", "doc_idx", "t", "p_top1"])
+                                         "target_top5", "k", "doc_idx", "t", "p_top1"]
+                                + (TOPK_COLUMNS if (args.label == "greedy" and fl.topk) else []))   # tf_kl in the periodic eval
         by_layer: dict[int, list[dict]] = defaultdict(list)
         for r in all_eval:
             by_layer[int(r["activation_layer"])].append(r)

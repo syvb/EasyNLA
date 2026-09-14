@@ -14,13 +14,13 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 
 $PY -m nla.future_lens.collect --base-ckpt Qwen/Qwen3-0.6B --corpus "$CORPUS" \
     --n-train-docs 8 --n-eval-docs 4 --layers 4,8,12 --max-len 256 --positions-per-doc 5 \
-    --batch-size 4 --greedy all --greedy-batch 8 --prompt-format "$PROMPT_FORMAT" --out-dir "$OUT/data"
+    --batch-size 4 --greedy all --greedy-batch 8 --topk 8 --prompt-format "$PROMPT_FORMAT" --out-dir "$OUT/data"
 
 $PY -m nla.train_sft --mode av --future-lens --base-ckpt Qwen/Qwen3-0.6B \
     --parquet "$OUT/data/train.parquet" --heldout-parquet "$OUT/data/eval.parquet" \
     --heldout-rows 16 --heldout-every 3 --heldout-gen-rows 16 --save-dir "$OUT/sft" \
     --use-lora --lora-r 8 --lora-alpha 16 --batch-size 8 --num-steps 3 --lr 1e-3 \
-    --lr-warmup-steps 1 --save-every 3 --device cpu --no-wandb --no-gradient-checkpointing --label "$LABEL"
+    --lr-warmup-steps 1 --save-every 3 --device cpu --no-wandb --no-gradient-checkpointing --label "$LABEL" --distill
 
 $PY -m nla.future_lens.train_rl --config configs/future_lens/smoke_cpu.yaml \
     --base-ckpt Qwen/Qwen3-0.6B --av-ckpt "$OUT/sft/iter_0000003" \

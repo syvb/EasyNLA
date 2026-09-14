@@ -125,11 +125,14 @@ def forward_docs(model, docs: list[list[int]], layers: list[int], device, pad_id
 
 @torch.no_grad()
 def greedy_continuations(model, tokenizer, prefixes: list[list[int]], n_new: int, device,
-                         batch_size: int = 16) -> tuple[list[list[int]], list[np.ndarray], list[np.ndarray]]:
+                         batch_size: int = 16, topk: int = 0):
     """Greedy `n_new` tokens after each prefix (left-padded batches), plus the target's
-    top-5 ids and the log-prob of the chosen token at every step (under its own prefix)."""
+    top-5 ids and the log-prob of the chosen token at every step (under its own prefix).
+    With topk > 0 also returns (ids, logps) of the top-K at every step, for distillation:
+    returns (outs, top5s, logps) or (outs, top5s, logps, topk_ids, topk_logps)."""
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     outs: list[list[int]] = []; top5s: list[np.ndarray] = []; logps: list[np.ndarray] = []
+    tk_ids: list[np.ndarray] = []; tk_lps: list[np.ndarray] = []
     for cs in range(0, len(prefixes), batch_size):
         chunk = prefixes[cs: cs + batch_size]
         L = max(len(p) for p in chunk)
@@ -145,13 +148,18 @@ def greedy_continuations(model, tokenizer, prefixes: list[list[int]], n_new: int
         )
         seqs = gen.sequences
         lsm = torch.stack([F.log_softmax(sc.float(), dim=-1) for sc in gen.scores], dim=1)  # [B, n_new, V]
-        top5 = lsm.topk(5, dim=-1).indices.cpu()                                          # [B, n_new, 5]
+        kk = max(5, topk)
+        tv, ti = lsm.topk(kk, dim=-1)                                                      # [B, n_new, kk]
+        tv, ti = tv.cpu(), ti.cpu()
         for i in range(len(chunk)):
             toks = seqs[i, L: L + n_new]
             outs.append(toks.tolist())
-            top5s.append(top5[i].reshape(-1).numpy().astype(np.int64))
+            top5s.append(ti[i, :, :5].reshape(-1).numpy().astype(np.int64))
             logps.append(lsm[i].gather(1, toks.to(lsm.device).unsqueeze(1)).squeeze(1).cpu().numpy().astype(np.float32))
-    return outs, top5s, logps
+            if topk:
+                tk_ids.append(ti[i, :, :topk].reshape(-1).numpy().astype(np.int32))
+                tk_lps.append(tv[i, :, :topk].reshape(-1).numpy().astype(np.float16))
+    return (outs, top5s, logps, tk_ids, tk_lps) if topk else (outs, top5s, logps)
 
 
 # ----------------------------------------------------------------------------
@@ -174,7 +182,7 @@ def main(argv=None):
     p.add_argument("--text-column", default="text")
     p.add_argument("--n-train-docs", type=int, required=True)
     p.add_argument("--n-eval-docs", type=int, default=0)
-    p.add_argument("--layers", default="4,8,12,16,20,24")
+    p.add_argument("--layers", default="4,8,12,16,20,24,28,32")
     p.add_argument("--max-len", type=int, default=1024)
     p.add_argument("--min-pos", type=int, default=50)
     p.add_argument("--positions-per-doc", type=int, default=40)
@@ -193,6 +201,8 @@ def main(argv=None):
                    help="store the target's greedy n_future continuation (+ top-5, log-probs) for eval "
                         "rows or for all rows (needed for label=greedy training; ~+1 H100-h per 200k positions)")
     p.add_argument("--greedy-batch", type=int, default=32)
+    p.add_argument("--topk", type=int, default=64,
+                   help="store the target's top-K ids + log-probs at every greedy step (distillation targets); 0 = off")
     p.add_argument("--alpha-quantile", default="p75",
                    help="which norm quantile becomes injection_scale_by_layer (NLA paper: p75)")
     p.add_argument("--batch-size", type=int, default=4)
@@ -236,7 +246,7 @@ def main(argv=None):
           f"neighbours=({token_meta.injection_left_neighbor_id},{token_meta.injection_right_neighbor_id})")
 
     rng = np.random.default_rng(args.seed)
-    schema = fl_schema(d_model, nf, npv)
+    schema = fl_schema(d_model, nf, npv, topk=args.topk)
     norms: dict[int, list[float]] = {l: [] for l in layers}
     max_abs: dict[int, float] = {l: 0.0 for l in layers}
     stats = {"n_candidates": 0, "n_top1_correct": 0, "n_docs": {"train": 0, "eval": 0},
@@ -290,10 +300,13 @@ def main(argv=None):
                 stats["n_docs"][split] += 1
                 stats["n_positions"][split] += len(pos)
                 # per-position target statistics from the single teacher-forced pass
-                greedy = g_top5 = g_logp = None
+                greedy = g_top5 = g_logp = g_tk = g_tkl = None
                 if args.greedy == "all" or (split == "eval" and args.greedy == "eval"):
-                    greedy, g_top5, g_logp = greedy_continuations(
-                        model, tokenizer, [ids[: t + 1] for t in pos], nf, device, batch_size=args.greedy_batch)
+                    res = greedy_continuations(model, tokenizer, [ids[: t + 1] for t in pos], nf, device,
+                                               batch_size=args.greedy_batch, topk=args.topk)
+                    greedy, g_top5, g_logp = res[:3]
+                    if args.topk:
+                        g_tk, g_tkl = res[3], res[4]
                 for pi, t in enumerate(pos):
                     lg = logits[bi, t: t + nf].float()            # [nf, V]
                     lsm = F.log_softmax(lg, dim=-1)
@@ -339,6 +352,11 @@ def main(argv=None):
                             g_top5[pi] if g_top5 is not None else np.full(5 * nf, -1, dtype=np.int64))
                         pending["greedy_logp"].append(
                             g_logp[pi] if g_logp is not None else np.full(nf, np.nan, dtype=np.float32))
+                        if args.topk:
+                            pending["greedy_topk_ids"].append(
+                                g_tk[pi] if g_tk is not None else np.full(args.topk * nf, -1, dtype=np.int32))
+                            pending["greedy_topk_logp"].append(
+                                g_tkl[pi] if g_tkl is not None else np.full(args.topk * nf, np.nan, dtype=np.float16))
                         stats["n_rows"][split] += 1
                     del text_full
                 counter["doc_idx"] += 1
@@ -402,7 +420,7 @@ def main(argv=None):
         template=args.template, norm_quantiles=norm_q, injection_scale_by_layer=alpha,
         docs_parquet="docs.parquet", discard_fraction=discard, d_model=d_model,
         extra={"base_model": args.base_ckpt, "require_top1": bool(args.require_top1), "greedy": args.greedy,
-               "prompt_format": args.prompt_format,
+               "prompt_format": args.prompt_format, "topk": int(args.topk),
                "max_len": args.max_len, "min_pos": args.min_pos,
                "corpus": args.corpus, "corpus_config": args.corpus_config,
                "corpus_slice": {"start": args.corpus_start, "length": args.n_train_docs + args.n_eval_docs}},

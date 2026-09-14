@@ -49,7 +49,7 @@ from nla.schema import (
     normalize_activation,
     resolve_target_scale,
 )
-from nla.future_lens.data import chat_prompt_text, load_fl_meta, load_fl_rows, subsample_positions, shuffle_activations
+from nla.future_lens.data import chat_prompt_text, load_fl_meta, load_fl_rows, subsample_positions, TOPK_COLUMNS, shuffle_activations
 from nla.future_lens.inject import (
     INJECTION_MODES, AffineInjector, prepare_vectors, register_replace_embed_hook,
 )
@@ -371,6 +371,30 @@ def build_lr_lambda(warmup_steps, total_steps, min_lr_ratio):
 # ----------------------------------------------------------------------------
 
 @torch.no_grad()
+def heldout_av_distill(model, tokenizer, rows, cfg, vectors_ref, device, *,
+                       max_len=1024, micro_batch=16, injection_mode="replace_embed"):
+    """Held-out soft CE (the --distill objective) over readout positions, mean per position."""
+    tot, n = 0.0, 0
+    for cs in range(0, len(rows), micro_batch):
+        chunk = rows[cs:cs + micro_batch]
+        ids, attn, loss_mask, v_batch, s_ids, s_logp, s_mask = _av_prepare_chunk(
+            chunk, tokenizer, cfg.injection_char, device, max_len=max_len, fl=True,
+            injection_mode=injection_mode, distill=True)
+        vectors_ref[0] = v_batch
+        try:
+            logits = model(input_ids=ids, attention_mask=attn).logits.float()
+        finally:
+            vectors_ref[0] = None
+        shift_logits = logits[:, :-1].contiguous()
+        soft_sum, k = distill_loss(shift_logits, s_ids[:, 1:].to(shift_logits.device).contiguous(),
+                                   s_logp[:, 1:].to(shift_logits.device).contiguous(),
+                                   s_mask[:, 1:].to(shift_logits.device).contiguous(),
+                                   drop_ids={tokenizer.eos_token_id})
+        tot += float(soft_sum.item()); n += k
+    return tot / max(n, 1)
+
+
+@torch.no_grad()
 def heldout_av_ce(model, tokenizer, rows, cfg, vectors_ref, device, *,
                   max_len=1024, micro_batch=16, fl=False, injection_mode="karvonen",
                   drop_last_token=False):
@@ -406,8 +430,11 @@ def heldout_av_ce(model, tokenizer, rows, cfg, vectors_ref, device, *,
 
 
 def _av_prepare_chunk(rows, tokenizer, inject_char, device, max_len=1024, *,
-                      fl=False, injection_mode="karvonen"):
-    """Return (input_ids, attn, loss_mask, v_batch) — all [B, T] (or [B, d]).
+                      fl=False, injection_mode="karvonen", distill=False):
+    """Return (input_ids, attn, loss_mask, v_batch) — all [B, T] (or [B, d]); with
+    distill=True also (soft_ids [B,T,K] int64, soft_logp [B,T,K] float32, soft_mask [B,T]) in
+    TARGET space: the target's top-K distribution at every readout position (from the row's
+    greedy_topk_*), 0 elsewhere (prompt, EOS, pad). The EOS position keeps its hard label.
 
     fl=True (future lens): the prompt is chat-formatted with thinking disabled and
     the response is the row's `target_ids[:k]` token ids VERBATIM (+EOS) — no
@@ -416,6 +443,7 @@ def _av_prepare_chunk(rows, tokenizer, inject_char, device, max_len=1024, *,
     using the per-row `inject_alpha`."""
     full_ids_list = []
     prompt_lens = []
+    soft = []   # per row: (topk_ids [k, K], topk_logp [k, K]) for the k readout positions
     for row in rows:
         if fl:
             prompt_str = chat_prompt_text(tokenizer, row["prompt"], inject_char)
@@ -444,6 +472,10 @@ def _av_prepare_chunk(rows, tokenizer, inject_char, device, max_len=1024, *,
             full = full[:max_len]
         full_ids_list.append(torch.tensor(full, dtype=torch.long))
         prompt_lens.append(len(prompt_ids))
+        if distill:
+            kk = int(row["k"])
+            soft.append((np.asarray(row["greedy_topk_ids"][:kk], dtype=np.int64),
+                         np.asarray(row["greedy_topk_logp"][:kk], dtype=np.float32)))
 
     bs = len(full_ids_list)
     T = max(t.numel() for t in full_ids_list)
@@ -466,7 +498,46 @@ def _av_prepare_chunk(rows, tokenizer, inject_char, device, max_len=1024, *,
     if fl:
         alphas = torch.tensor([float(r["inject_alpha"]) for r in rows])   # KeyError = caller forgot to set it
         v_batch = prepare_vectors(v_batch, alphas, injection_mode)
-    return batch_ids, attn, loss_mask, v_batch.to(device)
+    if not distill:
+        return batch_ids, attn, loss_mask, v_batch.to(device)
+    K = soft[0][0].shape[1]
+    soft_ids = torch.zeros((bs, T, K), dtype=torch.long)
+    soft_logp = torch.full((bs, T, K), -1e4, dtype=torch.float32)
+    soft_mask = torch.zeros((bs, T), dtype=torch.float32)
+    for i, (tid, tlp) in enumerate(soft):
+        p0, kk = prompt_lens[i], tid.shape[0]
+        kk = min(kk, T - p0)
+        soft_ids[i, p0: p0 + kk] = torch.from_numpy(tid[:kk])
+        soft_logp[i, p0: p0 + kk] = torch.from_numpy(tlp[:kk])
+        soft_mask[i, p0: p0 + kk] = 1
+    return batch_ids, attn, loss_mask, v_batch.to(device), soft_ids.to(device), soft_logp.to(device), soft_mask.to(device)
+
+
+def distill_loss(shift_logits, soft_ids, soft_logp, soft_mask, drop_ids=None):
+    """Cross-entropy against the target's truncated top-K distribution with the leftover
+    mass in a remainder bucket (= KL(q||p) up to q's entropy). Inputs are in shifted
+    (prediction) space: shift_logits [B,T-1,V] predicts positions 1..T-1. `drop_ids`
+    (stop ids) get q=0 and their mass folded into the remainder, so the decoder is never
+    taught to emit EOS mid-readout. Returns (sum of per-position soft CE, n positions)."""
+    sel = soft_mask.bool()
+    if not sel.any():
+        return shift_logits.sum() * 0.0, 0
+    z = shift_logits[sel]                                    # [n, V]
+    lp = F.log_softmax(z, dim=-1)
+    ids, tlp = soft_ids[sel], soft_logp[sel]                 # [n, K]
+    q = tlp.exp()                                            # target probs on the top-K
+    if drop_ids:
+        bad = torch.zeros_like(q, dtype=torch.bool)
+        for d in drop_ids:
+            bad |= ids == int(d)
+        q = q.masked_fill(bad, 0.0)
+    q_rest = (1.0 - q.sum(-1)).clamp(min=0.0)                # remainder bucket
+    lp_k = lp.gather(1, ids)                                 # decoder log-probs at those ids
+    # exact log of the decoder's remainder mass: logsumexp over the vocab minus the top-K
+    lp_rest = torch.logsumexp(lp.scatter(1, ids, float("-inf")), dim=-1)
+    ce = -(q * lp_k).sum(-1) - q_rest * lp_rest
+    return ce.sum(), int(sel.sum())
+
 
 
 # ----------------------------------------------------------------------------
@@ -629,6 +700,10 @@ def main():
                    help="karvonen (EasyNLA default, layer-1 additive norm-matched) or "
                         "replace_embed (NLA paper: alpha*h/|h| replaces the marker's input "
                         "embedding). Default: karvonen, or replace_embed with --future-lens.")
+    p.add_argument("--distill", action=argparse.BooleanOptionalAction, default=False,
+                   help="future-lens: soft targets = the target's stored top-K distribution at every readout "
+                        "position (Future Lens Eq. 10 / KL objective) instead of a hard label; EOS stays hard. "
+                        "Needs --label greedy and a parquet collected with --topk > 0")
     p.add_argument("--label", choices=("text", "greedy"), default="text",
                    help="future-lens readout label: corpus continuation (text) or the target's own greedy "
                         "continuation (greedy; Future Lens convention). Recorded in future_lens.json")
@@ -862,7 +937,12 @@ def main():
         rows = load_fl_rows(args.parquet, n_max=args.max_rows, layers=_layers, label=args.label,
                             drop_label_ids={tokenizer.eos_token_id},
                             columns=["prompt", "response", "activation_vector", "activation_layer",
-                                     "target_ids", "k", "doc_id"])
+                                     "target_ids", "k", "doc_id"] + (TOPK_COLUMNS if args.distill else []))
+        if args.distill:
+            assert args.future_lens, "--distill is a future-lens option"
+            assert args.label == "greedy", "--distill needs --label greedy (the stored distributions are the greedy-prefix ones)"
+            assert "greedy_topk_ids" in rows[0], f"{args.parquet} has no top-K distributions; re-run collect with --topk"
+            print(f"[data] distillation targets: top-{rows[0]['greedy_topk_ids'].shape[1]} per readout position", flush=True)
         print(f"[data] future-lens label = {args.label}", flush=True)
         for r in rows:
             r["inject_alpha"] = fl_meta.alpha(int(r["activation_layer"]), args.alpha_mult)
@@ -942,7 +1022,8 @@ def main():
         heldout_av_rows = subsample_positions(load_fl_rows(
             args.heldout_parquet, layers=_hl, label=args.label, drop_label_ids={tokenizer.eos_token_id},
             columns=["prompt", "response", "activation_vector", "activation_layer", "target_ids",
-                     "target_top5", "k", "doc_id", "doc_idx", "t", "p_top1"]), args.heldout_rows, seed=args.seed)
+                     "target_top5", "k", "doc_id", "doc_idx", "t", "p_top1"] + (TOPK_COLUMNS if args.distill else [])),
+            args.heldout_rows, seed=args.seed)
         print(f"[data] held-out: {len(heldout_av_rows)} rows over "
               f"{len({(int(r['doc_idx']), int(r['t'])) for r in heldout_av_rows})} positions", flush=True)
         for r in heldout_av_rows:
@@ -1004,6 +1085,7 @@ def main():
         optim.zero_grad()
         accum_loss = 0.0
         accum_resp_tokens = 0  # AV only: total response tokens for normalization
+        accum_hard_loss = 0.0  # AV --distill: the hard-label CE (logged for comparability)
         accum_av_entropy = 0.0  # AV only: mean policy entropy over response tokens (nats)
         accum_n = 0
         ar_dbg = {}            # AR: last-chunk norms/cosine snapshot
@@ -1018,10 +1100,12 @@ def main():
 
             # ---- forward + loss ----
             if args.mode == "av":
-                ids, attn, loss_mask, v_batch = _av_prepare_chunk(
+                _prep = _av_prepare_chunk(
                     chunk_rows, tokenizer, cfg.injection_char, device,
                     max_len=args.max_len, fl=args.future_lens, injection_mode=args.injection,
+                    distill=args.distill,
                 )
+                ids, attn, loss_mask, v_batch = _prep[:4]
                 # vectors_ref stays set through .backward() below: AV mode runs
                 # gradient checkpointing BY DEFAULT, the backward-time recompute
                 # re-fires the injection hook, and clearing before backward made
@@ -1045,7 +1129,16 @@ def main():
                     reduction="none",
                 ).view(shift_targets.shape)
                 n_resp = shift_mask.sum().clamp(min=1)
-                loss = (per_tok * shift_mask).sum() / n_resp
+                hard_loss = (per_tok * shift_mask).sum() / n_resp
+                if args.distill:
+                    # soft CE on readout positions + hard CE on the EOS position
+                    s_ids, s_logp, s_mask = (x[:, 1:].to(shift_logits.device).contiguous() for x in _prep[4:7])
+                    soft_sum, _n_soft = distill_loss(shift_logits, s_ids, s_logp, s_mask, drop_ids={tokenizer.eos_token_id})
+                    hard_eos = (per_tok * shift_mask * (1 - s_mask)).sum()
+                    loss = (soft_sum + hard_eos) / n_resp
+                    accum_hard_loss += float(hard_loss.item())
+                else:
+                    loss = hard_loss
                 accum_resp_tokens += int(n_resp.item())
                 # mean token entropy over response positions (nats), logging only.
                 # Gather response tokens first so the softmax is over n_resp rows, not B*T.
@@ -1100,6 +1193,8 @@ def main():
             log["mean_resp_len"] = accum_resp_tokens / n_seen
             log["ppl"] = math.exp(min(20.0, mean_loss))
             log["entropy"] = accum_av_entropy / max(accum_n, 1)  # mean response-token entropy (nats)
+            if args.distill:
+                log["hard_loss"] = accum_hard_loss / max(accum_n, 1)   # greedy-token CE under the soft objective
             line += (f" | resp_toks {accum_resp_tokens} | ppl {log['ppl']:.2f}"
                      f" | ent {log['entropy']:.3f}")
         # AR debug scalars (norms + direction match)
@@ -1182,6 +1277,13 @@ def main():
                 log["heldout/ce_gap"] = s_ce - h_ce
                 log["heldout/readout_loss"] = r_ce              # readout tokens only (no EOS)
                 log["heldout/readout_ce_gap"] = rs_ce - r_ce    # the alpha-selection number
+                if args.distill:
+                    d_ce = heldout_av_distill(model, tokenizer, heldout_av_rows, cfg, vectors_ref, device,
+                                              max_len=args.max_len, injection_mode=args.injection)
+                    ds_ce = heldout_av_distill(model, tokenizer, heldout_shuf_rows, cfg, vectors_ref, device,
+                                               max_len=args.max_len, injection_mode=args.injection)
+                    log["heldout/distill_loss"] = d_ce           # soft CE vs the target's top-K (the objective)
+                    log["heldout/distill_gap"] = ds_ce - d_ce
                 from nla.future_lens.eval import generate_readouts, stop_ids, summarize_by_offset
                 _g_rows = heldout_av_rows[: args.heldout_gen_rows]
                 _jobs = [{"prompt": r["prompt"], "k": int(r["k"]), "vector": r["activation_vector"],
@@ -1235,6 +1337,7 @@ def main():
                     (out_dir / "future_lens.json").write_text(json.dumps({
                         "injection": args.injection, "alpha_mult": args.alpha_mult,
                         "affine": affine is not None, "layers": args.layers, "label": args.label,
+                        "distill": bool(args.distill),
                         "shuffle_activations": args.shuffle_activations,
                     }, indent=2))
             elif args.use_lora:

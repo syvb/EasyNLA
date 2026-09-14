@@ -1,6 +1,6 @@
 # Short SFT for the alpha / injection sweep (spec Phase "Injection"): 400 steps each,
 # run once with true labels and once with --shuffle-activations; pick the alpha with
-# the largest heldout/ce_gap. ~10 runs x ~10 min on one H100.
+# the largest heldout/readout_ce_gap (hard-label; the sweep does not distil). ~10 runs x ~10 min on one H100.
 mode: av
 future_lens: true
 label: greedy
