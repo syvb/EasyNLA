@@ -29,6 +29,8 @@ from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 REPO = os.environ.get("FL_HF_REPO", "syvb/rl-future-lens-qwen3-8b")
 TOKEN = os.environ.get("HF_TOKEN")
 SKIP_RUN = re.compile(r"^(sweep_|ablation_|sft_filt|sft_unf)")
+# base checkpoints served (the obsolete chat-model/text-label oracle would add a second 16 GB 8B)
+BASES = [x for x in os.environ.get("FO_BASES", "Qwen/Qwen3-0.6B-Base,Qwen/Qwen3-1.7B-Base,Qwen/Qwen3-8B-Base").split(",") if x]
 
 
 @dataclass
@@ -120,6 +122,8 @@ def scan_registry(cache: str = "/tmp/fo_meta") -> list[Oracle]:
         cfg = json.load(open(_dl(f"{idir}/adapter_config.json", cache)))
         fl = json.load(open(_dl(f"{idir}/future_lens.json", cache)))
         base = cfg["base_model_name_or_path"]
+        if base not in BASES:
+            continue
         layers = [int(x) for x in str(fl.get("layers", "")).split(",") if x]
         cands = [s for s in sidecars if s.base_model == base and set(layers) <= set(s.alpha_by_layer)]
         if not cands:
@@ -142,14 +146,25 @@ def scan_registry(cache: str = "/tmp/fo_meta") -> list[Oracle]:
 # ----------------------------------------------------------------------------
 
 class Bank:
-    """Base models (bf16) with all oracle adapters attached as named PEFT adapters."""
+    """Base models (bf16) with all oracle adapters attached as named PEFT adapters.
+
+    ZeroGPU: everything is assembled on CPU at import time and moved to CUDA once per base model
+    (`to_device`), which ZeroGPU packs for its workers. Attaching an adapter later (Refresh) moves
+    that base back to CPU, attaches, and moves it to CUDA again."""
 
     def __init__(self, device: str = "cuda", dtype=torch.bfloat16):
         self.device, self.dtype = device, dtype
         self.tok = None
         self.models: dict[str, torch.nn.Module] = {}     # base id -> PeftModel (or bare base)
+        self.on_device: set[str] = set()
         self.loaded: set[str] = set()                     # oracle runs attached
         self.lock = threading.Lock()
+
+    def to_device(self):
+        for b, m in self.models.items():
+            if b not in self.on_device:
+                m.to(self.device)
+                self.on_device.add(b)
 
     def tokenizer(self, base: str):
         if self.tok is None:
@@ -161,8 +176,8 @@ class Bank:
         if base not in self.models:
             self.tokenizer(base)
             from transformers import AutoModelForCausalLM
-            m = AutoModelForCausalLM.from_pretrained(base, torch_dtype=self.dtype, attn_implementation="sdpa")
-            self.models[base] = m.to(self.device).eval()
+            m = AutoModelForCausalLM.from_pretrained(base, dtype=self.dtype, attn_implementation="sdpa")
+            self.models[base] = m.eval()          # CPU until to_device()
         return self.models[base]
 
     def attach(self, o: Oracle):
@@ -177,11 +192,16 @@ class Bank:
                                                              local_dir="/tmp/fo_ckpts"), o.iter_dir)
             from peft import PeftModel
             m = self.base(o.base_model)
+            back = o.base_model in self.on_device
+            if back:                                 # late attach: assemble on CPU, then re-pack
+                m.to("cpu"); self.on_device.discard(o.base_model)
             if isinstance(m, PeftModel):
                 m.load_adapter(o.local_dir, adapter_name=o.adapter_name)
             else:
                 self.models[o.base_model] = PeftModel.from_pretrained(m, o.local_dir, adapter_name=o.adapter_name).eval()
             self.loaded.add(o.run)
+            if back:
+                self.to_device()
 
     def model(self, o: Oracle):
         self.attach(o)

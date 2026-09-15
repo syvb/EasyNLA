@@ -49,10 +49,16 @@ def refresh_registry() -> str:
                 continue
             REGISTRY[o.run] = o
             new.append(o.name)
+    if new:
+        try:
+            BANK.to_device()
+        except Exception as e:
+            return f"{len(REGISTRY)} oracles loaded; new adapters attached but could not be moved to the GPU ({e}); restart the Space"
     return (f"{len(REGISTRY)} oracles loaded" + (f"; new: {', '.join(new)}" if new else "; nothing new"))
 
 
 STATUS = refresh_registry()
+BANK.to_device()          # one CUDA move per base model (ZeroGPU packs the tensors here)
 print("[startup]", STATUS)
 
 
