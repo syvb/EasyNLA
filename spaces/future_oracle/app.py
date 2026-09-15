@@ -204,6 +204,15 @@ def analyze(ids: list[int], idx: str, names: list[str], k: int, ctrls: list[str]
     return render_results(tok, ids, t, rows)
 
 
+@spaces.GPU(duration=120)
+def probe(text: str, token_index: int, oracles: list[str] | None = None, k: int = 5,
+          controls: list[str] | None = None, layer_for_multilayer: int = 24) -> str:
+    """API: tokenize `text`, read the future at `token_index` with the given oracles (default: all
+    single-layer oracles). Returns the results HTML."""
+    _, ids, _ = tokenize(text)
+    return analyze(ids, str(int(token_index)), oracles or default_choices(), int(k), controls or [], int(layer_for_multilayer))
+
+
 def do_refresh():
     msg = refresh_registry()
     return gr.update(choices=oracle_choices()), msg
@@ -250,6 +259,7 @@ with gr.Blocks(css=CSS, js=CLICK_JS, title="Future Oracle explorer") as demo:
     click_idx.input(analyze, [ids_state, click_idx, oracles_dd, k_in, ctrl_in, layer8_in], [results])
     refresh_btn.click(do_refresh, [], [oracles_dd, status])
     demo.load(tokenize, [text_in], [tokens_out, ids_state, results])
+    gr.api(probe, api_name="probe")
 
 demo.queue(default_concurrency_limit=2)
 if __name__ == "__main__":
