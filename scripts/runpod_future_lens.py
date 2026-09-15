@@ -34,17 +34,24 @@ import httpx
 REPO = "https://github.com/syvb/EasyNLA.git"
 BRANCH = os.environ.get("FL_BRANCH", "sv/future-rl")
 IMAGE = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
-GPU_PREF = [("NVIDIA H100 80GB HBM3", "SECURE"), ("NVIDIA H100 PCIe", "SECURE"),
+GPU_PREF = [("NVIDIA H100 80GB HBM3", "SECURE"), ("NVIDIA H100 NVL", "SECURE"), ("NVIDIA H100 PCIe", "SECURE"),
             ("NVIDIA A100 80GB PCIe", "SECURE"), ("NVIDIA A100-SXM4-80GB", "SECURE"),
             ("NVIDIA H100 PCIe", "COMMUNITY"), ("NVIDIA A100 80GB PCIe", "COMMUNITY")]
-BASE = "Qwen/Qwen3-8B-Base"   # pretrained base + plain prompt (spec: "base / non-thinking"; Future Lens used base GPT-J)
+# --model: pretrained base + plain prompt (spec: "base / non-thinking"; Future Lens used base GPT-J).
+# Layers are depth-matched to the 8B choice (36 blocks: collect 4..32, train 8..32; the first collected
+# layer is the wrong-layer control only). 28-block models use the same relative depths (x28/36, rounded).
+MODELS = {  # size -> (base ckpt, collected layers, trained layers)
+    "8b":   ("Qwen/Qwen3-8B-Base",   "4,8,12,16,20,24,28,32", "8,12,16,20,24,28,32"),
+    "4b":   ("Qwen/Qwen3-4B-Base",   "4,8,12,16,20,24,28,32", "8,12,16,20,24,28,32"),
+    "1.7b": ("Qwen/Qwen3-1.7B-Base", "3,6,9,12,16,19,22,25",  "6,9,12,16,19,22,25"),
+    "0.6b": ("Qwen/Qwen3-0.6B-Base", "3,6,9,12,16,19,22,25",  "6,9,12,16,19,22,25"),
+}
+BASE, LAYERS, TRAIN_LAYERS = MODELS["8b"]   # overridden from --model in main()
 PROMPT_FORMAT = "plain"
 TOPK = 64            # stored target top-K per greedy step: distillation targets for SFT --distill
 WORK = "/workspace/fl"
 WANDB_PROJECT = "rl-future-lens"
 MAX_POD_HOURS = 16   # watchdog: the longest stage (RL, ~4-5 h) plus a wide margin
-LAYERS = "4,8,12,16,20,24,28,32"       # collected; 4 = wrong-layer control only
-TRAIN_LAYERS = "8,12,16,20,24,28,32"    # Future Lens: N>=1 peaks mid-depth, N=0 late; 24 was still rising
 
 
 def _read(path):
@@ -61,8 +68,23 @@ def _runpod():
 # stage commands (run inside the pod, cwd = repo)
 # ----------------------------------------------------------------------------
 
+def evals_name(a) -> str:
+    """evals dir on the volume / in the HF repo: `evals` for the 8B, `evals_{size}` otherwise."""
+    return "evals" if a.model == "8b" else f"evals_{a.model}"
+
+
 def stage_cmd(stage: str, a) -> str:
-    D, C, E = f"{WORK}/{a.data_dir}", f"{WORK}/ckpts", f"{WORK}/evals"
+    D, C, E = f"{WORK}/{a.data_dir}", f"{WORK}/ckpts", f"{WORK}/{evals_name(a)}"
+    if stage == "pipeline":
+        # one pod per model: collect -> SFT -> eval -> baselines, each step skipped if its output exists
+        # (GPU stock is scarce: one queue wait instead of four). SFT flags via --extra go to the SFT only.
+        run = a.run_name
+        sub = argparse.Namespace(**vars(a)); sub.extra = ""; sub.adapters = f"{run}/iter_{a.sft_steps:07d}"
+        sft = argparse.Namespace(**vars(a)); sft.extra = f"--num-steps {a.sft_steps} {a.extra}".strip()
+        return " && ".join([
+            f"[ -f {D}/eval.parquet ] || ({stage_cmd('collect', sub)})",
+            f"[ -d {C}/{run}/iter_{a.sft_steps:07d} ] || ({stage_cmd('sft', sft)})",
+            stage_cmd("eval", sub), stage_cmd("baselines", sub)])
     if stage == "collect":
         return (f"python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
                 f"--corpus-config sample-10BT --n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
@@ -114,9 +136,10 @@ def stage_cmd(stage: str, a) -> str:
             cmds.append(f"rm -f {E}/{name}.jsonl {E}/readouts_{name}.jsonl && "
                         f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{ad} "
                         f"--parquet {D}/eval.parquet --out {E}/{name}.jsonl "
-                        f"--conditions real,shuffled,none,wrong_layer,cross_layer --wrong-layer 4 --batch-size 128 --surprisal --surprisal-rows 256 "
+                        f"--conditions real,shuffled,none,wrong_layer,cross_layer --wrong-layer {LAYERS.split(',')[0]} "
+                        f"--batch-size 128 --surprisal --surprisal-rows 256 "
                         f"--layers {TRAIN_LAYERS} --dump-readouts {E}/readouts_{name}.jsonl "
-                        f"--seed {seed} --tag-kv {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed})} {a.extra}")
+                        f"--seed {seed} --tag-kv {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed, 'model': a.model})} {a.extra}")
         return " && ".join(cmds)
     if stage == "filter_ablation":
         # How much does the top-1-correct position filter matter? Unfiltered split from fresh
@@ -192,7 +215,7 @@ def _tag_arg(d: dict) -> str:
     return ",".join(f"{k}={v}" for k, v in d.items())
 
 
-def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str) -> str:
+def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str, evals: str = "evals") -> str:
     assert "'" not in stage_command, f"stage command contains a single quote (breaks bash -lc quoting): {stage_command}"
     log = f"{WORK}/logs/{stage}_$(date +%Y%m%d_%H%M%S).log"
     finish = "" if keep else "python /root/EasyNLA/scripts/pod_terminate.py || runpodctl remove pod $RUNPOD_POD_ID"
@@ -200,12 +223,12 @@ def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str) -> str:
         "/start.sh >/dev/null 2>&1 & "
         # watchdog: nothing here should take a day; a failed clone/pip/terminate must not bill forever
         f"(sleep {MAX_POD_HOURS}h; runpodctl remove pod $RUNPOD_POD_ID) >/dev/null 2>&1 & "
-        f"mkdir -p {WORK}/logs {WORK}/data {WORK}/ckpts {WORK}/evals && exec > >(tee -a {log}) 2>&1; set -x; set -o pipefail; "
+        f"mkdir -p {WORK}/logs {WORK}/ckpts {WORK}/{evals} && exec > >(tee -a {log}) 2>&1; set -x; set -o pipefail; "
         # clone onto the pod's own container disk: two pods sharing the volume must not rm -rf each other's repo
         f"cd /root && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
         "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "
         f"export HF_HOME=/workspace/hf && ({stage_command}) ; echo STAGE_EXIT=$? ; "
-        f"python scripts/hf_upload.py {WORK}/evals evals --repo {hf_repo} || true; "
+        f"python scripts/hf_upload.py {WORK}/{evals} {evals} --repo {hf_repo} || true; "
         f"python scripts/hf_upload.py {WORK}/logs logs --repo {hf_repo} || true; "
         f"{finish}; echo FINISHED; sleep infinity"
     )
@@ -223,7 +246,7 @@ def cmd_volume(a):
 
 
 def cmd_launch(a):
-    cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep, a.hf_repo)
+    cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep, a.hf_repo, evals_name(a))
     assert '"' not in cmd and "{" not in cmd and "}" not in cmd, "dockerArgs is pasted into GraphQL unescaped"
     if a.dry_run:
         print(cmd); return
@@ -268,7 +291,10 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("volume"); v.add_argument("--name", default="fl-qwen3-8b"); v.add_argument("--size", type=int, default=150)
     v.add_argument("--dc", default="EU-RO-1")
-    l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens", "leakage"])
+    l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens", "leakage", "pipeline"])
+    l.add_argument("--model", default="8b", choices=list(MODELS), help="target = decoder size (sets base ckpt, layers, "
+                   "default --data-dir data_{size}, evals_{size}/, and a _{size} suffix on sft/rl run names)")
+    l.add_argument("--sft-steps", type=int, default=8000, help="pipeline: SFT --num-steps (8000 = the 8B run)")
     l.add_argument("--volume", required=True, help="network volume id")
     l.add_argument("--gpu", default=None); l.add_argument("--cloud", default="SECURE")
     l.add_argument("--keep", action="store_true"); l.add_argument("--dry-run", action="store_true")
@@ -276,7 +302,8 @@ def main(argv=None):
     l.add_argument("--extra", default="", help="extra CLI flags appended to the stage command")
     l.add_argument("--n-train-docs", type=int, default=5500); l.add_argument("--n-eval-docs", type=int, default=300)
     l.add_argument("--hf-repo", default="syvb/rl-future-lens-qwen3-8b")
-    l.add_argument("--data-dir", default="data_base_v2", help="split dir under the volume and path in the HF repo "
+    l.add_argument("--data-dir", default=None, help="split dir under the volume and path in the HF repo (default: "
+                   "data_base_v2 for --model 8b, data_{size} otherwise) "
                    "(data = chat-model split, text labels; data_base = base model, greedy labels, no top-K; "
                    "data_base_v2 = base model, greedy labels, top-64 distillation targets)")
     l.add_argument("--injection", default="replace_embed"); l.add_argument("--alpha-mult", type=float, default=1.0)
@@ -296,10 +323,16 @@ def main(argv=None):
     a = p.parse_args(argv)
     if a.cmd == "launch":
         a.sweep_shuffle_mults = {float(x) for x in a.sweep_shuffle_mults.split(",") if x}
-    if a.cmd == "launch" and a.run_name is None:
-        a.run_name = {"sft": f"sft_{a.injection}_a{a.alpha_mult}_{a.label}{'_distill' if a.distill else ''}",
-                      "rl": f"rl_{a.reward}_s{a.seed}",
-                      "filter_ablation": f"ablation_{a.part}"}.get(a.stage, a.stage)
+    if a.cmd == "launch":
+        global BASE, LAYERS, TRAIN_LAYERS
+        BASE, LAYERS, TRAIN_LAYERS = MODELS[a.model]
+        if a.data_dir is None:
+            a.data_dir = "data_base_v2" if a.model == "8b" else f"data_{a.model}"
+        if a.run_name is None:
+            sfx = "" if a.model == "8b" else f"_{a.model}"
+            sft_name = f"sft_{a.injection}_a{a.alpha_mult}_{a.label}{'_distill' if a.distill else ''}{sfx}"
+            a.run_name = {"sft": sft_name, "pipeline": sft_name, "rl": f"rl_{a.reward}_s{a.seed}{sfx}",
+                          "filter_ablation": f"ablation_{a.part}"}.get(a.stage, a.stage)
     {"volume": cmd_volume, "launch": cmd_launch, "status": cmd_status, "terminate": cmd_terminate}[a.cmd](a)
 
 
