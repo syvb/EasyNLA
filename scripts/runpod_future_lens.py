@@ -280,8 +280,12 @@ def cmd_launch(a):
         try:
             pod = runpod.create_pod(
                 name=f"fl-{a.stage}-{a.run_name or ''}".rstrip("-"), image_name=IMAGE, gpu_type_id=gpu,
-                cloud_type=cloud, gpu_count=1, container_disk_in_gb=80, volume_in_gb=0,
-                network_volume_id=a.volume, volume_mount_path="/workspace",
+                cloud_type=cloud, gpu_count=1, container_disk_in_gb=80,
+                # --volume none: pod-local disk at /workspace instead of the network volume, so the pod
+                # can land in ANY datacenter (stock in US-CA-2 is scarce). Only for stages whose inputs
+                # come from the corpus/HF and whose outputs go to HF (the small-model pipelines).
+                volume_in_gb=0 if a.volume else 120, network_volume_id=a.volume or None,
+                volume_mount_path="/workspace",
                 min_memory_in_gb=48, min_vcpu_count=8, ports="22/tcp",
                 docker_args=f"bash -lc '{cmd}'", env=env,
             )
@@ -328,7 +332,7 @@ def main(argv=None):
     l.add_argument("--layer", type=int, default=None, help="single-layer run: collect only {wrong-layer control, LAYER} "
                    "and train/eval LAYER alone (dirs data_{size}_L{LAYER}, evals_{size}_L{LAYER}; run suffix _{size}_L{LAYER}). "
                    "8B best layer for N>=2 is 24 (of 36); depth-matched: 4B 24, 1.7B/0.6B 19 (of 28)")
-    l.add_argument("--volume", required=True, help="network volume id")
+    l.add_argument("--volume", required=True, help="network volume id, or 'none' for a pod-local /workspace disk (any DC)")
     l.add_argument("--gpu", default=None); l.add_argument("--cloud", default="SECURE")
     l.add_argument("--keep", action="store_true"); l.add_argument("--dry-run", action="store_true")
     l.add_argument("--run-name", default=None); l.add_argument("--seed", type=int, default=0)
@@ -357,6 +361,9 @@ def main(argv=None):
     if a.cmd == "launch":
         a.sweep_shuffle_mults = {float(x) for x in a.sweep_shuffle_mults.split(",") if x}
     if a.cmd == "launch":
+        if a.volume.lower() in ("none", ""):
+            a.volume = None
+            assert a.stage == "pipeline" and a.model != "8b", "--volume none is for the small-model pipelines only"
         global BASE, LAYERS, TRAIN_LAYERS
         BASE, LAYERS, TRAIN_LAYERS = MODELS[a.model]
         if a.layer is not None:
