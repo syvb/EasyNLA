@@ -95,6 +95,13 @@ def stage_cmd(stage: str, a) -> str:
             f"( [ -f {C}/{run}/iter_{a.sft_steps:07d}/adapter_model.safetensors ] || "
             f"(rm -rf {C}/{run} && {stage_cmd('sft', sft)}) )",
             f"( {stage_cmd('eval', sub)} )", f"( {stage_cmd('baselines', sub)} )"])
+    if stage == "eval_baselines":
+        # the pipeline's tail only: every saved iter of the run (+ --adapters extras), then baselines
+        run = a.run_name
+        sub = argparse.Namespace(**vars(a)); sub.extra = f"--max-rows {a.eval_max_rows}" if a.eval_max_rows else ""
+        iters = [f"{run}/iter_{i:07d}" for i in range(a.save_every, a.sft_steps + 1, a.save_every)]
+        sub.adapters = ",".join(iters + [x for x in a.adapters.split(",") if x])
+        return f"( {stage_cmd('eval', sub)} ) && ( {stage_cmd('baselines', sub)} )"
     if stage == "collect":
         # --n-train-docs 0 (+ --corpus-start): eval-only collection into --eval-data-dir, e.g. the 8B's
         # unfiltered eval split on the same docs as data_base_v2's eval split
@@ -231,12 +238,19 @@ def _tag_arg(d: dict) -> str:
     return ",".join(f"{k}={v}" for k, v in d.items())
 
 
-def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str, evals: str = "evals", rm_dirs: str = "") -> str:
+def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str, evals: str = "evals", rm_dirs: str = "",
+              hf_fetch: str = "", hf_wait: str = "", hf_fetch_late: str = "") -> str:
     assert "'" not in stage_command, f"stage command contains a single quote (breaks bash -lc quoting): {stage_command}"
     rm = ""
     for d in [x for x in rm_dirs.split(",") if x]:   # stale partial outputs of aborted pods, relative to WORK
         assert re.fullmatch(r"[A-Za-z0-9._-]+", d) and d not in (".", ".."), d
         rm += f"rm -rf {WORK}/{d}; "
+    fetch = ""   # pods without the network volume pull their inputs from the HF mirror first
+    if hf_fetch:
+        fetch += f"python scripts/hf_fetch.py --repo {hf_repo} --dest {WORK} --patterns {hf_fetch} && "
+    if hf_fetch_late:
+        fetch += (f"python scripts/hf_fetch.py --repo {hf_repo} --dest {WORK} --patterns {hf_fetch_late} "
+                  f"{'--wait ' + hf_wait if hf_wait else ''} && ")
     log = f"{WORK}/logs/{stage}_$(date +%Y%m%d_%H%M%S).log"
     finish = "" if keep else "python /root/EasyNLA/scripts/pod_terminate.py || runpodctl remove pod $RUNPOD_POD_ID"
     return (
@@ -247,7 +261,7 @@ def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str, evals: s
         # clone onto the pod's own container disk: two pods sharing the volume must not rm -rf each other's repo
         f"cd /root && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
         "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "
-        f"export HF_HOME=/workspace/hf && {rm}({stage_command}) ; echo STAGE_EXIT=$? ; "
+        f"export HF_HOME=/workspace/hf && {rm}({fetch}{stage_command}) ; echo STAGE_EXIT=$? ; "
         f"python scripts/hf_upload.py {WORK}/{evals} {evals} --repo {hf_repo} || true; "
         f"python scripts/hf_upload.py {WORK}/logs logs --repo {hf_repo} || true; "
         f"{finish}; echo FINISHED; sleep infinity"
@@ -266,7 +280,8 @@ def cmd_volume(a):
 
 
 def cmd_launch(a):
-    cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep, a.hf_repo, evals_name(a), a.rm_dirs)
+    cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep, a.hf_repo, evals_name(a), a.rm_dirs,
+                    a.hf_fetch, a.hf_wait, a.hf_fetch_late)
     assert '"' not in cmd and "{" not in cmd and "}" not in cmd, "dockerArgs is pasted into GraphQL unescaped"
     if a.dry_run:
         print(cmd); return
@@ -315,7 +330,8 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("volume"); v.add_argument("--name", default="fl-qwen3-8b"); v.add_argument("--size", type=int, default=150)
     v.add_argument("--dc", default="EU-RO-1")
-    l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens", "leakage", "pipeline"])
+    l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens", "leakage",
+                                             "pipeline", "eval_baselines"])
     l.add_argument("--model", default="8b", choices=list(MODELS), help="target = decoder size (sets base ckpt, layers, "
                    "default --data-dir data_{size}, evals_{size}/, and a _{size} suffix on sft/rl run names)")
     l.add_argument("--sft-steps", type=int, default=8000, help="pipeline: SFT --num-steps (8000 = the 8B run)")
@@ -329,6 +345,10 @@ def main(argv=None):
                    "then coincide across target models; the greedy-label loader filters per model at load)")
     l.add_argument("--eval-max-rows", type=int, default=None, help="pipeline eval: --max-rows per layer (default: all)")
     l.add_argument("--rm-dirs", default="", help="comma list of dirs under the volume work dir to rm -rf before the stage")
+    l.add_argument("--hf-fetch", default="", help="comma list of HF-repo glob patterns to download into the work dir first "
+                   "(for --volume none pods), e.g. data_8b_evalu/**,data_base_v2/train.parquet*")
+    l.add_argument("--hf-wait", default="", help="repo file to wait for before fetching --hf-fetch-late")
+    l.add_argument("--hf-fetch-late", default="", help="patterns fetched after --hf-wait exists (e.g. ckpts/<run>/**)")
     l.add_argument("--layer", type=int, default=None, help="single-layer run: collect only {wrong-layer control, LAYER} "
                    "and train/eval LAYER alone (dirs data_{size}_L{LAYER}, evals_{size}_L{LAYER}; run suffix _{size}_L{LAYER}). "
                    "8B best layer for N>=2 is 24 (of 36); depth-matched: 4B 24, 1.7B/0.6B 19 (of 28)")
@@ -363,7 +383,8 @@ def main(argv=None):
     if a.cmd == "launch":
         if a.volume.lower() in ("none", ""):
             a.volume = None
-            assert a.stage == "pipeline" and a.model != "8b", "--volume none is for the small-model pipelines only"
+            assert a.stage in ("pipeline", "eval_baselines") and (a.model != "8b" or a.hf_fetch), \
+                "--volume none needs inputs from the corpus or --hf-fetch"
         global BASE, LAYERS, TRAIN_LAYERS
         BASE, LAYERS, TRAIN_LAYERS = MODELS[a.model]
         if a.layer is not None:
@@ -378,7 +399,7 @@ def main(argv=None):
         if a.run_name is None:
             sfx = variant
             sft_name = f"sft_{a.injection}_a{a.alpha_mult}_{a.label}{'_distill' if a.distill else ''}{sfx}"
-            a.run_name = {"sft": sft_name, "pipeline": sft_name, "rl": f"rl_{a.reward}_s{a.seed}{sfx}",
+            a.run_name = {"sft": sft_name, "pipeline": sft_name, "eval_baselines": sft_name, "rl": f"rl_{a.reward}_s{a.seed}{sfx}",
                           "filter_ablation": f"ablation_{a.part}"}.get(a.stage, a.stage)
     {"volume": cmd_volume, "launch": cmd_launch, "status": cmd_status, "terminate": cmd_terminate}[a.cmd](a)
 
