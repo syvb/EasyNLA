@@ -110,7 +110,7 @@ CSS = """
 
 /* results */
 .res-empty{padding:18px; border:1px dashed rgba(128,128,128,.4); border-radius:12px; opacity:.75;}
-.ctx{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; opacity:.85; margin:2px 0 12px 0;
+.ctx{font-size:14px; opacity:.85; margin:2px 0 12px 0;
   white-space:pre-wrap; overflow-wrap:anywhere;}
 .ctx .here{background:#2a78d6; color:#fff; border-radius:3px; padding:0 3px;}
 .legend{font-size:12px; opacity:.7; margin:0 0 10px 0;}
@@ -124,8 +124,8 @@ CSS = """
 .strip{display:flex; align-items:center; gap:6px; padding:5px 0; border-top:1px solid rgba(128,128,128,.15);
   flex-wrap:wrap;}
 .strip .lab{flex:0 0 118px; font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; opacity:.6;}
-.t{display:inline-block; border-radius:5px; padding:2px 6px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-size:13px; background:rgba(128,128,128,.13); white-space:pre; line-height:1.5;}
+.t{display:inline-block; border-radius:5px; padding:2px 6px;
+  font-size:14px; background:rgba(128,128,128,.13); white-space:pre; line-height:1.5;}
 .t.hit{background:rgba(46,160,67,.30);}
 .t.miss{background:rgba(227,73,72,.24);}
 .t.empty{opacity:.5;}
@@ -186,8 +186,7 @@ def render_results(tok, ids: list[int], t: int, rows: list[dict]) -> str:
     ctx_r = html_lib.escape(tok.decode(ids[t + 1: t + 10]))
     head = f'<div class="ctx">…{ctx_l}<span class="here">{ctx_c}</span>{ctx_r}…</div>'
     legend = ('<div class="legend"><span class="t hit">green</span> = the oracle\'s token equals what the model itself '
-              'would say at that offset · <span class="t miss">red</span> = differs · the text\'s real continuation is '
-              'shown for reference only</div>')
+              'would say at that offset · <span class="t miss">red</span> = differs</div>')
     cards = []
     for r in rows:
         if "error" in r:
@@ -204,10 +203,9 @@ def render_results(tok, ids: list[int], t: int, rows: list[dict]) -> str:
             f'<div class="card{" ctrl" if ctrl else ""}">'
             f'<div class="card-h"><span class="who">Qwen3-{html_lib.escape(r["size"])}</span>'
             f'<span class="dim">layer {r["layer"]}</span>{ctrl}<span class="score {cls}">{n_hit}/{k}</span></div>'
-            f'<div class="strip"><span class="lab">oracle reads</span>{tok_spans(tok, r["readout"], r["hits"])}</div>'
             f'<div class="strip"><span class="lab">model will say</span>{tok_spans(tok, r["greedy"])}'
             f'{" " + top1 if r["control"] == "real" else ""}</div>'
-            f'<div class="strip"><span class="lab">text continues</span>{tok_spans(tok, r["actual"])}</div>'
+            f'<div class="strip"><span class="lab">oracle reads</span>{tok_spans(tok, r["readout"], r["hits"])}</div>'
             '</div>')
     return f'{head}{legend}<div class="cards">{"".join(cards)}</div>'
 
