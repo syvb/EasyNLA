@@ -45,15 +45,15 @@ def load_baselines(path: str) -> dict:
         r = json.loads(l)
         if r.get("metric") != "p1" or r.get("N") is None or not (0 <= r["N"] <= N_MAX):
             continue
-        b = r.get("baseline") or ""
-        if "window" in r:
-            out[("target_window", int(r["window"]))][r["N"]] = r["value"]
-        elif "order" in r:
-            out[("ngram", int(r["order"]))][r["N"]] = r["value"]
-        elif "layer" in r and (r.get("kind") == "probe" or "probe" in b):
+        ck = str(r.get("checkpoint") or r.get("baseline") or "")
+        if "window" in r or ck.startswith("target_window"):
+            out[("target_window", int(r.get("window") or ck.rsplit("_", 1)[1]))][r["N"]] = r["value"]
+        elif ck.endswith("gram"):
+            out[("ngram", int(ck[:-4]))][r["N"]] = r["value"]
+        elif "probe" in ck:
             out[("probe", int(r["layer"]))][r["N"]] = r["value"]
         else:
-            out[(b or "other", r.get("layer"))][r["N"]] = r["value"]
+            out[(ck or "other", r.get("layer"))][r["N"]] = r["value"]
     return out
 
 
