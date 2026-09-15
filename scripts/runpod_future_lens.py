@@ -81,7 +81,10 @@ def stage_cmd(stage: str, a) -> str:
         # one pod per model: collect -> SFT -> eval -> baselines, each step skipped if its output exists
         # (GPU stock is scarce: one queue wait instead of four). SFT flags via --extra go to the SFT only.
         run = a.run_name
-        sub = argparse.Namespace(**vars(a)); sub.extra = ""; sub.adapters = f"{run}/iter_{a.sft_steps:07d}"
+        sub = argparse.Namespace(**vars(a)); sub.extra = ""
+        # --adapters: extra checkpoints to evaluate on this split too (e.g. the 7-layer 8B decoder on the
+        # single-layer split's held-out docs, which neither decoder trained on)
+        sub.adapters = ",".join([f"{run}/iter_{a.sft_steps:07d}"] + [x for x in a.adapters.split(",") if x])
         sft = argparse.Namespace(**vars(a)); sft.extra = f"--num-steps {a.sft_steps} {a.extra}".strip()
         return " && ".join([
             f"[ -f {D}/eval.parquet ] || ({stage_cmd('collect', sub)})",
