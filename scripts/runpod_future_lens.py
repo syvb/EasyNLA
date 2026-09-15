@@ -77,25 +77,35 @@ def evals_name(a) -> str:
 
 def stage_cmd(stage: str, a) -> str:
     D, C, E = f"{WORK}/{a.data_dir}", f"{WORK}/ckpts", f"{WORK}/{evals_name(a)}"
+    ED = f"{WORK}/{a.eval_data_dir}"   # eval split (== D unless --eval-data-dir: an eval-only collection)
     if stage == "pipeline":
         # one pod per model: collect -> SFT -> eval -> baselines, each step skipped if its output exists
         # (GPU stock is scarce: one queue wait instead of four). SFT flags via --extra go to the SFT only.
+        # Guards key on the file each step writes LAST (collect_stats.json / adapter weights), and a
+        # partial SFT dir is removed before rerunning (train_sft refuses a dir with iter_* in it).
         run = a.run_name
-        sub = argparse.Namespace(**vars(a)); sub.extra = ""
-        # --adapters: extra checkpoints to evaluate on this split too (e.g. the 7-layer 8B decoder on the
-        # single-layer split's held-out docs, which neither decoder trained on)
-        sub.adapters = ",".join([f"{run}/iter_{a.sft_steps:07d}"] + [x for x in a.adapters.split(",") if x])
+        sub = argparse.Namespace(**vars(a)); sub.extra = f"--max-rows {a.eval_max_rows}" if a.eval_max_rows else ""
+        # eval every saved checkpoint of this run (fixed final one is the headline; the rest show the
+        # trajectory) plus --adapters extras (e.g. an older decoder on this split's held-out docs)
+        iters = [f"{run}/iter_{i:07d}" for i in range(a.save_every, a.sft_steps + 1, a.save_every)]
+        sub.adapters = ",".join(iters + [x for x in a.adapters.split(",") if x])
         sft = argparse.Namespace(**vars(a)); sft.extra = f"--num-steps {a.sft_steps} {a.extra}".strip()
         return " && ".join([
-            f"[ -f {D}/eval.parquet ] || ({stage_cmd('collect', sub)})",
-            f"[ -d {C}/{run}/iter_{a.sft_steps:07d} ] || ({stage_cmd('sft', sft)})",
-            stage_cmd("eval", sub), stage_cmd("baselines", sub)])
+            f"( [ -f {ED}/collect_stats.json ] || ({stage_cmd('collect', sub)}) )",
+            f"( [ -f {C}/{run}/iter_{a.sft_steps:07d}/adapter_model.safetensors ] || "
+            f"(rm -rf {C}/{run} && {stage_cmd('sft', sft)}) )",
+            f"( {stage_cmd('eval', sub)} )", f"( {stage_cmd('baselines', sub)} )"])
     if stage == "collect":
+        # --n-train-docs 0 (+ --corpus-start): eval-only collection into --eval-data-dir, e.g. the 8B's
+        # unfiltered eval split on the same docs as data_base_v2's eval split
+        out, hf_path = (ED, a.eval_data_dir) if a.n_train_docs == 0 else (D, a.data_dir)
         return (f"python -m nla.future_lens.collect --base-ckpt {BASE} --corpus HuggingFaceFW/fineweb "
-                f"--corpus-config sample-10BT --n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
-                f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc 20 --max-len 1024 "
-                f"--batch-size 8 --greedy all --topk {TOPK} --prompt-format {PROMPT_FORMAT} --out-dir {D} && "
-                f"(python scripts/hf_upload.py {D} {a.data_dir} --repo {a.hf_repo} || true)")
+                f"--corpus-config sample-10BT --corpus-start {a.corpus_start} "
+                f"--n-train-docs {a.n_train_docs} --n-eval-docs {a.n_eval_docs} "
+                f"--layers {LAYERS} --positions-per-doc 40 --eval-positions-per-doc {a.eval_positions_per_doc} "
+                f"{'--no-require-top1-eval ' if a.eval_unfiltered else ''}--max-len 1024 "
+                f"--batch-size 8 --greedy all --topk {TOPK} --prompt-format {PROMPT_FORMAT} --out-dir {out} && "
+                f"(python scripts/hf_upload.py {out} {hf_path} --repo {a.hf_repo} || true)")
     if stage == "alpha_sweep":
         # mirror data/ to HF in the background (idempotent) while the sweep runs
         runs = [f"python scripts/hf_upload.py {D} {a.data_dir} --repo {a.hf_repo} > {WORK}/logs/hf_upload_data.log 2>&1 & UP=$!"]
@@ -140,7 +150,7 @@ def stage_cmd(stage: str, a) -> str:
             group = run[: m.start()] if m else run
             cmds.append(f"rm -f {E}/{name}.jsonl {E}/readouts_{name}.jsonl && "
                         f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{ad} "
-                        f"--parquet {D}/eval.parquet --out {E}/{name}.jsonl "
+                        f"--parquet {ED}/eval.parquet --sidecar {D}/train.parquet --out {E}/{name}.jsonl "
                         f"--conditions real,shuffled,none,wrong_layer{',cross_layer' if ',' in TRAIN_LAYERS else ''} "
                         f"--wrong-layer {LAYERS.split(',')[0]} "
                         f"--batch-size 128 --surprisal --surprisal-rows 256 "
@@ -201,13 +211,13 @@ def stage_cmd(stage: str, a) -> str:
                 f"--hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 {a.extra}")
     if stage == "baselines":
         return (f"rm -f {E}/baselines.jsonl {E}/leakage.jsonl && "
-                f"python -m nla.future_lens.baselines --label {a.label} ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
+                f"python -m nla.future_lens.baselines --label {a.label} ngram --parquet {ED}/eval.parquet --out {E}/baselines.jsonl "
                 f"--base-ckpt {BASE} --hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 && "
-                f"python -m nla.future_lens.baselines --label {a.label} probe --train-parquet {D}/train.parquet --parquet {D}/eval.parquet "
+                f"python -m nla.future_lens.baselines --label {a.label} probe --train-parquet {D}/train.parquet --parquet {ED}/eval.parquet "
                 f"--base-ckpt {BASE} --leakage --epochs 3 --batch 1024 --layers {TRAIN_LAYERS} --out {E}/baselines.jsonl && "
-                f"python -m nla.future_lens.baselines --label {a.label} target_window --parquet {D}/eval.parquet "
+                f"python -m nla.future_lens.baselines --label {a.label} target_window --parquet {ED}/eval.parquet "
                 f"--base-ckpt {BASE} --out {E}/baselines.jsonl && "
-                f"python -m nla.future_lens.baselines --label {a.label} leakage --parquet {D}/eval.parquet "
+                f"python -m nla.future_lens.baselines --label {a.label} leakage --parquet {ED}/eval.parquet "
                 f"--readouts {E}/readouts_sft_*.jsonl {E}/readouts_rl_*.jsonl --out {E}/leakage.jsonl --base-ckpt {BASE} "
                 f"--hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000")
     raise SystemExit(f"unknown stage {stage}")
@@ -221,8 +231,12 @@ def _tag_arg(d: dict) -> str:
     return ",".join(f"{k}={v}" for k, v in d.items())
 
 
-def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str, evals: str = "evals") -> str:
+def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str, evals: str = "evals", rm_dirs: str = "") -> str:
     assert "'" not in stage_command, f"stage command contains a single quote (breaks bash -lc quoting): {stage_command}"
+    rm = ""
+    for d in [x for x in rm_dirs.split(",") if x]:   # stale partial outputs of aborted pods, relative to WORK
+        assert re.fullmatch(r"[A-Za-z0-9._-]+", d) and d not in (".", ".."), d
+        rm += f"rm -rf {WORK}/{d}; "
     log = f"{WORK}/logs/{stage}_$(date +%Y%m%d_%H%M%S).log"
     finish = "" if keep else "python /root/EasyNLA/scripts/pod_terminate.py || runpodctl remove pod $RUNPOD_POD_ID"
     return (
@@ -233,7 +247,7 @@ def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str, evals: s
         # clone onto the pod's own container disk: two pods sharing the volume must not rm -rf each other's repo
         f"cd /root && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
         "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "
-        f"export HF_HOME=/workspace/hf && ({stage_command}) ; echo STAGE_EXIT=$? ; "
+        f"export HF_HOME=/workspace/hf && {rm}({stage_command}) ; echo STAGE_EXIT=$? ; "
         f"python scripts/hf_upload.py {WORK}/{evals} {evals} --repo {hf_repo} || true; "
         f"python scripts/hf_upload.py {WORK}/logs logs --repo {hf_repo} || true; "
         f"{finish}; echo FINISHED; sleep infinity"
@@ -252,7 +266,7 @@ def cmd_volume(a):
 
 
 def cmd_launch(a):
-    cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep, a.hf_repo, evals_name(a))
+    cmd = bootstrap(stage_cmd(a.stage, a), a.stage, a.keep, a.hf_repo, evals_name(a), a.rm_dirs)
     assert '"' not in cmd and "{" not in cmd and "}" not in cmd, "dockerArgs is pasted into GraphQL unescaped"
     if a.dry_run:
         print(cmd); return
@@ -301,6 +315,16 @@ def main(argv=None):
     l.add_argument("--model", default="8b", choices=list(MODELS), help="target = decoder size (sets base ckpt, layers, "
                    "default --data-dir data_{size}, evals_{size}/, and a _{size} suffix on sft/rl run names)")
     l.add_argument("--sft-steps", type=int, default=8000, help="pipeline: SFT --num-steps (8000 = the 8B run)")
+    l.add_argument("--save-every", type=int, default=2000, help="pipeline: SFT save interval (sft.yaml save_every); every "
+                   "saved iter_* is evaluated")
+    l.add_argument("--eval-data-dir", default=None, help="split dir holding eval.parquet (default: --data-dir). With "
+                   "--n-train-docs 0 --corpus-start N the pipeline collects an eval-only split there")
+    l.add_argument("--corpus-start", type=int, default=0, help="collect: skip this many corpus docs first")
+    l.add_argument("--eval-positions-per-doc", type=int, default=20)
+    l.add_argument("--eval-unfiltered", action="store_true", help="collect: no top-1 filter on the eval split (positions "
+                   "then coincide across target models; the greedy-label loader filters per model at load)")
+    l.add_argument("--eval-max-rows", type=int, default=None, help="pipeline eval: --max-rows per layer (default: all)")
+    l.add_argument("--rm-dirs", default="", help="comma list of dirs under the volume work dir to rm -rf before the stage")
     l.add_argument("--layer", type=int, default=None, help="single-layer run: collect only {wrong-layer control, LAYER} "
                    "and train/eval LAYER alone (dirs data_{size}_L{LAYER}, evals_{size}_L{LAYER}; run suffix _{size}_L{LAYER}). "
                    "8B best layer for N>=2 is 24 (of 36); depth-matched: 4B 24, 1.7B/0.6B 19 (of 28)")
@@ -342,6 +366,8 @@ def main(argv=None):
         variant = ("" if a.model == "8b" else f"_{a.model}") if a.layer is None else f"_{a.model}_L{a.layer}"
         if a.data_dir is None:
             a.data_dir = "data_base_v2" if variant == "" else f"data{variant}"
+        if a.eval_data_dir is None:
+            a.eval_data_dir = a.data_dir
         if a.run_name is None:
             sfx = variant
             sft_name = f"sft_{a.injection}_a{a.alpha_mult}_{a.label}{'_distill' if a.distill else ''}{sfx}"

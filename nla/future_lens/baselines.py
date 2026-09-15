@@ -394,7 +394,7 @@ def main(argv=None):
     lk.add_argument("--out", required=True)
     tw = sub.add_parser("target_window", help="frozen target greedy-continues the last m tokens before t")
     tw.add_argument("--parquet", required=True, help="eval.parquet"); tw.add_argument("--sidecar", default=None)
-    tw.add_argument("--base-ckpt", default="Qwen/Qwen3-8B-Base"); tw.add_argument("--windows", default="1,2,4,8,32")
+    tw.add_argument("--base-ckpt", default="Qwen/Qwen3-8B-Base"); tw.add_argument("--windows", default="1,2,4,8,16,32")
     tw.add_argument("--max-positions", type=int, default=2000); tw.add_argument("--batch", type=int, default=64)
     tw.add_argument("--device", default="auto"); tw.add_argument("--seed", type=int, default=0)
     tw.add_argument("--out", required=True)

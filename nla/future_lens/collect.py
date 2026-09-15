@@ -197,6 +197,10 @@ def main(argv=None):
                         "thinking off, or plain text + newline for base checkpoints")
     p.add_argument("--require-top1", action=argparse.BooleanOptionalAction, default=True,
                    help="keep only positions where the target's top-1 prediction of x_{t+1} is correct")
+    p.add_argument("--require-top1-eval", action=argparse.BooleanOptionalAction, default=None,
+                   help="top-1 filter for the EVAL split only (default: same as --require-top1). "
+                        "--no-require-top1-eval stores every sampled position, so the eval positions are "
+                        "identical across target models; the greedy-label loader re-applies the filter per model")
     p.add_argument("--greedy", choices=["none", "eval", "all"], default="all",
                    help="store the target's greedy n_future continuation (+ top-5, log-probs) for eval "
                         "rows or for all rows (needed for label=greedy training; ~+1 H100-h per 200k positions)")
@@ -288,7 +292,8 @@ def main(argv=None):
                 correct = (argmax[bi, cands] == ids_t[[c + 1 for c in cands]]).tolist()
                 stats["n_candidates"] += len(cands)
                 stats["n_top1_correct"] += int(sum(correct))
-                pool = [c for c, ok in zip(cands, correct) if ok] if args.require_top1 else cands
+                req = args.require_top1 if (split == "train" or args.require_top1_eval is None) else args.require_top1_eval
+                pool = [c for c, ok in zip(cands, correct) if ok] if req else cands
                 pos = sample_positions(pool, ppd, did, args.seed)
                 if not pos:
                     continue
@@ -419,7 +424,9 @@ def main(argv=None):
         layer_indices=layers, n_future=nf, n_prev=npv, k_choices=k_choices,
         template=args.template, norm_quantiles=norm_q, injection_scale_by_layer=alpha,
         docs_parquet="docs.parquet", discard_fraction=discard, d_model=d_model,
-        extra={"base_model": args.base_ckpt, "require_top1": bool(args.require_top1), "greedy": args.greedy,
+        extra={"base_model": args.base_ckpt, "require_top1": bool(args.require_top1),
+               "require_top1_eval": bool(args.require_top1 if args.require_top1_eval is None else args.require_top1_eval),
+               "greedy": args.greedy,
                "prompt_format": args.prompt_format, "topk": int(args.topk),
                "max_len": args.max_len, "min_pos": args.min_pos,
                "corpus": args.corpus, "corpus_config": args.corpus_config,
