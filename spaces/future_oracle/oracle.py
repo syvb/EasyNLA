@@ -195,10 +195,13 @@ class Bank:
             back = o.base_model in self.on_device
             if back:                                 # late attach: assemble on CPU, then re-pack
                 m.to("cpu"); self.on_device.discard(o.base_model)
+            # torch_device="cpu": PEFT otherwise infers "cuda" from ZeroGPU's patched availability flag
+            # and maps the safetensors there, which is forbidden outside a GPU call
             if isinstance(m, PeftModel):
-                m.load_adapter(o.local_dir, adapter_name=o.adapter_name)
+                m.load_adapter(o.local_dir, adapter_name=o.adapter_name, torch_device="cpu")
             else:
-                self.models[o.base_model] = PeftModel.from_pretrained(m, o.local_dir, adapter_name=o.adapter_name).eval()
+                self.models[o.base_model] = PeftModel.from_pretrained(m, o.local_dir, adapter_name=o.adapter_name,
+                                                                      torch_device="cpu").eval()
             self.loaded.add(o.run)
             if back:
                 self.to_device()

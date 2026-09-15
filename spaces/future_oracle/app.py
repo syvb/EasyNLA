@@ -46,6 +46,7 @@ def refresh_registry() -> str:
                 BANK.attach(o)
             except Exception as e:           # keep serving the others
                 print(f"[registry] failed to attach {o.run}: {e}")
+                traceback.print_exc()
                 continue
             REGISTRY[o.run] = o
             new.append(o.name)
