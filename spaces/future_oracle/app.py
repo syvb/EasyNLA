@@ -226,7 +226,7 @@ def tokenize(text: str):
     return render_tokens([BANK.tok.decode([i]) for i in ids], n_total, sel), ids, EMPTY, ("" if sel is None else str(sel))
 
 
-@spaces.GPU(duration=120)
+@spaces.GPU(duration=60)
 def analyze(ids: list[int], idx: str, labels: list[str], k: int, ctrls: list[str]):
     if not ids or idx in (None, ""):
         return EMPTY
@@ -251,14 +251,14 @@ def analyze(ids: list[int], idx: str, labels: list[str], k: int, ctrls: list[str
     return render_results(BANK.tok, ids, t, rows)
 
 
-@spaces.GPU(duration=120)
+@spaces.GPU(duration=60)
 def tokenize_and_analyze(text: str, labels: list[str], k: int, ctrls: list[str]):
     """Tokenize and read the last token in one GPU call (button, Enter, examples, page load)."""
     html, ids, _, idx = tokenize(text)
     return html, ids, analyze(ids, idx, labels, int(k), ctrls), idx
 
 
-@spaces.GPU(duration=120)
+@spaces.GPU(duration=60)
 def probe(text: str, token_index: int = -1, oracles: list[str] | None = None, k: int = 9,
           controls: list[str] | None = None) -> str:
     """API: tokenize `text`, read the future at `token_index` (default: last token) with the given
