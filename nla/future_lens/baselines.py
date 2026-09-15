@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -179,9 +180,16 @@ def run_leakage(args):
     tgt = {(int(r["doc_idx"]), int(r["t"])): np.asarray(r["target_ids"]) for r in eval_rows}
     m, n_tok = build_ngram(args.order, ngram_sources(args, fl, docs, eval_docs))
     print(f"[leakage] {args.order}-gram on {n_tok} tokens")
-    dumps = [json.loads(l) for path in args.readouts for l in open(path) if l.strip()]
+    import glob as _glob
+    paths = [p for pat in args.readouts for p in (sorted(_glob.glob(pat)) or ([pat] if os.path.exists(pat) else []))]
+    missing = [pat for pat in args.readouts if not _glob.glob(pat) and not os.path.exists(pat)]
+    if missing:
+        print(f"[leakage] no files match {missing}; skipped")
+    if not paths:
+        print(f"[leakage] no readout files; nothing written"); return
+    dumps = [json.loads(l) for path in paths for l in open(path) if l.strip()]
     if not dumps:
-        print(f"[leakage] no readouts in {args.readouts}; nothing written"); return
+        print(f"[leakage] no readouts in {paths}; nothing written"); return
     dump_labels = {d.get("label", "text") for d in dumps}
     assert dump_labels == {args.label}, f"readouts were scored under label(s) {dump_labels}, but --label {args.label}"
     cache: dict[tuple, list[int]] = {}

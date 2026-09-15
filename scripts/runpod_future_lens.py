@@ -165,6 +165,11 @@ def stage_cmd(stage: str, a) -> str:
                 f"--parquet {D}/eval.parquet --layers {TRAIN_LAYERS} --n-train 10000 --steps 600 --max-rows 2000 "
                 f"--seed {a.seed} --save-dir {C}/futurelens --out {E}/futurelens.jsonl {a.extra} && "
                 f"(python scripts/hf_upload.py {C}/futurelens ckpts/futurelens --repo {a.hf_repo} || true)")
+    if stage == "leakage":
+        # rerun only the readout-leakage diagnostic (e.g. after new adapters were evaluated)
+        return (f"python -m nla.future_lens.baselines --label {a.label} leakage --parquet {D}/eval.parquet "
+                f"--readouts {E}/readouts_sft_*.jsonl {E}/readouts_rl_*.jsonl --out {E}/leakage.jsonl --base-ckpt {BASE} "
+                f"--hf-corpus HuggingFaceFW/fineweb --hf-config sample-10BT --hf-docs 20000 {a.extra}")
     if stage == "baselines":
         return (f"rm -f {E}/baselines.jsonl {E}/leakage.jsonl && "
                 f"python -m nla.future_lens.baselines --label {a.label} ngram --parquet {D}/eval.parquet --out {E}/baselines.jsonl "
@@ -263,7 +268,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("volume"); v.add_argument("--name", default="fl-qwen3-8b"); v.add_argument("--size", type=int, default=150)
     v.add_argument("--dc", default="EU-RO-1")
-    l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens"])
+    l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens", "leakage"])
     l.add_argument("--volume", required=True, help="network volume id")
     l.add_argument("--gpu", default=None); l.add_argument("--cloud", default="SECURE")
     l.add_argument("--keep", action="store_true"); l.add_argument("--dry-run", action="store_true")
