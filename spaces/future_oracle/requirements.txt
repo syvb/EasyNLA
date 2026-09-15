@@ -1,0 +1,9 @@
+torch
+transformers==4.57.1
+peft>=0.17
+huggingface_hub>=0.34,<1.0
+safetensors
+pyyaml
+numpy
+accelerate
+spaces
