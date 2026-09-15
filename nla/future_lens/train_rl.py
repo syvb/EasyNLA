@@ -347,16 +347,33 @@ def main(argv=None):
                         tag={"step": step, "checkpoint": f"rl_step{step}", "reward": args.reward})
         write_records(recs, evals_path)
         log = {}
-        p1 = {(r["condition"], r["layer"], r["N"]): r["value"] for r in recs if r["metric"] == "p1"}
-        for (cond, layer, N), v in p1.items():
-            log[f"eval/p1_{cond}/L{layer}_N{N}"] = v
-            if cond == "real" and ("shuffled", layer, N) in p1:
-                log[f"eval/p1_gap/L{layer}_N{N}"] = v - p1[("shuffled", layer, N)]
-        for N in sorted({k[2] for k in p1}):
-            for cond in ("real", "shuffled"):
-                vals = [v for (c, l, n), v in p1.items() if c == cond and n == N]
-                if vals:
-                    log[f"eval/p1_{cond}/N{N}_mean"] = float(np.mean(vals))
+        # every metric the eval produces: p1 (free-running, PRIMARY), tf_p1 (teacher-forced,
+        # confirmatory), tf_kl (reported-only: expected to worsen under a mode-seeking reward),
+        # p5, exact, len_ok — per (condition, layer, N), plus real-shuffled gaps and pooled means
+        for metric in ("p1", "tf_p1", "tf_kl", "p5", "exact", "len_ok"):
+            vals = {(r["condition"], r["layer"], r["N"]): r["value"] for r in recs if r["metric"] == metric}
+            if not vals:
+                continue
+            for (cond, layer, N), v in vals.items():
+                log[f"eval/{metric}_{cond}/L{layer}_N{N}"] = v
+                if cond == "real" and ("shuffled", layer, N) in vals:
+                    log[f"eval/{metric}_gap/L{layer}_N{N}"] = v - vals[("shuffled", layer, N)]
+            for N in sorted({k[2] for k in vals}):
+                for cond in ("real", "shuffled"):
+                    vv = [v for (c, l, n), v in vals.items() if c == cond and n == N]
+                    if vv:
+                        log[f"eval/{metric}_{cond}/N{N}_mean"] = float(np.mean(vv))
+                gg = [v for (c, l, n), v in vals.items() if c == "real" and n == N and ("shuffled", l, n) in vals]
+                if gg:
+                    log[f"eval/{metric}_gap/N{N}_mean"] = float(np.mean(gg)) - float(np.mean(
+                        [vals[("shuffled", l, n)] for (c, l, n) in vals if c == "real" and n == N and ("shuffled", l, n) in vals]))
+        # headline = the pre-declared success cell: free-running gap pooled over layers at N=2,3
+        hl = [log[k] for k in ("eval/p1_gap/N2_mean", "eval/p1_gap/N3_mean") if k in log]
+        if hl:
+            log["eval/headline_p1_gap_N2_3"] = float(np.mean(hl))
+        hl = [log[k] for k in ("eval/tf_p1_gap/N2_mean", "eval/tf_p1_gap/N3_mean") if k in log]
+        if hl:
+            log["eval/headline_tf_p1_gap_N2_3"] = float(np.mean(hl))
         actor.train()
         return log
 
@@ -453,6 +470,21 @@ def main(argv=None):
             by_k[s["job"]["k"]].append(r)
         for k, v in by_k.items():
             log[f"reward/k{k}"] = float(np.mean(v))
+        # per-layer reward and sampled hit rate at offset 1 (which layers RL is improving)
+        by_layer: dict[int, list[float]] = defaultdict(list)
+        hit1_by_layer: dict[int, list[int]] = defaultdict(list)
+        for s, r in zip(samples, rewards):
+            l = int(s["job"]["row"]["activation_layer"])
+            by_layer[l].append(r)
+            if s["job"]["k"] > 1:
+                hit1_by_layer[l].append(per_offset_hits(s["resp_ids"], s["job"]["row"]["target_ids"], s["job"]["k"], eos_ids)[1])
+        for l, v in by_layer.items():
+            log[f"reward/L{l}"] = float(np.mean(v))
+        for l, v in hit1_by_layer.items():
+            if v:
+                log[f"train/p1_off1_L{l}"] = float(np.mean(v))
+        log["train/lr"] = float(optim.param_groups[0]["lr"])
+        log["rollout/tokens_per_s"] = float(sum(lens)) / max(t_gen, 1e-6)
         offs = " ".join(f"p1@{j}={log[f'train/p1_off{j}']:.2f}" for j in sorted(hits_by_off))
         print(f"step {step:05d} | r {log['reward/mean']:.3f} (gstd {log['reward/group_std_mean']:.3f}, "
               f"zero-var {n_zero_var}/{len(jobs)}) | em {log['reward/exact_match_mean']:.3f} | "
