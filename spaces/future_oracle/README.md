@@ -7,7 +7,7 @@ sdk: gradio
 sdk_version: 5.42.0
 app_file: app.py
 license: apache-2.0
-short_description: Click a token, read what the model will say next from one activation
+short_description: Read what a model will say next from one activation
 models:
   - Qwen/Qwen3-0.6B-Base
   - Qwen/Qwen3-1.7B-Base
