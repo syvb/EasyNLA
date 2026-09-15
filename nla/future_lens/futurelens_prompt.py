@@ -238,6 +238,7 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--save-dir", default=None)
     p.add_argument("--out", required=True)
+    p.add_argument("--group", default="futurelens", help="record group/checkpoint prefix (e.g. futurelens_6k for a longer run)")
     p.add_argument("--device", default="auto")
     args = p.parse_args(argv)
 
@@ -273,7 +274,8 @@ def main(argv=None):
         ev = subsample_like_eval(load_fl_rows(args.parquet, layers=[layer], label="greedy", drop_label_ids=eos, columns=cols),
                                  args.max_rows, args.seed)
         recs = eval_prompt(model, tok, layer, soft, ev, M=M, batch=args.eval_batch, nf=nf, device=device, seed=args.seed,
-                           conditions=args.conditions.split(","), eos_ids=eos)
+                           conditions=args.conditions.split(","), eos_ids=eos,
+                           tag={"group": args.group, "checkpoint": f"{args.group}_soft{M}_s{args.steps}"})
         all_recs += recs
         write_records(recs, args.out)
     print(f"[futurelens] wrote {len(all_recs)} records -> {args.out}")
