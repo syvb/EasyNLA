@@ -70,6 +70,8 @@ def _runpod():
 
 def evals_name(a) -> str:
     """evals dir on the volume / in the HF repo: `evals` for the 8B, `evals_{size}` otherwise."""
+    if a.layer is not None:
+        return f"evals_{a.model}_L{a.layer}"
     return "evals" if a.model == "8b" else f"evals_{a.model}"
 
 
@@ -136,7 +138,8 @@ def stage_cmd(stage: str, a) -> str:
             cmds.append(f"rm -f {E}/{name}.jsonl {E}/readouts_{name}.jsonl && "
                         f"python -m nla.future_lens.eval --base-ckpt {BASE} --adapter {C}/{ad} "
                         f"--parquet {D}/eval.parquet --out {E}/{name}.jsonl "
-                        f"--conditions real,shuffled,none,wrong_layer,cross_layer --wrong-layer {LAYERS.split(',')[0]} "
+                        f"--conditions real,shuffled,none,wrong_layer{',cross_layer' if ',' in TRAIN_LAYERS else ''} "
+                        f"--wrong-layer {LAYERS.split(',')[0]} "
                         f"--batch-size 128 --surprisal --surprisal-rows 256 "
                         f"--layers {TRAIN_LAYERS} --dump-readouts {E}/readouts_{name}.jsonl "
                         f"--seed {seed} --tag-kv {_tag_arg({'checkpoint': name, 'group': group, 'seed': seed, 'model': a.model})} {a.extra}")
@@ -295,6 +298,9 @@ def main(argv=None):
     l.add_argument("--model", default="8b", choices=list(MODELS), help="target = decoder size (sets base ckpt, layers, "
                    "default --data-dir data_{size}, evals_{size}/, and a _{size} suffix on sft/rl run names)")
     l.add_argument("--sft-steps", type=int, default=8000, help="pipeline: SFT --num-steps (8000 = the 8B run)")
+    l.add_argument("--layer", type=int, default=None, help="single-layer run: collect only {wrong-layer control, LAYER} "
+                   "and train/eval LAYER alone (dirs data_{size}_L{LAYER}, evals_{size}_L{LAYER}; run suffix _{size}_L{LAYER}). "
+                   "8B best layer for N>=2 is 24 (of 36); depth-matched: 4B 24, 1.7B/0.6B 19 (of 28)")
     l.add_argument("--volume", required=True, help="network volume id")
     l.add_argument("--gpu", default=None); l.add_argument("--cloud", default="SECURE")
     l.add_argument("--keep", action="store_true"); l.add_argument("--dry-run", action="store_true")
@@ -326,10 +332,15 @@ def main(argv=None):
     if a.cmd == "launch":
         global BASE, LAYERS, TRAIN_LAYERS
         BASE, LAYERS, TRAIN_LAYERS = MODELS[a.model]
+        if a.layer is not None:
+            wrong = LAYERS.split(",")[0]
+            assert str(a.layer) in LAYERS.split(",")[1:], f"--layer {a.layer} not in the {a.model} layer set {LAYERS}"
+            LAYERS, TRAIN_LAYERS = f"{wrong},{a.layer}", str(a.layer)
+        variant = ("" if a.model == "8b" else f"_{a.model}") if a.layer is None else f"_{a.model}_L{a.layer}"
         if a.data_dir is None:
-            a.data_dir = "data_base_v2" if a.model == "8b" else f"data_{a.model}"
+            a.data_dir = "data_base_v2" if variant == "" else f"data{variant}"
         if a.run_name is None:
-            sfx = "" if a.model == "8b" else f"_{a.model}"
+            sfx = variant
             sft_name = f"sft_{a.injection}_a{a.alpha_mult}_{a.label}{'_distill' if a.distill else ''}{sfx}"
             a.run_name = {"sft": sft_name, "pipeline": sft_name, "rl": f"rl_{a.reward}_s{a.seed}{sfx}",
                           "filter_ablation": f"ablation_{a.part}"}.get(a.stage, a.stage)
