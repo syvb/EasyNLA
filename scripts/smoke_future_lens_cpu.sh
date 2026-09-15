@@ -41,5 +41,9 @@ $PY -m nla.future_lens.baselines --label "$LABEL" probe --train-parquet "$OUT/da
     --parquet "$OUT/data/eval.parquet" --base-ckpt Qwen/Qwen3-0.6B --layers 8 --epochs 1 \
     --batch 32 --leakage --device cpu --out "$OUT/evals/baselines.jsonl"
 
-$PY -m nla.future_lens.plots "$OUT"/evals/rl.jsonl "$OUT"/evals/baselines.jsonl --out "$OUT/plots"
+$PY -m nla.future_lens.futurelens_prompt --base-ckpt Qwen/Qwen3-0.6B --train-parquet "$OUT/data/train.parquet" \
+    --parquet "$OUT/data/eval.parquet" --layers 8 --n-train 16 --steps 3 --batch 4 --max-rows 4 --eval-batch 4 \
+    --device cpu --save-dir "$OUT/futurelens" --out "$OUT/evals/futurelens.jsonl"
+
+$PY -m nla.future_lens.plots "$OUT"/evals/rl.jsonl "$OUT"/evals/baselines.jsonl "$OUT"/evals/futurelens.jsonl --out "$OUT/plots"
 echo "SMOKE OK -> $OUT"

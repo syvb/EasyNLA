@@ -162,6 +162,16 @@ free-running. Their appendix says a prompt optimised for N=1 "generalizes surpri
 to other N, but optimizing for other N does not perform well for N=1" — it does *not* say
 N=2/3 training fails at N=2/3, which the spec's motivation overstates.
 
+## Future Lens baseline (`nla/future_lens/futurelens_prompt.py`)
+
+The paper's own method, ported: a 10-token soft prompt per layer, the stored h_t^l transplanted
+into block l's output at the last prompt position (no scaling, no marker), trained with the
+model frozen on KL to the target's stored top-64 at N=1 (their Eq. 10), 10k positions per layer.
+Evaluated on the same seeded 2000-position subsample as `eval`: `tf_p1`/`p5`/`tf_kl`
+teacher-forced (their convention) and `p1` free-running (greedy 9-token readout, offset N;
+note the SFT/RL decoder's `p1` at N uses a K=N+1 prompt instead). Records carry
+group `futurelens`, conditions real / shuffled. Launcher stage `futurelens` (~1 h).
+
 ## What to watch
 
 | Signal | Where | Healthy |

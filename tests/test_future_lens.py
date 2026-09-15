@@ -338,3 +338,41 @@ def test_plain_prompt_format_and_sidecar_default():
         assert chat_prompt_text(tok, msgs, "㈎") == plain      # default follows the sidecar setting
     finally:
         set_prompt_format(old)
+
+
+@needs_model
+def test_futurelens_transplant_writes_block_output_exactly():
+    """After the hook, hidden_states[l+1] at the prompt's last position IS the transplanted
+    vector (the collector's 'layer l' = output of block l), and decode steps are untouched."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from nla.future_lens.futurelens_prompt import Transplant, build_inputs
+    tok = AutoTokenizer.from_pretrained(SMALL)
+    model = AutoModelForCausalLM.from_pretrained(SMALL, torch_dtype=torch.float32).eval()
+    M, layer = 4, 3
+    soft = model.get_input_embeddings().weight[:M].detach().clone()
+    lab = torch.tensor([[11, 12, 13]])
+    x, attn = build_inputs(model, soft, lab)
+    tp = Transplant(model, layer, pos=M - 1)
+    vec = torch.randn(1, model.config.hidden_size) * 5
+    tp.vec = vec
+    with torch.no_grad():
+        out = model(inputs_embeds=x, attention_mask=attn, output_hidden_states=True)
+    tp.vec = None
+    assert tp.n_fired == 1
+    # transformers records `output_hidden_states` BEFORE forward hooks alter a block's output, so
+    # check what the NEXT block actually receives: a forward pre-hook on block layer+1
+    seen = {}
+    h = model.model.layers[layer + 1].register_forward_pre_hook(
+        lambda m, args, kwargs: seen.__setitem__("x", (kwargs.get("hidden_states") if kwargs.get("hidden_states") is not None else args[0]).detach().clone()),
+        with_kwargs=True)
+    tp.vec = vec
+    with torch.no_grad():
+        out2 = model(inputs_embeds=x, attention_mask=attn)
+    tp.vec = None; h.remove()
+    assert torch.allclose(seen["x"][0, M - 1], vec[0], atol=1e-5)
+    assert not torch.allclose(seen["x"][0, M], vec[0], atol=1e-2)          # other positions untouched
+    with torch.no_grad():
+        ref = model(inputs_embeds=x, attention_mask=attn)
+    assert not torch.allclose(out2.logits[0, M], ref.logits[0, M], atol=1e-3)   # causally visible downstream
+    assert torch.allclose(out2.logits[0, M - 2], ref.logits[0, M - 2], atol=1e-4)  # earlier positions unaffected
+    tp.remove()
