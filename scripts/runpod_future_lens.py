@@ -102,6 +102,9 @@ def stage_cmd(stage: str, a) -> str:
         iters = [f"{run}/iter_{i:07d}" for i in range(a.save_every, a.sft_steps + 1, a.save_every)]
         sub.adapters = ",".join(iters + [x for x in a.adapters.split(",") if x])
         return f"( {stage_cmd('eval', sub)} ) && ( {stage_cmd('baselines', sub)} )"
+    if stage == "sync":
+        # upload whatever the per-stage uploads missed (before deleting the network volume); CPU pod is enough
+        return f"python scripts/hf_sync_missing.py --work {WORK} --repo {a.hf_repo} {a.extra}"
     if stage == "collect":
         # --n-train-docs 0 (+ --corpus-start): eval-only collection into --eval-data-dir, e.g. the 8B's
         # unfiltered eval split on the same docs as data_base_v2's eval split
@@ -260,7 +263,9 @@ def bootstrap(stage_command: str, stage: str, keep: bool, hf_repo: str, evals: s
         f"mkdir -p {WORK}/logs {WORK}/ckpts {WORK}/{evals} && exec > >(tee -a {log}) 2>&1; set -x; set -o pipefail; "
         # clone onto the pod's own container disk: two pods sharing the volume must not rm -rf each other's repo
         f"cd /root && rm -rf EasyNLA && git clone -q -b {BRANCH} {REPO} && cd EasyNLA && "
-        "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && nvidia-smi --query-gpu=name,memory.total --format=csv && "
+        + ("pip install -q huggingface_hub runpod 2>&1 | tail -1 && " if stage == "sync" else
+           "pip install -q -e . bitsandbytes runpod 2>&1 | tail -2 && ")
+        + "(nvidia-smi --query-gpu=name,memory.total --format=csv || true) && "
         f"export HF_HOME=/workspace/hf && {rm}({fetch}{stage_command}) ; echo STAGE_EXIT=$? ; "
         f"python scripts/hf_upload.py {WORK}/{evals} {evals} --repo {hf_repo} || true; "
         f"python scripts/hf_upload.py {WORK}/logs logs --repo {hf_repo} || true; "
@@ -289,19 +294,20 @@ def cmd_launch(a):
     env = {"WANDB_API_KEY": _read("~/.wandb_key"), "WANDB_PROJECT": WANDB_PROJECT, "HF_TOKEN": _read("~/.hf_token"),
            "RUNPOD_API_KEY": runpod.api_key, "PYTHONUNBUFFERED": "1", "TOKENIZERS_PARALLELISM": "false",
            "HF_HUB_ENABLE_HF_TRANSFER": "0"}
-    attempts = [(a.gpu, a.cloud)] if a.gpu else GPU_PREF
+    attempts = [(None, a.cloud)] if a.instance else ([(a.gpu, a.cloud)] if a.gpu else GPU_PREF)
     pod = None
     for gpu, cloud in attempts:
         try:
             pod = runpod.create_pod(
                 name=f"fl-{a.stage}-{a.run_name or ''}".rstrip("-"), image_name=IMAGE, gpu_type_id=gpu,
-                cloud_type=cloud, gpu_count=1, container_disk_in_gb=80,
+                instance_id=a.instance, cloud_type=cloud, gpu_count=0 if a.instance else 1,
+                container_disk_in_gb=20 if a.instance else 80,
                 # --volume none: pod-local disk at /workspace instead of the network volume, so the pod
                 # can land in ANY datacenter (stock in US-CA-2 is scarce). Only for stages whose inputs
                 # come from the corpus/HF and whose outputs go to HF (the small-model pipelines).
                 volume_in_gb=0 if a.volume else 120, network_volume_id=a.volume or None,
                 volume_mount_path="/workspace",
-                min_memory_in_gb=48, min_vcpu_count=8, ports="22/tcp",
+                min_memory_in_gb=1 if a.instance else 48, min_vcpu_count=1 if a.instance else 8, ports="22/tcp",
                 docker_args=f"bash -lc '{cmd}'", env=env,
             )
             print("launched on", gpu, cloud); break
@@ -331,7 +337,8 @@ def main(argv=None):
     v = sub.add_parser("volume"); v.add_argument("--name", default="fl-qwen3-8b"); v.add_argument("--size", type=int, default=150)
     v.add_argument("--dc", default="EU-RO-1")
     l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens", "leakage",
-                                             "pipeline", "eval_baselines"])
+                                             "pipeline", "eval_baselines", "sync"])
+    l.add_argument("--instance", default=None, help="CPU pod instance id (e.g. cpu3c-2-4) instead of a GPU; for 'sync'")
     l.add_argument("--model", default="8b", choices=list(MODELS), help="target = decoder size (sets base ckpt, layers, "
                    "default --data-dir data_{size}, evals_{size}/, and a _{size} suffix on sft/rl run names)")
     l.add_argument("--sft-steps", type=int, default=8000, help="pipeline: SFT --num-steps (8000 = the 8B run)")
