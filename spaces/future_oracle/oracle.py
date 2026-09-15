@@ -289,6 +289,6 @@ def read_future(bank: Bank, o: Oracle, layer: int, ids: list[int], t: int, k: in
         "greedy": greedy, "greedy_text": tok.decode(greedy),
         "actual": actual, "actual_text": tok.decode(actual),
         "hits": [i < len(readout) and i < len(greedy) and readout[i] == greedy[i] for i in range(k)],
-        "top1_correct": (t + 1 < len(ids)) and top1 == ids[t + 1],
+        "top1_correct": (top1 == ids[t + 1]) if t + 1 < len(ids) else None,   # None: no next token to compare
         "p_actual_next": float(p_next[ids[t + 1]].exp()) if t + 1 < len(ids) else None,
     }
