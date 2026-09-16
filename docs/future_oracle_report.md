@@ -94,7 +94,12 @@ oracle's exact budget, 4888 s on the same H100 SXM, at layer 24 on the same 2000
 | Future Lens, prompt 10, batch 32, 1 offset | 365 s | 6 000 | 0.860 | 0.476 | 0.381 |
 | Future Lens, prompt 10, batch 32, 1 offset | 4888 s | 68 800 | 0.856 | 0.504 | 0.405 |
 | Future Lens, prompt 64, batch 64, lr 1e-2, 4 offsets | 4888 s | 12 810 | 0.870 | 0.501 | 0.436 |
-| **Future Oracle, layer 24** | **4888 s** | **8 000** | **0.871** | **0.626** | **0.590** |
+| **Future Oracle, layer 24** | **4888 s*** | **8 000** | **0.871** | **0.626** | **0.590** |
+
+\* the single-layer oracle adapter was trained on a power-capped H100 NVL and took 11 849 s of
+wall-clock; 4888 s is its SXM-equivalent (8000 steps at the 611 ms/step measured for the identical
+configuration on SXM). The seven-layer oracle, whose 4888 s on SXM *is* directly measured, scores
+0.846 / 0.617 / 0.588 on the same positions, so the comparison holds either way.
 
 Three things follow. **At the next token the two methods are tied** (0.86 either way): a state
 transplanted at the last prompt position drives the very next prediction almost directly, so this
