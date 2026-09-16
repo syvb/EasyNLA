@@ -84,10 +84,29 @@ N=1..3. Distillation matched hard labels on precision and cut the decoder's KL t
 1.7 to 0.9 nats. Teacher-forced precision is nearly flat in N (0.55 to 0.62) while free-running
 precision decays, the usual exposure effect.
 
-**Against Future Lens.** The paper's prompt decoder, ported and trained on the same data, reaches
-tf_p1 0.46 at N=1 on layer 24, matching the paper's GPT-J numbers; ten times more steps only moves
-it to 0.476. The oracle reaches 0.617 at matched data, so the paper's method was capacity-limited
-by about 15 points, not data-limited.
+**Against Future Lens, at matched compute.** The paper's prompt decoder was ported and given the
+oracle's exact budget, 4888 s on the same H100 SXM, at layer 24 on the same 2000 held-out positions
+(all numbers teacher-forced, the paper's metric):
+
+| reader | budget | steps | 1st token | 2nd token | 3rd token |
+|---|---|---|---|---|---|
+| Future Lens, prompt 10, batch 32, 1 offset | 36 s | 600 | 0.854 | 0.456 | 0.370 |
+| Future Lens, prompt 10, batch 32, 1 offset | 365 s | 6 000 | 0.860 | 0.476 | 0.381 |
+| Future Lens, prompt 10, batch 32, 1 offset | 4888 s | 68 800 | 0.856 | 0.504 | 0.405 |
+| Future Lens, prompt 64, batch 64, lr 1e-2, 4 offsets | 4888 s | 12 810 | 0.870 | 0.501 | 0.436 |
+| **Future Oracle, layer 24** | **4888 s** | **8 000** | **0.871** | **0.626** | **0.590** |
+
+Three things follow. **At the next token the two methods are tied** (0.86 either way): a state
+transplanted at the last prompt position drives the very next prediction almost directly, so this
+cell is a positive control rather than a result. **Beyond it the prompt saturates**: each decade of
+extra compute buys about 0.024 (0.456 -> 0.476 -> 0.504), so closing the 0.12 gap to the oracle by
+training alone would take roughly five more decades, on the order of 10^5 H100-hours. **The
+saturation is not a hyperparameter artefact**: a second arm with 6x the prompt capacity, twice the
+batch, a 3.3x larger learning rate and the same four-offset supervision the oracle gets lands on the
+same number (0.501 vs 0.504). Only the third token improves slightly (0.436), from the extra
+supervision. The shuffled control sits at 0.07-0.09 here, the teacher-forced language-prior floor.
+
+So the difference is the reader class, not the training budget, the supervision, or the tuning.
 
 **Baselines (8B).** Bigram and 4-gram: 0.19 to 0.23 at N=1. Linear probe on the layer-24 vector:
 0.28 / 0.14 / 0.09. Frozen target given its last 8 tokens: 0.34 / 0.21 / 0.16; last 32 tokens:
