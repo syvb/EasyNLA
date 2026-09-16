@@ -214,6 +214,25 @@ def stage_cmd(stage: str, a) -> str:
                 f"--parquet {D}/eval.parquet --layers {TRAIN_LAYERS} --n-train 10000 --steps 600 --max-rows 2000 "
                 f"--seed {a.seed} --save-dir {C}/futurelens --out {E}/futurelens.jsonl {a.extra} && "
                 f"(python scripts/hf_upload.py {C}/futurelens ckpts/futurelens --repo {a.hf_repo} || true)")
+    if stage == "fl_matched":
+        # compute-matched Future Lens comparison at layer 24: the paper's soft-prompt method given the
+        # SAME wall-clock as the oracle's SFT run (4888 s), at three prompt capacities, plus the
+        # single-layer oracle adapter evaluated on this split so both readers are layer-24-only.
+        secs, L = a.match_seconds, TRAIN_LAYERS
+        cmds = []
+        for M in [int(x) for x in a.prompt_lens.split(",")]:
+            cmds.append(f"python -m nla.future_lens.futurelens_prompt --base-ckpt {BASE} --train-parquet {D}/train.parquet "
+                        f"--parquet {D}/eval.parquet --layers {L} --prompt-len {M} --n-train {a.n_train_rows} "
+                        f"--max-seconds {secs} --max-rows 2000 --seed {a.seed} --save-dir {C}/fl_matched "
+                        f"--group fl_matched_M{M} --out {E}/fl_matched.jsonl {a.extra}")
+        for ad in [x for x in a.adapters.split(",") if x]:
+            name = ad.replace("/", "_")
+            cmds.append(f"rm -f {E}/onsplit_{name}.jsonl && python -m nla.future_lens.eval --base-ckpt {BASE} "
+                        f"--adapter {C}/{ad} --parquet {D}/eval.parquet --out {E}/onsplit_{name}.jsonl "
+                        f"--conditions real,shuffled --layers {L} --max-rows 2000 --batch-size 128 --seed {a.seed} "
+                        f"--tag-kv {_tag_arg({'checkpoint': name, 'group': 'oracle_onsplit', 'seed': a.seed})}")
+        cmds.append(f"(python scripts/hf_upload.py {C}/fl_matched ckpts/fl_matched --repo {a.hf_repo} || true)")
+        return " && ".join(cmds)
     if stage == "leakage":
         # rerun only the readout-leakage diagnostic (e.g. after new adapters were evaluated)
         return (f"python -m nla.future_lens.baselines --label {a.label} leakage --parquet {D}/eval.parquet "
@@ -337,7 +356,11 @@ def main(argv=None):
     v = sub.add_parser("volume"); v.add_argument("--name", default="fl-qwen3-8b"); v.add_argument("--size", type=int, default=150)
     v.add_argument("--dc", default="EU-RO-1")
     l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens", "leakage",
-                                             "pipeline", "eval_baselines", "sync"])
+                                             "pipeline", "eval_baselines", "sync", "fl_matched"])
+    l.add_argument("--match-seconds", type=float, default=4888, help="fl_matched: wall-clock per arm (default: the "
+                   "oracle SFT run's 4888 s = 1.358 H100-h)")
+    l.add_argument("--prompt-lens", default="10,64,256", help="fl_matched: soft-prompt lengths to try")
+    l.add_argument("--n-train-rows", type=int, default=200000, help="fl_matched: training positions per layer")
     l.add_argument("--instance", default=None, help="CPU pod instance id (e.g. cpu3c-2-4) instead of a GPU; for 'sync'")
     l.add_argument("--model", default="8b", choices=list(MODELS), help="target = decoder size (sets base ckpt, layers, "
                    "default --data-dir data_{size}, evals_{size}/, and a _{size} suffix on sft/rl run names)")
@@ -390,7 +413,7 @@ def main(argv=None):
     if a.cmd == "launch":
         if a.volume.lower() in ("none", ""):
             a.volume = None
-            assert a.stage in ("pipeline", "eval_baselines") and (a.model != "8b" or a.hf_fetch), \
+            assert a.stage in ("pipeline", "eval_baselines", "fl_matched") and (a.model != "8b" or a.hf_fetch), \
                 "--volume none needs inputs from the corpus or --hf-fetch"
         global BASE, LAYERS, TRAIN_LAYERS
         BASE, LAYERS, TRAIN_LAYERS = MODELS[a.model]

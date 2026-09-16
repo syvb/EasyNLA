@@ -99,7 +99,11 @@ def build_inputs(model, soft: torch.Tensor, label_ids: torch.Tensor):
 # ----------------------------------------------------------------------------
 
 def train_prompt(model, layer: int, rows: list[dict], *, M: int, steps: int, batch: int, lr: float,
-                 offsets: list[int], device, seed: int, init_ids: list[int]) -> torch.Tensor:
+                 offsets: list[int], device, seed: int, init_ids: list[int],
+                 max_seconds: float | None = None) -> tuple[torch.Tensor, int]:
+    """Train one layer's soft prompt. With `max_seconds`, the step count is set from a short timing
+    probe so that arms with different prompt lengths get the SAME wall-clock (compute-matched
+    comparison); the cosine schedule then anneals over the remaining steps. Returns (prompt, steps)."""
     torch.manual_seed(seed)
     emb = model.get_input_embeddings()
     with torch.no_grad():
@@ -108,13 +112,15 @@ def train_prompt(model, layer: int, rows: list[dict], *, M: int, steps: int, bat
             init = torch.cat([init, emb.weight[torch.randint(0, emb.weight.shape[0], (M - init.shape[0],))].float()])
     soft = torch.nn.Parameter(init.clone().to(device))
     optim = torch.optim.Adam([soft], lr=lr)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=steps, eta_min=lr * 0.1)
     tp = Transplant(model, layer, pos=M - 1)
     rng = np.random.default_rng(seed)
     n_lab = max(offsets)                                   # teacher-forced tokens fed after the prompt
+    probe = 30 if max_seconds else 0                       # untimed-schedule warmup used to measure s/step
+    sched = None if max_seconds else torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=steps, eta_min=lr * 0.1)
     t0 = time.time()
+    step = 0
     try:
-        for step in range(steps):
+        while step < steps:
             idx = rng.choice(len(rows), size=batch, replace=len(rows) < batch)
             chunk = [rows[i] for i in idx]
             vec = torch.tensor(np.stack([np.asarray(r["activation_vector"], dtype=np.float32) for r in chunk]), device=device)
@@ -129,12 +135,23 @@ def train_prompt(model, layer: int, rows: list[dict], *, M: int, steps: int, bat
                 lpq = torch.tensor(np.stack([np.asarray(r["greedy_topk_logp"][N], dtype=np.float32) for r in chunk]), device=device)
                 loss = loss + soft_ce(logits[:, M - 1 + N], ids, lpq).mean()
             loss = loss / len(offsets)
-            optim.zero_grad(); loss.backward(); optim.step(); sched.step()
-            if step % 100 == 0 or step == steps - 1:
-                print(f"[futurelens] L{layer} step {step:4d} soft_ce {loss.item():.3f} ({time.time() - t0:.0f}s)", flush=True)
+            optim.zero_grad(); loss.backward(); optim.step()
+            if sched is not None:
+                sched.step()
+            step += 1
+            if max_seconds and step == probe:              # budget -> step count, then anneal over the rest
+                per = (time.time() - t0) / probe
+                steps = max(probe + 1, int(max_seconds / per))
+                sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=steps - probe, eta_min=lr * 0.1)
+                print(f"[futurelens] L{layer} M={M}: {per*1000:.0f} ms/step -> {steps} steps "
+                      f"in {max_seconds/3600:.2f} h", flush=True)
+            if step % 500 == 0 or step == steps:
+                print(f"[futurelens] L{layer} step {step:5d}/{steps} soft_ce {loss.item():.3f} "
+                      f"({time.time() - t0:.0f}s)", flush=True)
     finally:
         tp.remove()
-    return soft.detach()
+    print(f"[futurelens] L{layer} M={M} done: {step} steps in {time.time() - t0:.0f}s", flush=True)
+    return soft.detach(), step
 
 
 # ----------------------------------------------------------------------------
@@ -229,6 +246,9 @@ def main(argv=None):
     p.add_argument("--prompt-len", type=int, default=10)
     p.add_argument("--n-train", type=int, default=10000, help="positions per layer (paper: 10k)")
     p.add_argument("--steps", type=int, default=600)
+    p.add_argument("--max-seconds", type=float, default=None,
+                   help="train for this wall-clock instead of --steps (step count from a timing probe), so arms "
+                        "with different --prompt-len are compute-matched")
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--lr", type=float, default=3e-3)
     p.add_argument("--train-offsets", default="1", help="paper: N=1 only")
@@ -266,16 +286,18 @@ def main(argv=None):
         rng = np.random.default_rng(args.seed)
         if len(tr) > args.n_train:
             tr = [tr[i] for i in sorted(rng.choice(len(tr), size=args.n_train, replace=False))]
-        soft = train_prompt(model, layer, tr, M=M, steps=args.steps, batch=args.batch, lr=args.lr, offsets=offsets,
-                            device=device, seed=args.seed, init_ids=init_ids)
+        soft, n_steps = train_prompt(model, layer, tr, M=M, steps=args.steps if not args.max_seconds else 10**9,
+                                     batch=args.batch, lr=args.lr, offsets=offsets, device=device, seed=args.seed,
+                                     init_ids=init_ids, max_seconds=args.max_seconds)
         del tr
         if save_dir:
-            torch.save({"soft": soft.cpu(), "layer": layer, "M": M, "init_text": INIT_TEXT}, save_dir / f"soft_L{layer}.pt")
+            torch.save({"soft": soft.cpu(), "layer": layer, "M": M, "steps": n_steps, "init_text": INIT_TEXT},
+                       save_dir / f"soft_L{layer}_M{M}.pt")
         ev = subsample_like_eval(load_fl_rows(args.parquet, layers=[layer], label="greedy", drop_label_ids=eos, columns=cols),
                                  args.max_rows, args.seed)
         recs = eval_prompt(model, tok, layer, soft, ev, M=M, batch=args.eval_batch, nf=nf, device=device, seed=args.seed,
                            conditions=args.conditions.split(","), eos_ids=eos,
-                           tag={"group": args.group, "checkpoint": f"{args.group}_soft{M}_s{args.steps}"})
+                           tag={"group": args.group, "checkpoint": f"{args.group}_soft{M}_s{n_steps}"})
         all_recs += recs
         write_records(recs, args.out)
     print(f"[futurelens] wrote {len(all_recs)} records -> {args.out}")
