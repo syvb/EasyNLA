@@ -244,7 +244,7 @@ _GREEDY_FOR = {"target_ids": "greedy_ids", "target_top5": "greedy_top5", "target
 def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
                  layers: list[int] | None = None, keep_activations: bool = True,
                  columns: list[str] | None = None, label: str = "text",
-                 drop_label_ids: set[int] | None = None) -> list[dict]:
+                 drop_label_ids: set[int] | None = None, keep_label_mismatch: bool = False) -> list[dict]:
     """Row-group-streamed load. Activations stay float16 numpy (half the RAM of
     fp32; every consumer converts per batch). `layers` filters by activation_layer.
     `label="greedy"` swaps target_ids/top5/logp for the target's own greedy continuation
@@ -252,7 +252,9 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
     whose greedy first token disagrees with the corpus token (a bf16 near-tie flip between
     the teacher-forced filter pass and the batched generate) and rows whose greedy
     continuation contains one of `drop_label_ids` (EOS: unreachable for the decoder) are
-    dropped and counted."""
+    dropped and counted. On a split collected WITHOUT the top-1 filter the first-token
+    disagreement is not a bf16 flip but the filter itself (~half the positions); pass
+    `keep_label_mismatch=True` to keep those rows and evaluate on every sampled position."""
     assert label in LABELS, f"label must be one of {LABELS}, got {label!r}"
     pf = pq.ParquetFile(str(parquet_path))
     cols = list(columns or ROW_COLUMNS)
@@ -312,7 +314,8 @@ def load_fl_rows(parquet_path: str | Path, n_max: int | None = None, *,
                 if "target_ids" in row:
                     if int(g[0]) != int(row["target_ids"][0]):
                         dropped["greedy_first_token_mismatch"] += 1
-                        continue
+                        if not keep_label_mismatch:
+                            continue
                     row["text_ids"] = row["target_ids"]
                 if drop_label_ids and any(int(x) in drop_label_ids for x in g):
                     dropped["greedy_contains_stop_id"] += 1

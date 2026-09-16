@@ -214,6 +214,23 @@ def stage_cmd(stage: str, a) -> str:
                 f"--parquet {D}/eval.parquet --layers {TRAIN_LAYERS} --n-train 10000 --steps 600 --max-rows 2000 "
                 f"--seed {a.seed} --save-dir {C}/futurelens --out {E}/futurelens.jsonl {a.extra} && "
                 f"(python scripts/hf_upload.py {C}/futurelens ckpts/futurelens --repo {a.hf_repo} || true)")
+    if stage == "size_unfiltered":
+        # the size scan re-scored WITHOUT the top-1 filter: every sampled position of each model's
+        # unfiltered eval split, so "how much of the plan is in the vector" is not measured only
+        # where the model was already going to be right.
+        U = f"{WORK}/evals_unfiltered"
+        cmds = [f"mkdir -p {U}"]
+        for size, layer, ddir in [("0.6b", 19, "data_0.6b_L19"), ("1.7b", 19, "data_1.7b_L19"), ("8b", 24, "data_8b_evalu")]:
+            base = MODELS[size][0]
+            run = f"sft_replace_embed_a2.0_greedy_distill_{size}_L{layer}"
+            cmds.append(f"(rm -f {U}/{run}.jsonl {U}/readouts_{run}.jsonl && python -m nla.future_lens.eval "
+                        f"--base-ckpt {base} --adapter {C}/{run}/iter_0008000 --parquet {WORK}/{ddir}/eval.parquet "
+                        f"--out {U}/{run}.jsonl --keep-label-mismatch --conditions real,shuffled --layers {layer} "
+                        f"--max-rows {a.eval_max_rows or 4000} --batch-size 128 --seed {a.seed} "
+                        f"--dump-readouts {U}/readouts_{run}.jsonl "
+                        f"--tag-kv {_tag_arg({'checkpoint': run, 'group': 'unfiltered', 'model': size, 'seed': a.seed})})")
+        cmds.append(f"(python scripts/hf_upload.py {U} evals_unfiltered --repo {a.hf_repo} || true)")
+        return " ; ".join(cmds)
     if stage == "fl_matched":
         # compute-matched Future Lens comparison at layer 24: the paper's soft-prompt method given the
         # SAME wall-clock as the oracle's SFT run (4888 s), at three prompt capacities, plus the
@@ -361,7 +378,7 @@ def main(argv=None):
     v = sub.add_parser("volume"); v.add_argument("--name", default="fl-qwen3-8b"); v.add_argument("--size", type=int, default=150)
     v.add_argument("--dc", default="EU-RO-1")
     l = sub.add_parser("launch"); l.add_argument("stage", choices=["collect", "alpha_sweep", "sft", "rl", "eval", "baselines", "filter_ablation", "futurelens", "leakage",
-                                             "pipeline", "eval_baselines", "sync", "fl_matched"])
+                                             "pipeline", "eval_baselines", "sync", "fl_matched", "size_unfiltered"])
     l.add_argument("--match-seconds", type=float, default=4888, help="fl_matched: wall-clock per arm (default: the "
                    "oracle SFT run's 4888 s = 1.358 H100-h)")
     l.add_argument("--arms", default="10:32:3e-3:1,64:64:1e-2:0+1+2+3",
@@ -419,7 +436,7 @@ def main(argv=None):
     if a.cmd == "launch":
         if a.volume.lower() in ("none", ""):
             a.volume = None
-            assert a.stage in ("pipeline", "eval_baselines", "fl_matched") and (a.model != "8b" or a.hf_fetch), \
+            assert a.stage in ("pipeline", "eval_baselines", "fl_matched", "size_unfiltered") and (a.model != "8b" or a.hf_fetch), \
                 "--volume none needs inputs from the corpus or --hf-fetch"
         global BASE, LAYERS, TRAIN_LAYERS
         BASE, LAYERS, TRAIN_LAYERS = MODELS[a.model]

@@ -390,6 +390,9 @@ def main(argv=None):
     p.add_argument("--layers", default=None)
     p.add_argument("--wrong-layer", type=int, default=4)
     p.add_argument("--max-rows", type=int, default=None, help="cap rows PER LAYER")
+    p.add_argument("--keep-label-mismatch", action="store_true",
+                   help="evaluate every sampled position, including those where the target's own next-token "
+                        "prediction differs from the corpus (i.e. undo the top-1 filter on an unfiltered split)")
     p.add_argument("--surprisal", action=argparse.BooleanOptionalAction, default=False,
                    help="score readouts under the frozen target (needs docs.parquet)")
     p.add_argument("--surprisal-rows", type=int, default=256, help="rows per cell scored for surprisal (0 = all)")
@@ -438,6 +441,7 @@ def main(argv=None):
     print(f"[eval] label={args.label} injection={args.injection} alpha_mult={args.alpha_mult}"
           f"{' (from ' + str(fl_json) + ')' if ck else ''}", flush=True)
     rows = load_fl_rows(args.parquet, layers=sorted(need_layers), label=args.label,
+                        keep_label_mismatch=args.keep_label_mismatch,
                         drop_label_ids={tokenizer.eos_token_id},
                         # tf_kl compares against the target's distribution under its GREEDY prefix,
                         # which is only the teacher-forced context under greedy labels
