@@ -115,12 +115,13 @@ def train_prompt(model, layer: int, rows: list[dict], *, M: int, steps: int, bat
     tp = Transplant(model, layer, pos=M - 1)
     rng = np.random.default_rng(seed)
     n_lab = max(offsets)                                   # teacher-forced tokens fed after the prompt
-    probe = 30 if max_seconds else 0                       # untimed-schedule warmup used to measure s/step
+    warm, probe = (10, 40) if max_seconds else (0, 0)      # steps 0..warm are cuBLAS autotune / allocator growth;
+    t_probe = None                                         # time steps warm..probe to estimate s/step
     sched = None if max_seconds else torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=steps, eta_min=lr * 0.1)
     t0 = time.time()
     step = 0
     try:
-        while step < steps:
+        while step < steps and not (max_seconds and time.time() - t0 > max_seconds):
             idx = rng.choice(len(rows), size=batch, replace=len(rows) < batch)
             chunk = [rows[i] for i in idx]
             vec = torch.tensor(np.stack([np.asarray(r["activation_vector"], dtype=np.float32) for r in chunk]), device=device)
@@ -139,11 +140,13 @@ def train_prompt(model, layer: int, rows: list[dict], *, M: int, steps: int, bat
             if sched is not None:
                 sched.step()
             step += 1
+            if max_seconds and step == warm:
+                t_probe = time.time()
             if max_seconds and step == probe:              # budget -> step count, then anneal over the rest
-                per = (time.time() - t0) / probe
-                steps = max(probe + 1, int(max_seconds / per))
+                per = (time.time() - t_probe) / (probe - warm)
+                steps = max(probe + 1, int((max_seconds - (time.time() - t0)) / per) + probe)
                 sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=steps - probe, eta_min=lr * 0.1)
-                print(f"[futurelens] L{layer} M={M}: {per*1000:.0f} ms/step -> {steps} steps "
+                print(f"[futurelens] L{layer} M={M}: {per*1000:.1f} ms/step -> {steps} steps "
                       f"in {max_seconds/3600:.2f} h", flush=True)
             if step % 500 == 0 or step == steps:
                 print(f"[futurelens] L{layer} step {step:5d}/{steps} soft_ce {loss.item():.3f} "

@@ -218,21 +218,26 @@ def stage_cmd(stage: str, a) -> str:
         # compute-matched Future Lens comparison at layer 24: the paper's soft-prompt method given the
         # SAME wall-clock as the oracle's SFT run (4888 s), at three prompt capacities, plus the
         # single-layer oracle adapter evaluated on this split so both readers are layer-24-only.
+        # oracle eval FIRST (cheapest, and the reference point), then one command per arm; joined with ";"
+        # so a failing arm cannot drop the rest. --arms: "M:batch:lr:offsets[+offsets]" separated by ","
         secs, L = a.match_seconds, TRAIN_LAYERS
-        cmds = []
-        for M in [int(x) for x in a.prompt_lens.split(",")]:
-            cmds.append(f"python -m nla.future_lens.futurelens_prompt --base-ckpt {BASE} --train-parquet {D}/train.parquet "
-                        f"--parquet {D}/eval.parquet --layers {L} --prompt-len {M} --n-train {a.n_train_rows} "
-                        f"--max-seconds {secs} --max-rows 2000 --seed {a.seed} --save-dir {C}/fl_matched "
-                        f"--group fl_matched_M{M} --out {E}/fl_matched.jsonl {a.extra}")
+        cmds = [f"rm -f {E}/fl_matched.jsonl"]
         for ad in [x for x in a.adapters.split(",") if x]:
             name = ad.replace("/", "_")
-            cmds.append(f"rm -f {E}/onsplit_{name}.jsonl && python -m nla.future_lens.eval --base-ckpt {BASE} "
+            cmds.append(f"(rm -f {E}/onsplit_{name}.jsonl && python -m nla.future_lens.eval --base-ckpt {BASE} "
                         f"--adapter {C}/{ad} --parquet {D}/eval.parquet --out {E}/onsplit_{name}.jsonl "
                         f"--conditions real,shuffled --layers {L} --max-rows 2000 --batch-size 128 --seed {a.seed} "
-                        f"--tag-kv {_tag_arg({'checkpoint': name, 'group': 'oracle_onsplit', 'seed': a.seed})}")
+                        f"--tag-kv {_tag_arg({'checkpoint': name, 'group': 'oracle_onsplit', 'seed': a.seed})})")
+        for spec in a.arms.split(","):
+            M, batch, lr, offs = spec.split(":")
+            tag = f"M{M}b{batch}o{offs.replace('+', '')}"
+            cmds.append(f"(python -m nla.future_lens.futurelens_prompt --base-ckpt {BASE} --train-parquet {D}/train.parquet "
+                        f"--parquet {D}/eval.parquet --layers {L} --prompt-len {M} --batch {batch} --lr {lr} "
+                        f"--train-offsets {offs.replace('+', ',')} --n-train {a.n_train_rows} --max-seconds {secs} "
+                        f"--max-rows 2000 --seed {a.seed} --save-dir {C}/fl_matched --group fl_{tag} "
+                        f"--out {E}/fl_matched.jsonl {a.extra})")
         cmds.append(f"(python scripts/hf_upload.py {C}/fl_matched ckpts/fl_matched --repo {a.hf_repo} || true)")
-        return " && ".join(cmds)
+        return " ; ".join(cmds)
     if stage == "leakage":
         # rerun only the readout-leakage diagnostic (e.g. after new adapters were evaluated)
         return (f"python -m nla.future_lens.baselines --label {a.label} leakage --parquet {D}/eval.parquet "
@@ -359,7 +364,8 @@ def main(argv=None):
                                              "pipeline", "eval_baselines", "sync", "fl_matched"])
     l.add_argument("--match-seconds", type=float, default=4888, help="fl_matched: wall-clock per arm (default: the "
                    "oracle SFT run's 4888 s = 1.358 H100-h)")
-    l.add_argument("--prompt-lens", default="10,64,256", help="fl_matched: soft-prompt lengths to try")
+    l.add_argument("--arms", default="10:32:3e-3:1,64:64:1e-2:0+1+2+3",
+                   help="fl_matched arms as M:batch:lr:offsets (offsets joined by +), comma-separated")
     l.add_argument("--n-train-rows", type=int, default=200000, help="fl_matched: training positions per layer")
     l.add_argument("--instance", default=None, help="CPU pod instance id (e.g. cpu3c-2-4) instead of a GPU; for 'sync'")
     l.add_argument("--model", default="8b", choices=list(MODELS), help="target = decoder size (sets base ckpt, layers, "
