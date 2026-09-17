@@ -27,8 +27,10 @@ def _cluster_index(clusters):
 
 def bootstrap_mean(
     x, clusters=None, n_boot: int = 10000, alpha: float = 0.05, seed: int = 0,
+    return_draws: bool = False,
 ):
-    """(mean, lo, hi) percentile bootstrap CI of the mean of `x`.
+    """(mean, lo, hi) percentile bootstrap CI of the mean of `x`
+    (plus the bootstrap draws when return_draws=True).
 
     NaNs are dropped first (a failed extraction has no score, and averaging it in
     as a zero would be a silent lie).
@@ -40,10 +42,11 @@ def bootstrap_mean(
         clusters = [c for c, k in zip(clusters, ok) if k]
     n = len(x)
     if n == 0:
-        return float("nan"), float("nan"), float("nan")
+        nan = float("nan")
+        return (nan, nan, nan, np.full(n_boot, nan)) if return_draws else (nan, nan, nan)
     mean = float(x.mean())
     if n == 1:
-        return mean, mean, mean
+        return (mean, mean, mean, np.full(n_boot, mean)) if return_draws else (mean, mean, mean)
     rng = np.random.default_rng(seed)
     if clusters is None:
         draws = rng.integers(0, n, size=(n_boot, n))
@@ -58,6 +61,8 @@ def bootstrap_mean(
             pick = rng.integers(0, g, size=g)
             boots[b] = sums[pick].sum() / counts[pick].sum()
     lo, hi = np.percentile(boots, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    if return_draws:
+        return mean, float(lo), float(hi), boots
     return mean, float(lo), float(hi)
 
 
@@ -76,23 +81,12 @@ def paired_bootstrap_diff(
     cl = None if clusters is None else [c for c, k in zip(clusters, ok) if k]
     if len(d) == 0:
         return float("nan"), float("nan"), float("nan"), float("nan"), 0
-    mean, lo, hi = bootstrap_mean(d, clusters=cl, n_boot=n_boot, alpha=alpha, seed=seed)
-    # Two-sided p: how often does the bootstrap distribution of the mean cross 0?
-    rng = np.random.default_rng(seed + 1)
-    n = len(d)
-    if cl is None:
-        boots = d[rng.integers(0, n, size=(n_boot, n))].mean(axis=1)
-    else:
-        groups = _cluster_index(cl)
-        g = len(groups)
-        sums = np.array([d[idx].sum() for idx in groups])
-        counts = np.array([len(idx) for idx in groups], dtype=np.float64)
-        boots = np.empty(n_boot)
-        for i in range(n_boot):
-            pick = rng.integers(0, g, size=g)
-            boots[i] = sums[pick].sum() / counts[pick].sum()
+    # The CI and the p-value come from the SAME bootstrap draws, so "lo > 0" and
+    # "p < 0.05" cannot disagree at the margin.
+    mean, lo, hi, boots = bootstrap_mean(d, clusters=cl, n_boot=n_boot, alpha=alpha,
+                                         seed=seed, return_draws=True)
     p = 2.0 * min((boots <= 0).mean(), (boots >= 0).mean())
-    return mean, lo, hi, float(min(1.0, p)), int(n)
+    return mean, lo, hi, float(min(1.0, p)), int(len(d))
 
 
 def fmt_ci(mean, lo, hi, digits: int = 4) -> str:

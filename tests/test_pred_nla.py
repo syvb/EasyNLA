@@ -495,3 +495,89 @@ def test_baseline_cache_key_covers_what_the_value_depends_on():
     assert cache.get(a, 8, (0, 1), DEFAULT_BUCKETS) is None, "different position"
     assert cache.get(a, 7, (0, 1, 2), DEFAULT_BUCKETS) is None, "different branches"
     assert cache.get(a, 7, (0, 1), ((0, 4), (4, 8))) is None, "different buckets"
+
+
+# ---------------------------------------------------------------- review round 2
+
+
+def test_context_templates_are_parallel_and_carry_the_context():
+    t = ReaderTemplates()
+    tail = "Here is the text of the document continuing from that exact point:\n"
+    w = t.render("ZQX-marker", context="the end of the doc")
+    wo = t.render(None, context="the end of the doc")
+    assert w.endswith(tail) and wo.endswith(tail)
+    assert "the end of the doc" in w and "the end of the doc" in wo
+    assert "ZQX-marker" in w and "ZQX-marker" not in wo
+    # and the context-free pair is untouched
+    assert "the end of the doc" not in t.render("ZQX-marker") and "the end of the doc" not in t.render(None)
+
+
+def test_same_doc_partner_pairs_within_documents_only():
+    from nla.pred.data import same_doc_partner, take_by_doc
+    rows = [{"doc_id": "a", "row_id": 0}, {"doc_id": "a", "row_id": 1},
+            {"doc_id": "b", "row_id": 2}, {"doc_id": "c", "row_id": 3},
+            {"doc_id": "c", "row_id": 4}, {"doc_id": "c", "row_id": 5}]
+    partner, valid = same_doc_partner(rows)
+    assert valid == [True, True, False, True, True, True]
+    for i, ok in enumerate(valid):
+        if ok:
+            assert partner[i] != i and rows[partner[i]]["doc_id"] == rows[i]["doc_id"]
+    # take_by_doc never splits a document
+    sub = take_by_doc(rows, 3)
+    assert [r["row_id"] for r in sub] == [0, 1, 2]
+    sub = take_by_doc(rows, 4)
+    assert [r["row_id"] for r in sub] == [0, 1, 2, 3, 4, 5]
+
+
+def test_reward_span_is_a_token_weighted_mean_over_whole_buckets():
+    from nla.pred.rewards import ReaderGainReward
+
+    class R:  # the reward only needs these at construction time
+        model_name = "x"; n_nonfinite = 0; n_empty_buckets = 0
+    r = ReaderGainReward(R(), branches=(0,), reward_span=(8, 24))
+    assert r.reward_buckets == [1, 2]
+    g = np.array([[1.0, 2.0, 4.0]])
+    np.testing.assert_allclose(r._span_gain(g), [3.0])
+    r0 = ReaderGainReward(R(), branches=(0,))
+    np.testing.assert_allclose(r0._span_gain(g), [4.0])
+    with pytest.raises(AssertionError):
+        ReaderGainReward(R(), branches=(0,), reward_span=(4, 24))
+
+
+def test_fp32_head_matches_full_fp32_scoring():
+    """The production reader runs a bf16 trunk with an fp32 unembedding. Its
+    scores must agree with an all-fp32 reader to well under the effect sizes
+    under study (bf16 logits alone drift by ~0.01-0.05 nats/token per branch)."""
+    import torch
+    from nla.pred.reader import FrozenReader, ScoreJob
+    try:
+        full = FrozenReader.load("Qwen/Qwen3-0.6B", device="cpu", dtype="float32",
+                                 attn_implementation="eager")
+        mixed = FrozenReader.load("Qwen/Qwen3-0.6B", device="cpu", dtype="bfloat16",
+                                  attn_implementation="eager", fp32_head=True)
+    except Exception as e:                                     # noqa: BLE001
+        pytest.skip(f"model unavailable: {type(e).__name__}")
+    assert mixed.model.lm_head.weight.dtype == torch.float32
+    tok = full.tokenizer
+    ids = _ids24(tok, " the harbour was full of small fishing boats that morning, and")
+    cont = tok.decode(ids)
+    ranges = bucket_char_ranges(token_char_bounds(tok, ids), DEFAULT_BUCKETS)
+    jobs = [ScoreJob("w", "A passage about a harbour.", cont, ranges),
+            ScoreJob("n", None, cont, ranges)]
+    a = {r.key: np.array(r.bucket_logp) for r in full.score(jobs, DEFAULT_BUCKETS)}
+    b = {r.key: np.array(r.bucket_logp) for r in mixed.score(jobs, DEFAULT_BUCKETS)}
+    gain_full = (a["w"] - a["n"]) / 8
+    gain_mixed = (b["w"] - b["n"]) / 8
+    # bf16 trunk still contributes some drift; the fp32 head removes the
+    # unembedding's share. Loose bound: CPU bf16 kernels are the noisy part.
+    assert np.max(np.abs(gain_full - gain_mixed)) < 0.15, (gain_full, gain_mixed)
+
+
+def test_special_ids_cover_chat_markup_not_just_eos():
+    from nla.pred.continuations import special_ids
+    tok = _tok()
+    ids = set(special_ids(tok))
+    for t in ("<|im_start|>", "<|im_end|>", "<|endoftext|>", "<think>", "</think>"):
+        tid = tok.convert_tokens_to_ids(t)
+        assert tid in ids, f"{t} ({tid}) must be suppressed during sampling"
+    assert tok.convert_tokens_to_ids("Ġthe") not in ids

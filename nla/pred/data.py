@@ -163,7 +163,49 @@ def shuffled_partner(rows: list[dict], rng) -> tuple[list[int], list[bool]]:
     return perm, valid
 
 
+def same_doc_partner(rows: list[dict]) -> tuple[list[int], list[bool]]:
+    """Partner each row with ANOTHER position from the SAME document.
+
+    This is the informative mismatch: topic, genre and register are held
+    constant, so matched-minus-same_doc isolates what an explanation says about
+    THIS position rather than about the document. Rows whose document has no
+    other position in `rows` are flagged False (load with `take_by_doc` so
+    document pairs stay together).
+    """
+    by_doc: dict = {}
+    for i, r in enumerate(rows):
+        by_doc.setdefault(r["doc_id"], []).append(i)
+    partner = list(range(len(rows)))
+    valid = [False] * len(rows)
+    for idxs in by_doc.values():
+        if len(idxs) < 2:
+            continue
+        for k, i in enumerate(idxs):
+            partner[i] = idxs[(k + 1) % len(idxs)]
+            valid[i] = True
+    return partner, valid
+
+
+def take_by_doc(rows: list[dict], n: int) -> list[dict]:
+    """The first ~n rows, but never splitting a document: whole documents are
+    taken in order of first appearance until at least n rows are collected, so
+    every position's same-document mate is present."""
+    order: list = []
+    by_doc: dict = {}
+    for r in rows:
+        if r["doc_id"] not in by_doc:
+            order.append(r["doc_id"])
+            by_doc[r["doc_id"]] = []
+        by_doc[r["doc_id"]].append(r)
+    out: list[dict] = []
+    for d in order:
+        if len(out) >= n:
+            break
+        out.extend(by_doc[d])
+    return out
+
+
 __all__ = [
-    "SPLITS", "load_positions", "positions_schema", "shuffled_partner",
-    "split_counts", "split_for_doc",
+    "SPLITS", "load_positions", "positions_schema", "same_doc_partner",
+    "shuffled_partner", "split_counts", "split_for_doc", "take_by_doc",
 ]

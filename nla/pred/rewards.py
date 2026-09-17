@@ -49,26 +49,47 @@ class ReaderGainReward:
     default_length_penalty = 0.001
 
     def __init__(self, reader, *, branches, buckets=DEFAULT_BUCKETS,
-                 fail_gain=1.0, cache=None):
+                 fail_gain=0.5, cache=None, reward_span=HEADLINE_BUCKET,
+                 context_words=0):
         self.reader = reader
+        # >0: the reader is also shown the last N words of the document in BOTH
+        # prompts, so the reward cannot be earned by quoting the text the model
+        # was reading. Measured on gold explanations: without context, a raw
+        # 40-word quote of the prefix out-scores the explanation in every bucket.
+        self.context_words = context_words
         self.branches = tuple(branches)
         self.buckets = buckets
         self.hb = [tuple(b) for b in buckets].index(tuple(HEADLINE_BUCKET))
         self.fail_gain = fail_gain
+        self.fail_value = -fail_gain
         self.cache = cache if cache is not None else BaselineCache()
         self.tgt_tok = target_tokens_per_bucket(buckets)
+        # The reward is the token-weighted mean gain over the buckets covered by
+        # reward_span. Default = the headline bucket alone (the plan's 16-token
+        # bridge); a wider span trades the bridge's intent for less reward noise.
+        lo, hi = reward_span
+        self.reward_buckets = [i for i, (a, b) in enumerate(buckets) if a >= lo and b <= hi]
+        covered = sum(b - a for i, (a, b) in enumerate(buckets) if i in self.reward_buckets)
+        assert self.reward_buckets and covered == hi - lo, (
+            f"reward_span {reward_span} must be a union of whole buckets {buckets}")
+        self._w = self.tgt_tok[self.reward_buckets] / self.tgt_tok[self.reward_buckets].sum()
+
+    def _span_gain(self, gains):
+        return (gains[:, self.reward_buckets] * self._w[None, :]).sum(axis=1)
 
     def score(self, *, rows, samples, explanations, truncated) -> RewardOut:
         rep_rows = [rows[s["row"]] for s in samples]
         base_unique = baseline_scores(self.reader, rows, branches=self.branches,
-                                      buckets=self.buckets, cache=self.cache)
+                                      buckets=self.buckets, cache=self.cache,
+                                      context_words=self.context_words)
         base_rep = np.stack([base_unique[s["row"]] for s in samples])
         score_in = [e if (e is not None and not t) else SKIP
                     for e, t in zip(explanations, truncated)]
         sc = score_explanations(self.reader, rep_rows, score_in,
-                                branches=self.branches, buckets=self.buckets)
+                                branches=self.branches, buckets=self.buckets,
+                                context_words=self.context_words)
         gains = gain_per_token(sc, base_rep, self.buckets)
-        raw = gains[:, self.hb]
+        raw = self._span_gain(gains)
         valid = np.isfinite(raw)
         reward = np.where(valid, raw, -self.fail_gain)
         logs = {
@@ -92,10 +113,11 @@ class ReaderGainReward:
         score_in = [e if (e is not None and not t) else SKIP
                     for e, t in zip(explanations, truncated)]
         base = baseline_scores(self.reader, rows, branches=self.branches,
-                               buckets=self.buckets, cache=self.cache)
+                               buckets=self.buckets, cache=self.cache,
+                               context_words=self.context_words)
         sc = score_explanations(self.reader, rows, score_in, branches=self.branches,
-                                buckets=self.buckets)
-        return gain_per_token(sc, base, self.buckets)[:, self.hb]
+                                buckets=self.buckets, context_words=self.context_words)
+        return self._span_gain(gain_per_token(sc, base, self.buckets))
 
 
 class ReconReward:
@@ -119,6 +141,7 @@ class ReconReward:
         self.mse_scale = mse_scale
         self.device = device
         self.fail_reward = fail_reward
+        self.fail_value = fail_reward
         self.batch_size = batch_size
         self.max_len = max_len
         self.fve_baseline = fve_baseline

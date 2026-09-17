@@ -89,13 +89,52 @@ class ReaderTemplates:
         "Here is the text of the document continuing from that exact point:\n"
     )
 
-    def render(self, explanation: str | None) -> str:
+    # CONTEXT-CONDITIONED variants. Without any document text, the reader's
+    # baseline is a base LM predicting web text from nothing, so an explanation
+    # is rewarded for ANY information about the document - topic, entities, the
+    # last few words - and a verbalizer that simply quotes what the model was
+    # reading scores well, transfers across readers, and beats a shuffled
+    # control. Showing the reader the tail of the document in BOTH prompts
+    # removes that route: the explanation must then add something the text does
+    # not already say. Reported beside the context-free numbers.
+    with_expl_ctx: str = (
+        "A language model was reading a document. Here is the end of the text it "
+        "had read so far:\n"
+        "\n"
+        "{context}\n"
+        "\n"
+        "Here is a description of what the model was representing internally at "
+        "that point:\n"
+        "\n"
+        "{explanation}\n"
+        "\n"
+        "Here is the text of the document continuing from that exact point:\n"
+    )
+    without_ctx: str = (
+        "A language model was reading a document. Here is the end of the text it "
+        "had read so far:\n"
+        "\n"
+        "{context}\n"
+        "\n"
+        "No description of what the model was representing internally is "
+        "available.\n"
+        "\n"
+        "Here is the text of the document continuing from that exact point:\n"
+    )
+
+    def render(self, explanation: str | None, context: str | None = None) -> str:
+        if context is None:
+            if explanation is None:
+                return self.without
+            return self.with_expl.format(explanation=explanation.strip())
         if explanation is None:
-            return self.without
-        return self.with_expl.format(explanation=explanation.strip())
+            return self.without_ctx.format(context=context.strip())
+        return self.with_expl_ctx.format(context=context.strip(),
+                                         explanation=explanation.strip())
 
     def as_dict(self) -> dict:
-        return {"with_expl": self.with_expl, "without": self.without}
+        return {"with_expl": self.with_expl, "without": self.without,
+                "with_expl_ctx": self.with_expl_ctx, "without_ctx": self.without_ctx}
 
 
 def token_char_bounds(tokenizer, token_ids: list[int]) -> list[int]:
@@ -106,10 +145,12 @@ def token_char_bounds(tokenizer, token_ids: list[int]) -> list[int]:
     bounds[K] == len(text)).
 
     Computed by cumulative decode, which is exact for the incremental-decode
-    property BPE tokenizers have in practice, and asserted to be monotone. If a
-    decode is NOT prefix-monotone (rare normalization edge cases), the boundary is
-    clamped forward, which can only move a token into a later bucket - never
-    silently mis-score one.
+    property BPE tokenizers have in practice, and kept monotone. If a decode is
+    NOT prefix-monotone (a multibyte character split across byte tokens: emoji,
+    some symbols), the boundary is held at the previous one, so the split
+    character lands in the LATER bucket - never silently mis-scored, and
+    identically for every reader and condition. Measured: 0 of 1043 boundaries
+    on English web text.
     """
     text = tokenizer.decode(token_ids)
     bounds = [0]
@@ -145,6 +186,7 @@ class ScoreJob:
     explanation: str | None
     cont_text: str
     char_ranges: list[tuple[int, int]]
+    context: str | None = None      # tail of the document, for the _ctx templates
 
 
 @dataclass
@@ -188,6 +230,7 @@ class FrozenReader:
         dtype: str = "bfloat16",
         templates: ReaderTemplates | None = None,
         attn_implementation: str = "sdpa",
+        fp32_head: bool = True,
         **kw,
     ) -> "FrozenReader":
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -200,6 +243,22 @@ class FrozenReader:
         model = model.to(device).eval()
         for p in model.parameters():
             p.requires_grad_(False)
+        if fp32_head and torch_dtype != torch.float32 and hasattr(model, "lm_head"):
+            # bf16 logits carry a per-branch gain noise floor of ~0.01-0.05
+            # nats/token (measured), comparable to the effects under study and a
+            # real share of GRPO's within-group spread. The trunk stays bf16; the
+            # unembedding runs in fp32 on the (windowed) hidden states, which
+            # costs one fp32 copy of lm_head (~1.5-3 GB) and little time.
+            # Untie first: Qwen3-0.6B/4B and Gemma tie lm_head to the input
+            # embedding, and converting the shared tensor would push fp32
+            # embeddings into the bf16 trunk. A separate fp32 copy is the point.
+            head = model.lm_head
+            head.weight = torch.nn.Parameter(head.weight.detach().float().clone(),
+                                             requires_grad=False)
+            if getattr(model.config, "tie_word_embeddings", False):
+                model.config.tie_word_embeddings = False
+            head.register_forward_pre_hook(
+                lambda _m, args: (args[0].float(),) + tuple(args[1:]))
         print(
             f"[reader] {model_name} -> {type(model).__name__} "
             f"dtype={dtype} device={device} vocab={len(tok)}",
@@ -212,19 +271,20 @@ class FrozenReader:
 
     # ---- tokenization ------------------------------------------------------
 
-    def prefix_ids(self, explanation: str | None) -> list[int]:
-        """Token ids for the framing (+ explanation). Special tokens ON, so
-        Gemma gets its required <bos> and Qwen gets whatever its config says."""
-        key = explanation if explanation is not None else NO_EXPLANATION_KEY
+    def prefix_ids(self, explanation: str | None, context: str | None = None) -> list[int]:
+        """Token ids for the framing (+ context) (+ explanation). Special tokens
+        ON, so Gemma gets its required <bos> and Qwen gets whatever its config
+        says."""
+        key = ((explanation if explanation is not None else NO_EXPLANATION_KEY), context)
         hit = self._prefix_cache.get(key)
         if hit is None:
-            text = self.templates.render(explanation)
+            text = self.templates.render(explanation, context)
             hit = self.tokenizer(text, add_special_tokens=True)["input_ids"]
             if len(self._prefix_cache) >= self.max_prefix_cache:
                 # FIFO, but never evict the no-explanation prefix: it is the one
                 # key that IS reused on every single scoring call.
                 for k in list(self._prefix_cache):
-                    if k != NO_EXPLANATION_KEY:
+                    if k[0] != NO_EXPLANATION_KEY:
                         del self._prefix_cache[k]
                         break
             self._prefix_cache[key] = hit
@@ -267,7 +327,7 @@ class FrozenReader:
         nb = len(buckets)
         prepared = []
         for i, job in enumerate(jobs):
-            p_ids = self.prefix_ids(job.explanation)
+            p_ids = self.prefix_ids(job.explanation, job.context)
             c_ids, c_starts = self.cont_tokens(job.cont_text)
             assert len(job.char_ranges) == nb, (
                 f"job has {len(job.char_ranges)} char ranges, expected {nb}"

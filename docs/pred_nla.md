@@ -78,6 +78,43 @@ The last bucket is the reward for RL and the headline number in every table. The
 earlier two are reported because a method that only helps before the reader has
 seen any real text is much weaker than one that still helps after 16 tokens.
 
+### The reader must see the document, or quoting wins
+
+With no document text in the reader's prompt, its baseline is a base language
+model predicting web text from nothing. Any information about the document is
+then rewarded: the topic, the entities, the last few words. A verbalizer that
+learns to *quote what the model was reading* scores well, transfers to any
+reader, beats a shuffled control and reads as clean English, which is the whole
+success condition of the original plan, without saying anything about what the
+model was about to do.
+
+This is not hypothetical. Measured on Claude's gold warm-start explanations
+(the SFT target) with a base reader, a raw 40-word quote of the prefix beats
+the explanation in every bucket, including the headline one:
+
+| explanation | 0-8 | 8-16 | 16-24 |
+|---|---|---|---|
+| gold explanation | +1.01 | +0.57 | +0.35 |
+| last 40 words of the prefix, verbatim | +1.09 | +0.70 | +0.49 |
+
+(nats per target token, small-model probe, n=24; the gold explanations already
+quote the prefix's final word in 70% of cases.)
+
+So every evaluation runs in **two context settings**: the plan's context-free
+one, and a **context-conditioned** one where both prompts also show the reader
+the last 64 words of the document. In the second the explanation must add
+something the text does not already say, and that is the setting the primary
+test is decided in. Two more devices go with it: a **`tail_quote` reference**,
+the last 40 words of the document scored as if it were an explanation (a
+checkpoint that does not clearly beat it in the context-free setting is doing
+context recovery), and a **verbatim-overlap diagnostic** in the report (share of
+each explanation's 4-grams found in the prefix and in the continuations).
+
+The trainer can optimise either objective: `configs/pred/rl_behavioral.yaml` is
+the plan's context-free reward, `configs/pred/rl_behavioral_ctx.yaml` the
+context-conditioned one (`--reward-context-words 64`). The second is the one to
+run if you want the result to mean "predicts what the model does next".
+
 ### Two readers
 
 | role | model | used for |
@@ -119,12 +156,17 @@ attention-only adapter from a run of unknown length. Comparing against it alone,
 differently. `configs/pred/rl_recon_matched.yaml` removes that objection for
 roughly the cost of the behavioral run.
 
-### The control that actually matters
+### The controls that actually matter
 
 A generic note ("this is encyclopaedic prose; expect a date next") can help a
 reader predict text without saying anything about *this* activation. So the
-headline control is **matched versus shuffled**: score checkpoint C's explanation
-for position *j* against position *i*'s continuation.
+tables carry two mismatch controls: **shuffled** scores checkpoint C's
+explanation for position *j* against position *i*'s continuation from a
+*different document*, and **same_doc** scores it against the *other position of
+the same document*. The shuffled gap is easy to win: a wrong-document
+explanation actively misleads the reader, so naming the topic is enough. The
+same-document gap holds topic, genre and register constant and isolates what the
+explanation says about *this position*. The gate is decided on both.
 
 Because the AV prompt is a fixed template whose only per-position content is the
 injected vector, "an explanation generated from a mismatched activation" and
@@ -147,6 +189,12 @@ in which continuation each is paired with.
 
 H2 is the result. A large Qwen gain with a flat Gemma gain is a clean negative
 and should stop the line of work rather than start a bigger run.
+
+**The primary test is one number, named in advance:** behavioral − SFT, matched
+explanations, held-out reader, headline bucket, in the **context-conditioned**
+setting. `report.md` prints it first, with the plan's context-free version beside
+it as reported-not-decisive. Everything else in the report is secondary and
+uncorrected. One RL seed: the interval is over positions, not over runs.
 
 **Expect a strong SFT baseline.** The warm-start explanations were written by
 Claude under an instruction that asked, in as many words, for "the 2-3 most
@@ -187,6 +235,7 @@ down before the numbers exist.
 
 | what comes back | reading | what to do next |
 |---|---|---|
+| context-free gains up, context-conditioned gains flat, prefix overlap up | the verbalizer learned to quote the document | the context-free objective was gamed; train against `rl_behavioral_ctx.yaml` |
 | behavioral > SFT on **both** readers, matched > shuffled | the objective works and communicates | scale: more readers, more horizons, multiple seeds |
 | behavioral > SFT on Qwen only | reader-specific phrasing | strengthen reader independence, not the training budget |
 | both readers improve, shuffled nearly as good | generic predictive boilerplate, not this activation | fix activation-dependence before anything else |
@@ -224,11 +273,20 @@ is what lets a different reader bucket the same characters later.
 ### 2. Gate — `nla.pred.gate`
 
 Before spending anything on RL, check the reward already responds to which
-activation an explanation came from. On ~500 held-out validation positions it
-scores the SFT and reconstruction explanations, matched and shuffled, on both
-readers, and **exits non-zero unless matched − shuffled is positive with a 95%
-interval excluding zero on at least one reader**. The launcher honours that exit
-code and stops the pod before RL.
+activation an explanation came from. On ~500 held-out validation positions
+(whole documents, so same-document mates are present) it scores the SFT and
+reconstruction explanations and the tail-quote reference, matched / shuffled /
+same_doc, in both context settings, on both readers. The verdict is decided on
+**one pre-registered cell**: the RL-init checkpoint under the training reader
+with no context, the reward RL would actually see. It passes only if both
+matched − shuffled *and* matched − same_doc are positive with 95% intervals
+excluding zero. ("Any cell passes" was the previous rule; with four cells it
+passes ~9% of the time under the null, and a Gemma-only pass says nothing about
+the training reward.) The gate also prints **split-half reliability**, the
+correlation of per-position gains scored on branches {0,1} vs {2,3}: a reward
+whose values do not agree with themselves across sampled futures is noise no
+optimizer can see through. The launcher honours the exit code and stops the pod
+before RL.
 
 This is the cheapest decision point in the experiment. If the score cannot tell a
 correct explanation from a mismatched one *before* optimization, no amount of
@@ -238,7 +296,13 @@ optimization will fix it, and the thing to fix is the scoring task.
 
 GRPO with group-relative advantages, a k3 KL toward the SFT init, and the
 reward behind a seam (`nla/pred/rewards.py`) so the reconstruction arm runs
-through the identical trainer.
+through the identical trainer. Failed rollouts (no parseable explanation, or
+truncated at the cap) get a fixed negative advantage and stay *out* of the
+group mean and standard deviation: inside them, one failure in eight sets the
+group's scale and the seven good rollouts become indistinguishable, so the update
+learns "close the tag" rather than "explain better". The reward span defaults to
+the plan's 16–24 bucket (`--reward-span`); the reader can be shown document
+context (`--reward-context-words`).
 
 Rollouts are batched **across prompts**. The stock single-GPU trainer generates
 one prompt at a time, which on this workload is the entire step; batching turns
@@ -260,7 +324,7 @@ drift.
 ### 4. Eval — `nla.pred.eval`
 
 Generate for every checkpoint first (verbalizer resident), then free it and score
-with one reader at a time. Peak memory is one 8B model or one 4B model rather
+with one reader at a time, in both context settings and all three conditions. Peak memory is one 8B model or one 4B model rather
 than all three, and every condition is scored against identical continuations.
 Comparisons are paired over positions; intervals bootstrap over **documents**,
 since positions from one document are correlated.
@@ -296,8 +360,8 @@ are directly comparable.
 ### Locally, first — no GPU, no spend
 
 ```bash
-.venv/bin/python -m pytest tests/test_pred_nla.py -q     # ~30 s
-bash scripts/smoke_pred_cpu.sh /tmp/pred_smoke           # ~25 min
+.venv/bin/python -m pytest tests/test_pred_nla.py -q     # ~3 min on 4 CPUs
+bash scripts/smoke_pred_cpu.sh /tmp/pred_smoke           # ~30 min
 ```
 
 The smoke script runs the real modules on Qwen3-0.6B: it builds a tiny NLA
@@ -322,11 +386,16 @@ python scripts/runpod_pred_nla.py status
 python scripts/runpod_pred_nla.py terminate <pod_id>
 ```
 
-One GPU is enough: the policy is 8B bf16 and the reader 4B bf16, where the stock
-reconstruction trainer already fits an 8B policy plus a co-trained 5.9B critic on
-one card. There is **no network volume** — HuggingFace is the store, so each
-stage pulls what it needs and pushes what it made and the pod can run wherever
-there is stock.
+One GPU is enough: the policy is 8B bf16 and the reader 4B bf16 (peak ~35 GB on
+an 80 GB card at the default micro-batch). There is **no network volume** —
+HuggingFace is the store, so each stage pulls what it needs and pushes what it
+made and the pod can run wherever there is stock, and a later stage can run on a
+different pod. The pod runs the committed `scripts/pod_pred_nla.sh`, driven by
+environment variables the launcher sets: RunPod passes the bootstrap as
+`bash -lc '…'`, and any single quote in a generated script silently truncates it,
+which is how the first version of the launcher would have run nothing at all.
+Every stage logs to one wandb group (`pred-nla-s<seed>`) so prep → gate → rl →
+eval read as one experiment.
 
 ### Data
 
@@ -342,6 +411,14 @@ comparisons are all paired differences.
 
 Splits are by document hash: ~6% validation, ~12% evaluation, the rest for RL,
 with no document crossing a split.
+
+The overlap question is not left as a caveat: after prep, `scripts/pred_check_overlap.py`
+streams the warm-start and reconstruction-RL training parquets, hashes every
+document opening, and reports which val/eval positions collide (`positions.overlap.json`,
+mirrored with the data). The asymmetry it guards against: the published
+reconstruction adapter's RL split came from the older corpus file, so it may
+have been optimized on documents the pilot evaluates on, while the behavioral
+arm's RL split is doc-disjoint from eval by construction.
 
 The injection contract was checked across all four artifacts before any of this
 was written: the merged AV, the frozen AR, the RL pool and the warm-start data
@@ -364,11 +441,11 @@ Measured against live RunPod rates (`plan` prints the current numbers):
 
 | stage | wall clock | notes |
 |---|---|---|
-| continuations | ~0.6 h | 15k positions × 4 branches × 24 tokens |
-| gate | ~0.5 h | 500 positions × 2 checkpoints × 2 readers |
+| continuations | ~0.7 h | 15k positions × 4 branches × 24 tokens, plus the overlap check |
+| gate | ~0.8 h | 500 positions × 3 explanation sets × 3 conditions × 2 context settings × 2 readers, with split-half reliability |
 | behavioral RL | ~4.6 h | 300 steps at 32 prompts × 8 samples |
-| eval + report | ~1.0 h | 2000 positions × 3 checkpoints × 2 readers |
-| **total** | **~6.7 h + ~0.35 h startup** | one GPU |
+| eval + report | ~1.5 h | 2000 positions × 4 explanation sets × 3 conditions × 2 context settings × 2 readers |
+| **total** | **~7.6 h + ~0.35 h startup** | one GPU |
 
 The RL figure is a per-step cost model, not a guess: ~9 s of rollout decode,
 ~14 s of reader forwards, and ~32 s for the update's forward, backward and
@@ -377,9 +454,10 @@ is 9,600 draws, which is 0.8 epochs of a 12,000-position pool — deliberately
 under one epoch. The compute-matched reconstruction arm is cheaper per step
 (~45 s, the AR is one forward where the reader is four) and adds ~3.7 h.
 
-At the rates seen on 2026-09-17 that is roughly **$19 on an H100** or **$25 on
-an H200** for the four-stage chain, and about **$29 / $39** with the
-reconstruction arm. Budget two to three times that for reruns. Startup is not
+At the rates seen on 2026-09-17 that is roughly **$21 on an H100** or **$29 on
+an H200** for the four-stage chain, and about **$31 / $42** with the
+reconstruction arm; a context-conditioned behavioral arm costs the same as the
+context-free one. Budget two to three times that for reruns. Startup is not
 free either: each pod spends 15–25 minutes pulling the image, installing, and
 downloading four models, which is where rerun money actually goes.
 
@@ -408,8 +486,10 @@ explanation matching the activation it came from.
 ```
 nla/pred/
   reader.py         frozen reader + character-offset span alignment (the core)
+  av.py             verbalizer loading + batched generation with injection
   scoring.py        explanations -> gain, with the no-explanation baseline cached
   rewards.py        the reward seam: reader_gain | recon
+  wandb_util.py     one wandb convention for every stage
   continuations.py  stage 1 - sample the target model's futures
   gate.py           stage 2 - the pre-RL activation-specificity gate
   train_rl.py       stage 3 - GRPO
@@ -418,8 +498,9 @@ nla/pred/
   report.py         stage 5 - report.md
   data.py           positions parquet, document-level splits, derangement
   stats.py          document-clustered and paired bootstrap
-configs/pred/       rl_behavioral.yaml, rl_recon_matched.yaml
-scripts/            runpod_pred_nla.py, smoke_pred_cpu.sh,
-                    make_pred_smoke_data.py, pred_hf_sync.py
+configs/pred/       rl_behavioral.yaml, rl_behavioral_ctx.yaml, rl_recon_matched.yaml
+scripts/            runpod_pred_nla.py (launcher), pod_pred_nla.sh (the job, on the pod),
+                    pred_best_ckpt.py, pred_check_overlap.py, pred_hf_sync.py,
+                    smoke_pred_cpu.sh, make_pred_smoke_data.py
 tests/              test_pred_nla.py
 ```

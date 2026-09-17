@@ -34,3 +34,7 @@ data/
 .DS_Store
 .venv/
 venv/
+
+# pred-NLA local outputs (the README commands write here)
+evals/
+ckpts/

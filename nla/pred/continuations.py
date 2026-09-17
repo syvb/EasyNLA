@@ -36,6 +36,7 @@ from nla.config import load_nla_config
 from nla.pred.data import positions_schema, split_for_doc
 from nla.pred.reader import token_char_bounds
 from nla.pred.wandb_util import finish_run, init_run
+from nla.utils import cjk_fraction
 
 
 def _iter_source(parquet_path, corpus_filter, max_prefix_tokens, max_per_doc):
@@ -70,9 +71,20 @@ def _iter_source(parquet_path, corpus_filter, max_prefix_tokens, max_per_doc):
                    "n_raw_tokens": nraw[i], "prefix_text": texts[i]}
 
 
+def special_ids(tokenizer) -> list[int]:
+    """Every special/added token id: EOS and pad, but also <|im_start|>, <think>,
+    vision markers and the rest. min_new_tokens suppresses only the EOS list;
+    the others are sampled from the full distribution at ~5e-6/token, which is
+    ~10 occurrences over a 23k-position prep, each a literal "<think>" in the
+    continuation text that different readers then tokenize differently."""
+    ids = set(tokenizer.all_special_ids)
+    ids.update(int(i) for i in getattr(tokenizer, "added_tokens_decoder", {}).keys())
+    return sorted(ids)
+
+
 @torch.no_grad()
 def sample_branches(model, tokenizer, prefixes, n_branches, n_tokens, device,
-                    temperature=1.0, add_special_tokens=False):
+                    temperature=1.0, add_special_tokens=False, suppress=None):
     """[len(prefixes)][n_branches] token-id lists sampled from the target model."""
     enc = tokenizer(prefixes, return_tensors="pt", padding=True,
                     add_special_tokens=add_special_tokens).to(device)
@@ -85,7 +97,9 @@ def sample_branches(model, tokenizer, prefixes, n_branches, n_tokens, device,
         # a truncated model, not the one whose activations we are explaining.
         top_p=1.0, top_k=0, repetition_penalty=1.0,
         num_return_sequences=n_branches,
-        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+        pad_token_id=(tokenizer.pad_token_id if tokenizer.pad_token_id is not None
+                      else tokenizer.eos_token_id),
+        suppress_tokens=suppress,
         return_dict_in_generate=True,
     )
     new = out.sequences[:, enc.input_ids.shape[1] :]        # [B*K, T]
@@ -163,6 +177,11 @@ def main():
 
     quotas = {"rl": args.n_rl, "val": args.n_val, "eval": args.n_eval}
     taken = {k: 0 for k in quotas}
+    suppress = special_ids(tokenizer)
+    special_set = set(suppress)
+    canary = {"cjk": 0, "special": 0, "n": 0}
+    print(f"[target] suppressing {len(suppress)} special/added token ids during "
+          f"sampling", flush=True)
     writer = None
     schema = positions_schema(cfg.d_model, args.n_branches)
     buf: list[dict] = []
@@ -217,13 +236,21 @@ def main():
             model, tokenizer, [r["prefix_text"] for r in keep],
             args.n_branches, args.n_tokens, args.device,
             temperature=args.temperature, add_special_tokens=add_special,
+            suppress=suppress,
         )
         out_rows = []
         for r, brs in zip(keep, branches):
             texts, idss, boundss = [], [], []
             for ids in brs:
                 bounds = token_char_bounds(tokenizer, ids)
-                texts.append(tokenizer.decode(ids))
+                text = tokenizer.decode(ids)
+                # Continuation-quality canaries: a post-trained target sampled on
+                # raw web text at T=1 can wander into CJK or chat markup, which
+                # base readers score as noise. Logged, not filtered.
+                canary["cjk"] += cjk_fraction(text) > 0.05
+                canary["special"] += any(t in special_set for t in ids)
+                canary["n"] += 1
+                texts.append(text)
                 idss.append([int(x) for x in ids])
                 boundss.append([int(x) for x in bounds])
             out_rows.append({
@@ -297,7 +324,12 @@ def main():
         "add_special_tokens": add_special, "seed": args.seed,
         "counts": taken, "n_source_seen": n_seen,
         "n_roundtrip_fail": n_roundtrip_fail,
+        "branch_canaries": {"n_branches": canary["n"],
+                            "cjk_frac": canary["cjk"] / max(1, canary["n"]),
+                            "special_token_frac": canary["special"] / max(1, canary["n"])},
     }
+    print(f"[prep] branch canaries: CJK {canary['cjk']}/{canary['n']}, "
+          f"special tokens {canary['special']}/{canary['n']}", flush=True)
     Path(str(out_path) + ".pred_meta.json").write_text(json.dumps(meta, indent=2))
     dt = time.time() - t0
     print(f"[prep] done: {sum(taken.values())} positions in {dt/60:.1f} min "
@@ -308,6 +340,8 @@ def main():
 
         run.summary.update({f"prep/final_{k}": v for k, v in taken.items()})
         run.summary["prep/roundtrip_fail"] = n_roundtrip_fail
+        run.summary["prep/branch_cjk_frac"] = canary["cjk"] / max(1, canary["n"])
+        run.summary["prep/branch_special_frac"] = canary["special"] / max(1, canary["n"])
         run.summary["prep/minutes"] = dt / 60
         if samples_table:
             run.log({"prep/samples": wandb.Table(

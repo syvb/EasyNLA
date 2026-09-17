@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import re
 import math
 import os
 import time
@@ -248,6 +249,9 @@ def build_args():
                    help="Optional adapter to initialize the policy LoRA from. The "
                         "KL reference stays the bare base either way.")
     p.add_argument("--init-adapter-subfolder", default=None)
+    p.add_argument("--kl-reference-subfolder", default=None,
+                   help="subfolder of --kl-reference-adapter (NOT inherited from "
+                        "--init-adapter-subfolder, which may name a different repo).")
     p.add_argument("--kl-reference-adapter", default=None,
                    help="Adapter the KL anchors to. Default: the bare base, which "
                         "IS the SFT policy when --base-ckpt is the merged AV and "
@@ -264,10 +268,29 @@ def build_args():
     p.add_argument("--reader-batch-rows", type=int, default=48)
     p.add_argument("--reader-batch-tokens", type=int, default=49152)
     p.add_argument("--branches", type=int, default=4)
-    p.add_argument("--fail-gain", type=float, default=1.0,
-                   help="reader_gain only: reward for a rollout with no parseable "
-                        "explanation or one truncated at the cap, in nats/target "
-                        "token BELOW the no-explanation baseline.")
+    p.add_argument("--fail-gain", type=float, default=0.5,
+                   help="reader_gain only: logged/eval reward for a rollout with no "
+                        "parseable explanation or one truncated at the cap, in "
+                        "nats/target token BELOW the no-explanation baseline. It no "
+                        "longer enters the group statistics (see --fail-advantage).")
+    p.add_argument("--fail-advantage", type=float, default=1.0,
+                   help="Fixed advantage given to a failed rollout. Group mean/std "
+                        "are computed over VALID rollouts only: with a failure "
+                        "inside the std, one bad rollout in eight sets the scale and "
+                        "the seven good ones become indistinguishable, so the "
+                        "update learns 'close the tag' instead of 'explain better'.")
+    p.add_argument("--reward-context-words", type=int, default=0,
+                   help="reader_gain only: also show the reader the last N words of "
+                        "the document in both prompts. 0 is the plan's setting, where "
+                        "a verbatim quote of the prefix out-scores a real explanation "
+                        "(measured), so the reward can be earned by quoting; 64 closes "
+                        "that route. Recommended: run 64 (configs/pred/rl_behavioral_ctx.yaml).")
+    p.add_argument("--reward-span", default="16-24",
+                   help="Target-token span (bucket-aligned) whose gain is the RL "
+                        "reward; the other buckets are still logged. 16-24 is the "
+                        "plan's 16-token bridge; 8-24 or 0-24 use more of the "
+                        "scored tokens (less reward noise) at the cost of rewarding "
+                        "information the bridge would have revealed anyway.")
     p.add_argument("--ar-ckpt", default="syvb/nanonla-qwen3-8b-L24-ar",
                    help="recon only: the frozen AR reconstructor.")
     # --- optimization ---
@@ -360,9 +383,16 @@ def main():
     branches = tuple(range(args.branches))
 
     # ---- data ----
+    need_prefix = args.reward == "reader_gain" and args.reward_context_words > 0
     train_rows = load_positions(args.positions, split="rl",
-                                limit=args.max_rl_rows or None)
-    val_rows = load_positions(args.positions, split="val", limit=args.eval_n_positions)
+                                limit=args.max_rl_rows or None, with_prefix=need_prefix)
+    val_all = load_positions(args.positions, split="val", with_prefix=need_prefix)
+    # A seeded random subset, not the first N rows: positions are stored in
+    # document order and the first N would span few documents.
+    _vr = np.random.default_rng(args.seed + 1)
+    val_rows = [val_all[i] for i in sorted(_vr.choice(
+        len(val_all), size=min(args.eval_n_positions, len(val_all)), replace=False))]
+    del val_all
     assert train_rows, "no rl-split rows in the positions parquet"
     n_br = len(train_rows[0]["cont_text"])
     assert args.branches <= n_br, f"--branches {args.branches} > {n_br} stored"
@@ -384,9 +414,30 @@ def main():
     else:
         base = prepare_model_for_kbit_training(
             base, use_gradient_checkpointing=args.gradient_checkpointing)
-    # A resumed run keeps the KL anchor it started with; --init-adapter implies it.
-    if args.kl_reference_adapter is None and args.init_adapter:
+    # The KL anchor. Fresh LoRA on the merged AV -> the adapter-disabled base.
+    # --init-adapter -> a frozen copy of that adapter (the bare base is then not
+    # the warm start). A RESUMED run keeps the anchor it started with: the first
+    # run writes it to <save_dir>/reference/, which is read back here, so a resume
+    # cannot silently drift to the bare base just because --init-adapter was not
+    # repeated on the command line.
+    ref_saved = save_dir / "reference"
+    if args.resume_from_lora:
+        resume_dir = Path(args.resume_from_lora).resolve()
+        if args.kl_reference_adapter and Path(args.kl_reference_adapter).resolve() == resume_dir:
+            raise SystemExit(
+                "--kl-reference-adapter must not be the resume checkpoint itself: "
+                "that loads the POLICY as its own anchor and the KL term is "
+                "identically zero for the rest of the run.")
+        if args.kl_reference_adapter is None and (ref_saved / "adapter_config.json").exists():
+            args.kl_reference_adapter = str(ref_saved)
+            args.kl_reference_subfolder = None
+            print(f"[policy] resume: KL reference restored from {ref_saved}", flush=True)
+        elif args.kl_reference_adapter is None:
+            print("[policy] resume: no saved reference adapter and none given - the "
+                  "anchor is the adapter-disabled base", flush=True)
+    elif args.kl_reference_adapter is None and args.init_adapter:
         args.kl_reference_adapter = args.init_adapter
+        args.kl_reference_subfolder = args.init_adapter_subfolder
         print(f"[policy] KL reference defaults to --init-adapter "
               f"({args.init_adapter}): the bare base is not the warm start here.",
               flush=True)
@@ -407,15 +458,20 @@ def main():
               f"(zero-init B, so step 0 IS the SFT policy)", flush=True)
     ref_adapter = None
     if args.kl_reference_adapter:
-        kw = ({"subfolder": args.init_adapter_subfolder}
-              if args.init_adapter_subfolder else {})
+        kw = ({"subfolder": args.kl_reference_subfolder}
+              if args.kl_reference_subfolder else {})
         model.load_adapter(args.kl_reference_adapter, adapter_name="reference", **kw)
-        model.set_adapter("default")
+        model.set_adapter("default")          # load_adapter re-freezes the policy
         for n_, p_ in model.named_parameters():
             if ".reference." in n_:
                 p_.requires_grad_(False)     # the anchor must never train
         ref_adapter = "reference"
         print(f"[policy] KL reference adapter: {args.kl_reference_adapter}", flush=True)
+        if not (ref_saved / "adapter_config.json").exists():
+            # Written once, at the run root, so a resume can find it and so the
+            # per-iteration checkpoints do not each carry a copy of the anchor.
+            model.save_pretrained(str(save_dir), selected_adapters=["reference"])
+            print(f"[policy] KL reference saved to {ref_saved}", flush=True)
     else:
         print("[policy] KL reference: adapter-disabled base (== the SFT policy)",
               flush=True)
@@ -441,8 +497,12 @@ def main():
             args.reader, device=device, dtype=args.reader_dtype,
             templates=ReaderTemplates(), max_batch_rows=args.reader_batch_rows,
             max_batch_tokens=args.reader_batch_tokens)
+        _lo, _hi = (int(x) for x in args.reward_span.split("-"))
         reward_fn = ReaderGainReward(reader, branches=branches, buckets=buckets,
-                                     fail_gain=args.fail_gain)
+                                     fail_gain=args.fail_gain, reward_span=(_lo, _hi),
+                                     context_words=args.reward_context_words)
+        print(f"[reward] span {args.reward_span} -> buckets {reward_fn.reward_buckets}; "
+              f"reader context words: {args.reward_context_words}", flush=True)
         headline_key = "gain"
     else:
         from nla.models import NLACriticModel
@@ -483,6 +543,14 @@ def main():
         if ck is not None:
             st = torch.load(str(ck), map_location="cpu", weights_only=True)
             saved = int(st.get("step", 0))
+            m_iter = re.search(r"iter_(\d+)$", str(Path(args.resume_from_lora)))
+            if m_iter and int(m_iter.group(1)) != saved:
+                raise SystemExit(
+                    f"[resume] optim_latest.pt is from step {saved} but "
+                    f"--resume-from-lora names iter_{int(m_iter.group(1)):06d}: "
+                    f"pairing step-{saved} Adam moments with those weights would "
+                    f"be silent corruption. Resume from iter_{saved:06d} or delete "
+                    f"optim_latest.pt to start with cold moments.")
             if args.start_step == 0 and saved > 0:
                 args.start_step = saved
             try:
@@ -516,8 +584,63 @@ def main():
     # --eval-every steps and saves every --save-every, which do not coincide, so
     # track the most recent eval score and attach it to each checkpoint as it is
     # written. `best_ckpt` is then something a later stage can actually load.
-    best = {"step": -1, "score": -float("inf"), "best_ckpt": None, "ckpt_scores": {}}
+    best = {"step": -1, "score": -float("inf"), "best_ckpt": None, "ckpt_scores": {},
+            "init_score": None}
+    if args.resume_from_lora and (save_dir / "best.json").exists():
+        # Same-dir resume: keep the earlier checkpoints' scores, or best_ckpt could
+        # only ever name a post-resume checkpoint.
+        best.update(json.loads((save_dir / "best.json").read_text()))
+        print(f"[resume] best.json restored ({len(best['ckpt_scores'])} scored ckpts)",
+              flush=True)
     last_eval = {"step": -1, "score": float("nan")}
+
+    def held_out_eval(step, log):
+        """Score val positions with the TRAINING reader. Failures get the same
+        floor as in training, so a checkpoint cannot look better by failing more:
+        eval/score is the floored mean (used for selection), eval/score_valid the
+        mean over successful explanations."""
+        t_ev = time.time()
+        model.eval()
+        et = (args.eval_temperature if args.eval_temperature is not None
+              else args.temperature)
+        ev = rollout_batched(
+            model, tokenizer, val_rows, vectors_ref, group_size=1,
+            max_new_tokens=args.max_new_tokens, temperature=et, device=device,
+            eos_ids=eos_ids, gen_batch=args.gen_batch)
+        e_expl = [extract_explanation(s["text"]) for s in ev]
+        e_score = reward_fn.eval_score(val_rows, e_expl, [s["truncated"] for s in ev])
+        e_floor = np.where(np.isfinite(e_score), e_score, reward_fn.fail_value)
+        fin = e_score[np.isfinite(e_score)]
+        mean_s = float(np.mean(e_floor))
+        log["eval/score"] = mean_s
+        log["eval/score_valid"] = float(np.mean(fin)) if fin.size else float("nan")
+        log["eval/extraction_rate"] = float(np.mean([e is not None for e in e_expl]))
+        log["eval/resp_len"] = float(np.mean([s["n_resp"] for s in ev]))
+        log["time/eval_s"] = time.time() - t_ev
+        print(f"  [eval@{step}] score {mean_s:+.4f} (valid-only "
+              f"{log['eval/score_valid']:+.4f}) | ext {log['eval/extraction_rate']:.0%} "
+              f"| len {log['eval/resp_len']:.0f}", flush=True)
+        for k in range(min(3, len(ev))):
+            print(f"    [row={val_rows[k]['row_id']} s={e_score[k]:+.3f}] "
+                  + (e_expl[k] or "<failed>")[:180].replace("\n", " "), flush=True)
+        if run is not None:
+            import wandb
+            for k in range(min(8, len(ev))):
+                eval_table.append([step, val_rows[k]["row_id"], float(e_score[k]),
+                                   ev[k]["n_resp"], (e_expl[k] or "<failed>")[:600]])
+            log["eval/samples"] = wandb.Table(
+                columns=["step", "row_id", "score", "n_tokens", "explanation"],
+                data=list(eval_table))
+        return mean_s
+
+    if args.start_step == 0 and args.eval_every > 0 and val_rows:
+        # The curve needs a true SFT-init point; the in-loop eval at step 0 runs
+        # AFTER the first update.
+        init_log = {}
+        best["init_score"] = held_out_eval(-1, init_log)
+        if run is not None:
+            run.log({f"init/{k.split('/', 1)[1]}": v for k, v in init_log.items()
+                     if k.startswith("eval/") and k != "eval/samples"}, step=0)
 
     for step in range(args.start_step, args.num_steps):
         t0 = time.time()
@@ -570,17 +693,28 @@ def main():
 
         group = torch.tensor([s["row"] for s in samples], dtype=torch.long, device=device)
         ok_t = torch.tensor(inject_ok, dtype=torch.bool, device=device)
+        valid_t = torch.tensor(rout.valid, dtype=torch.bool, device=device)
         adv = torch.zeros_like(rewards_t)
-        n_degenerate = 0
+        n_degenerate = n_groups_with_failure = 0
         for gi in range(len(rows)):
-            mask = (group == gi) & ok_t
-            if mask.sum() == 0:
+            in_group = (group == gi) & ok_t
+            if in_group.sum() == 0:
                 continue
-            gr = rewards_t[mask]
+            good = in_group & valid_t
+            bad = in_group & ~valid_t
+            if bad.any():
+                n_groups_with_failure += 1
+                # A failed rollout gets a fixed negative advantage and stays OUT
+                # of the group statistics. Inside them, one failure would set the
+                # group's scale and flatten the ranking among the good rollouts.
+                adv[bad] = -args.fail_advantage
+            if good.sum() == 0:
+                continue
+            gr = rewards_t[good]
             sd = gr.std() if gr.numel() > 1 else torch.tensor(1.0, device=device)
             if float(sd) < 1e-6:
                 n_degenerate += 1
-            adv[mask] = (gr - gr.mean()) / (sd + 1e-6)
+            adv[good] = (gr - gr.mean()) / (sd + 1e-6)
 
         keep = [i for i, ok in enumerate(inject_ok) if ok]
         if not keep:
@@ -616,6 +750,7 @@ def main():
             "av/inject_masked_count": int(len(samples) - len(keep)),
             "av/failed_reward_count": int((~rout.valid).sum()),
             "av/degenerate_groups": n_degenerate,
+            "av/groups_with_failure": n_groups_with_failure,
             "reward/mean": float(np.mean(rout.reward)),
             "reward/std": float(np.std(rout.reward)),
             "reward/min": float(np.min(rout.reward)),
@@ -641,41 +776,10 @@ def main():
         will_save = (step + 1) % args.save_every == 0
         if args.eval_every > 0 and val_rows and (step % args.eval_every == 0
                                                  or will_save):
-            t_ev = time.time()
-            model.eval()
-            et = (args.eval_temperature if args.eval_temperature is not None
-                  else args.temperature)
-            ev = rollout_batched(
-                model, tokenizer, val_rows, vectors_ref, group_size=1,
-                max_new_tokens=args.max_new_tokens, temperature=et, device=device,
-                eos_ids=eos_ids, gen_batch=args.gen_batch)
-            e_expl = [extract_explanation(s["text"]) for s in ev]
-            e_score = reward_fn.eval_score(val_rows, e_expl,
-                                           [s["truncated"] for s in ev])
-            fin = e_score[np.isfinite(e_score)]
-            mean_s = float(np.mean(fin)) if fin.size else float("nan")
-            log["eval/score"] = mean_s
-            log["eval/extraction_rate"] = float(np.mean([e is not None for e in e_expl]))
-            log["eval/resp_len"] = float(np.mean([s["n_resp"] for s in ev]))
-            log["time/eval_s"] = time.time() - t_ev
+            mean_s = held_out_eval(step, log)
             last_eval = {"step": step, "score": mean_s}
             if np.isfinite(mean_s) and mean_s > best["score"]:
                 best.update(step=step, score=mean_s)
-            print(f"  [eval@{step}] score {mean_s:+.4f} "
-                  f"| ext {log['eval/extraction_rate']:.0%} "
-                  f"| len {log['eval/resp_len']:.0f} "
-                  f"| best {best['score']:+.4f}@{best['step']}", flush=True)
-            for k in range(min(3, len(ev))):
-                print(f"    [row={val_rows[k]['row_id']} s={e_score[k]:+.3f}] "
-                      + (e_expl[k] or "<failed>")[:180].replace("\n", " "), flush=True)
-            if run is not None:
-                import wandb
-                for k in range(min(8, len(ev))):
-                    eval_table.append([step, val_rows[k]["row_id"], float(e_score[k]),
-                                       ev[k]["n_resp"], (e_expl[k] or "<failed>")[:600]])
-                log["eval/samples"] = wandb.Table(
-                    columns=["step", "row_id", "score", "n_tokens", "explanation"],
-                    data=list(eval_table))
 
         if run is not None:
             run.log(log, step=step)
@@ -683,7 +787,7 @@ def main():
         if (step + 1) % args.save_every == 0:
             out_dir = save_dir / f"iter_{step + 1:06d}"
             out_dir.mkdir(parents=True, exist_ok=True)
-            model.save_pretrained(str(out_dir))
+            model.save_pretrained(str(out_dir), selected_adapters=["default"])
             if np.isfinite(last_eval["score"]):
                 best["ckpt_scores"][out_dir.name] = last_eval["score"]
                 best["best_ckpt"] = max(best["ckpt_scores"],

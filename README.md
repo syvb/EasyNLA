@@ -168,15 +168,24 @@ python -m nla.pred.continuations --source-parquet <rl.parquet> --sidecar <rl.par
 python -m nla.pred.gate --positions <positions.parquet> --checkpoint sft= --out-dir evals/gate
 python -m nla.pred.train_rl --config configs/pred/rl_behavioral.yaml \
     --positions <positions.parquet> --save-dir <ckpts>/behavioral_rl
-python -m nla.pred.eval --positions <positions.parquet> --out-dir evals/final
-python -m nla.pred.report --eval-dir evals/final
+python -m nla.pred.eval --positions <positions.parquet> --out-dir evals/final \
+    --checkpoint sft= --checkpoint recon_rl=syvb/nanonla-qwen3-8b-L24-rl-lora#p0.0 \
+    --checkpoint behavioral_rl=<ckpts>/behavioral_rl/iter_000300
+python -m nla.pred.report --eval-dir evals/final --blind --n-examples 100
 ```
 
 The headline number is **predictive gain in nats per target token**, measured on
 a reader from a *different model family* than the one RL trained against — an
 improvement that does not survive that swap means the AV found reader-specific
 phrasing, not communication. `nla.pred.gate` refuses to start RL unless the score
-already distinguishes a correct explanation from a mismatched one.
+already distinguishes a correct explanation from a mismatched one, including a
+mismatch from the *same document*.
+
+One measured caveat shapes the design: with no document text in the reader's
+prompt, a verbatim quote of the text the model was reading out-scores a real
+explanation, so every evaluation also runs with the reader shown the last 64
+words of the document, and `configs/pred/rl_behavioral_ctx.yaml` trains against
+that objective. See the writeup for why that is the number to trust.
 
 Smoke-test the whole chain on CPU first (no GPU, no spend):
 

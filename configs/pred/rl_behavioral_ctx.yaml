@@ -1,9 +1,8 @@
-# Behavioral RL: GRPO on the frozen-reader predictive gain.
-# python -m nla.pred.train_rl --config configs/pred/rl_behavioral.yaml \
-#     --positions <positions.parquet> --save-dir <ckpts>/behavioral_rl
-#
-# Every condition in the experiment sits on the SAME merged AV, so the policy is
-# a fresh LoRA on it and disable_adapter() is the SFT reference exactly.
+# Behavioral RL, CONTEXT-CONDITIONED reward: identical to rl_behavioral.yaml
+# except the reader is also shown the last 64 words of the document in both
+# prompts. Without that, a verbatim quote of the prefix out-scores a real
+# explanation (measured on gold explanations), so the context-free reward can
+# be earned by learning to quote. This is the arm the docs recommend.
 
 reward: reader_gain
 base_ckpt: syvb/nanonla-qwen3-8b-L24-av
@@ -32,7 +31,7 @@ length_threshold: 160
 # gate's observed reward SD before trusting it.
 length_penalty: 0.005
 fail_gain: 0.5                  # logged/eval floor only; failures get --fail-advantage, not a place in the group std
-reward_context_words: 0         # the plan's setting; see rl_behavioral_ctx.yaml
+reward_context_words: 64        # the reader also sees the last 64 words of the document
 
 # --- throughput ---
 gen_batch: 64                   # rollouts batched ACROSS prompts, not one at a time
@@ -47,5 +46,5 @@ eval_n_positions: 400           # held-out val positions, TRAINING reader only
 save_every: 50
 wandb_project: pred-nla
 wandb_group: rl
-wandb_name: behavioral_rl
+wandb_name: behavioral_rl_ctx
 seed: 0
