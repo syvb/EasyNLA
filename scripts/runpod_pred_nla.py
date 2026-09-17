@@ -30,8 +30,11 @@ FALLBACK_GPUS = [
     "NVIDIA H200", "NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL",
     "NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe",
 ]
-# Stage-by-stage wall-clock estimate for the default pilot sizes, used by `plan`.
-STAGE_HOURS = {"prep": 0.6, "gate": 0.5, "rl": 2.5, "rl_recon": 2.5, "eval": 1.0}
+# Wall-clock per stage at the default pilot sizes, used by `plan`. The RL figures
+# come from a per-step cost model (rollout decode + reward forwards + the GRPO
+# update's forward/backward/reference passes) at ~55 s/step for the reader reward
+# and ~45 s/step for reconstruction on an H100-class card, not from a guess.
+STAGE_HOURS = {"prep": 0.6, "gate": 0.5, "rl": 4.6, "rl_recon": 3.7, "eval": 1.0}
 
 
 def _key(name):
@@ -205,8 +208,9 @@ def plan(a):
     stages = a.stages.split(",")
     hours = sum(STAGE_HOURS.get(s, 1.0) for s in stages)
     overhead = 0.35        # image pull + pip + model downloads, per pod
-    print(f"stages: {stages}\nGPU-hours (compute): {hours:.1f}  "
-          f"+ {overhead:.2f} h startup")
+    for st in stages:
+        print(f"  {st:<10} {STAGE_HOURS.get(st, 1.0):>4.1f} h")
+    print(f"GPU-hours (compute): {hours:.1f}  + {overhead:.2f} h startup")
     print(f"{'gpu':<28} {'$/h':>7} {'run $':>8}")
     for g in [a.gpu] + [x for x in FALLBACK_GPUS if x != a.gpu]:
         r = rates.get(g)
@@ -222,9 +226,13 @@ def plan(a):
             json={"query": "{ myself { clientBalance } }"}, timeout=20)
         bal = r.json()["data"]["myself"]["clientBalance"]
         print(f"\nRunPod balance: ${bal:.2f}")
-        cheapest = min((v for v in rates.values() if v), default=None)
-        if cheapest and bal < (hours + overhead) * cheapest:
-            print("WARNING: balance is below the cheapest estimate for these stages.")
+        # Warn against the GPU actually selected, not the cheapest one listed -
+        # the default is what will be launched.
+        sel = rates.get(a.gpu)
+        if sel and bal < (hours + overhead) * sel:
+            print(f"WARNING: ${bal:.2f} will not cover these stages on {a.gpu} "
+                  f"(${(hours + overhead) * sel:.2f}). Top up, pick a cheaper GPU, "
+                  f"or split the chain across pods.")
     except Exception as e:                                     # noqa: BLE001
         print(f"\n(balance unavailable: {type(e).__name__})")
 
@@ -295,7 +303,9 @@ def main():
         p.add_argument("--eval-positions", type=int, default=2000)
         p.add_argument("--max-new-tokens", type=int, default=192)
         p.add_argument("--seed", type=int, default=0)
-        p.add_argument("--max-hours", type=int, default=6)
+        p.add_argument("--max-hours", type=int, default=8,
+                       help="per-stage timeout; RL at the default 300 "
+                            "steps is a ~4.6 h stage")
         p.add_argument("--disk-gb", type=int, default=250)
         p.add_argument("--keep", action=argparse.BooleanOptionalAction, default=True)
         p.add_argument("--force-rl", action="store_true",

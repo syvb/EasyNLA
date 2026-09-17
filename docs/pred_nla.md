@@ -282,11 +282,24 @@ there is stock.
 ### Data
 
 The pool is the FineFineWeb half of `asher577/nla-rl-data-free8` (the other half
-is chat transcripts, a different distribution). That corpus slice is fresh
-relative to the `finefineweb_100k` data the SFT warm start and the published
-reconstruction-RL run used, so the pilot's positions are unseen by all three
-checkpoints. Splits are by document hash: ~6% validation, ~12% evaluation, the
-rest for RL, with no document crossing a split.
+is chat transcripts, a different distribution). Its sidecar records a different
+corpus file (`corpus_fresh_130k.parquet`) from the `finefineweb_100k.parquet`
+the SFT warm start and the published reconstruction-RL checkpoint were built
+from. Both are samples of the same underlying corpus, and document-level
+disjointness between the two files is **not** byte-verified here — but every
+checkpoint is evaluated on the same positions, so residual overlap would inflate
+all three arms' absolute gains together rather than favour one of them, and the
+comparisons are all paired differences.
+
+Splits are by document hash: ~6% validation, ~12% evaluation, the rest for RL,
+with no document crossing a split.
+
+The injection contract was checked across all four artifacts before any of this
+was written: the merged AV, the frozen AR, the RL pool and the warm-start data
+agree byte-for-byte on the marker character, its token id, both neighbour ids and
+the actor prompt template, and all record Qwen3-8B layer 24 at d_model 4096. A
+mismatch there would silently inject the vector in the wrong place, which looks
+exactly like a method that does not work.
 
 | split | positions | used by |
 |---|---|---|
@@ -304,16 +317,25 @@ Measured against live RunPod rates (`plan` prints the current numbers):
 |---|---|---|
 | continuations | ~0.6 h | 15k positions × 4 branches × 24 tokens |
 | gate | ~0.5 h | 500 positions × 2 checkpoints × 2 readers |
-| behavioral RL | ~2.5 h | 300 steps at 32 prompts × 8 samples |
+| behavioral RL | ~4.6 h | 300 steps at 32 prompts × 8 samples |
 | eval + report | ~1.0 h | 2000 positions × 3 checkpoints × 2 readers |
-| **total** | **~4.6 h + ~0.35 h startup** | one GPU |
+| **total** | **~6.7 h + ~0.35 h startup** | one GPU |
 
-At the rates seen on 2026-09-17 that is about **$13 on an H100** or **$18 on an
-H200**, with the optional compute-matched reconstruction arm adding roughly the
-cost of the RL stage again. Budget two to three times the single-pass figure for
-reruns. Startup is not free: each pod spends 15–25 minutes pulling the image,
-installing, and downloading four models, which is where rerun money actually
-goes.
+The RL figure is a per-step cost model, not a guess: ~9 s of rollout decode,
+~14 s of reader forwards, and ~32 s for the update's forward, backward and
+reference passes, so ~55 s/step on an H100-class card. 300 steps at 32 prompts
+is 9,600 draws, which is 0.8 epochs of a 12,000-position pool — deliberately
+under one epoch. The compute-matched reconstruction arm is cheaper per step
+(~45 s, the AR is one forward where the reader is four) and adds ~3.7 h.
+
+At the rates seen on 2026-09-17 that is roughly **$19 on an H100** or **$25 on
+an H200** for the four-stage chain, and about **$29 / $39** with the
+reconstruction arm. Budget two to three times that for reruns. Startup is not
+free either: each pod spends 15–25 minutes pulling the image, installing, and
+downloading four models, which is where rerun money actually goes.
+
+`scripts/runpod_pred_nla.py plan` prints the current rates, the per-stage
+breakdown, and your balance, and warns when the balance is below the estimate.
 
 ---
 

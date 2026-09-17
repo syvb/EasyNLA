@@ -351,3 +351,72 @@ def test_cross_family_reader_buckets_the_same_characters():
     for (s, _), b in zip(enc["offset_mapping"], assigned):
         if b >= 0:
             assert ranges[b][0] <= s < ranges[b][1]
+
+
+def test_truncated_logits_window_matches_full_logits(tiny_reader, monkeypatch):
+    """The reader asks the model for only the logits window covering the
+    continuation. That optimization must be invisible in the numbers."""
+    from nla.pred.reader import ScoreJob
+    tok = tiny_reader.tokenizer
+    jobs = []
+    for i, t in enumerate([" the harbour filled with fishing boats before dawn each day",
+                           " geology of the basin records three separate marine incursions"]):
+        ids = _ids24(tok, t)
+        jobs.append(ScoreJob(i, f"Explanation {i} with a deliberately different length" + " padding" * i,
+                             tok.decode(ids),
+                             bucket_char_ranges(token_char_bounds(tok, ids), DEFAULT_BUCKETS)))
+    windowed = {r.key: r.bucket_logp for r in tiny_reader.score(jobs, DEFAULT_BUCKETS)}
+
+    # Force the full-logits fallback and confirm the two agree.
+    orig = tiny_reader.model.__class__.forward
+    calls = {"n": 0}
+
+    def maybe_raise(self, *args, **kwargs):
+        if "logits_to_keep" in kwargs:
+            calls["n"] += 1
+            raise TypeError("logits_to_keep unsupported")
+        return orig(self, *args, **kwargs)
+
+    monkeypatch.setattr(tiny_reader.model.__class__, "forward", maybe_raise)
+    full = {r.key: r.bucket_logp for r in tiny_reader.score(jobs, DEFAULT_BUCKETS)}
+    assert calls["n"] > 0, "the fallback path was never exercised"
+    for k in windowed:
+        np.testing.assert_allclose(windowed[k], full[k], rtol=1e-4, atol=1e-4)
+
+
+def test_multimodal_gemma_wrapper_scores_text_only():
+    """The held-out reader on the real run is google/gemma-3-4b-pt, which is a
+    MULTIMODAL Gemma3ForConditionalGeneration, not the text-only class the CPU
+    smoke test uses. Check the text-only scoring path against that class with a
+    shrunken, randomly-initialised copy: right class, text-vocab logits, a
+    working logits_to_keep window, and a BOS the reader requires.
+    """
+    import torch
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    name = "google/gemma-3-4b-pt"
+    try:
+        cfg = AutoConfig.from_pretrained(name)
+    except Exception as e:                                     # noqa: BLE001
+        pytest.skip(f"{name} config unavailable: {type(e).__name__}")
+    tc = cfg.text_config
+    tc.num_hidden_layers, tc.hidden_size, tc.intermediate_size = 2, 64, 128
+    tc.num_attention_heads, tc.num_key_value_heads, tc.head_dim = 4, 1, 16
+    if hasattr(cfg, "vision_config"):
+        for k, v in (("num_hidden_layers", 2), ("hidden_size", 64),
+                     ("intermediate_size", 128), ("num_attention_heads", 4)):
+            if hasattr(cfg.vision_config, k):
+                setattr(cfg.vision_config, k, v)
+    model = AutoModelForCausalLM.from_config(cfg).eval()
+    assert type(model).__name__ == "Gemma3ForConditionalGeneration"
+    tok = _tok(name)
+    enc = tok("A language model was reading a document.\n the treaty was signed",
+              return_tensors="pt", add_special_tokens=True)
+    assert int(enc.input_ids[0, 0]) == tok.bos_token_id, (
+        "Gemma needs its <bos>; prefix_ids() relies on add_special_tokens=True")
+    with torch.no_grad():
+        full = model(input_ids=enc.input_ids, attention_mask=enc.attention_mask).logits
+        win = model(input_ids=enc.input_ids, attention_mask=enc.attention_mask,
+                    logits_to_keep=5).logits
+    assert full.shape[-1] == tc.vocab_size
+    torch.testing.assert_close(win, full[:, -5:], rtol=1e-4, atol=1e-4)

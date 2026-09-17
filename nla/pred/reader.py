@@ -285,13 +285,31 @@ class FrozenReader:
                 seq = p_ids + c_ids
                 ids[r, : len(seq)] = torch.tensor(seq, dtype=torch.long, device=self.device)
                 attn[r, : len(seq)] = 1
-            out = self.model(input_ids=ids, attention_mask=attn)
+            # Only the continuation positions are ever read, and the vocab is
+            # large (151k for Qwen, 262k for Gemma), so a full [B, L, V] logits
+            # tensor is several GB of pure waste. Ask for just the window that
+            # covers every row's continuation. Positions needed by row i are
+            # [np_i - 1, np_i + nc_i - 1], so the window starts at min(np_) - 1.
+            min_np = min(len(r[1]) for r in rows)
+            keep = batch_max - min_np + 1
+            try:
+                out = self.model(input_ids=ids, attention_mask=attn,
+                                 logits_to_keep=keep)
+                offset = batch_max - out.logits.shape[1]
+            except TypeError:
+                # Older/unusual forward signatures: fall back to full logits.
+                out = self.model(input_ids=ids, attention_mask=attn)
+                offset = 0
             logits = out.logits
             for r, (job_i, p_ids, c_ids, bucket_of) in enumerate(rows):
                 np_, nc = len(p_ids), len(c_ids)
                 # logits[j-1] predicts token j; continuation tokens live at
-                # absolute positions np_ .. np_+nc-1.
-                pred_idx = torch.arange(np_ - 1, np_ + nc - 1, device=self.device)
+                # absolute positions np_ .. np_+nc-1, shifted by the kept window.
+                pred_idx = torch.arange(np_ - 1 - offset, np_ + nc - 1 - offset,
+                                        device=self.device)
+                assert int(pred_idx[0]) >= 0, (
+                    f"logits window too small: need absolute {np_ - 1}, window "
+                    f"starts at {offset}")
                 sel = logits[r].index_select(0, pred_idx).float()      # [nc, V]
                 tgt = torch.tensor(c_ids, dtype=torch.long, device=self.device)
                 lse = torch.logsumexp(sel, dim=-1)

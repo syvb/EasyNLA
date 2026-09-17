@@ -27,8 +27,10 @@ from nla.datagen.sidecar import (
 )
 from nla.schema import INJECT_PLACEHOLDER, sidecar_path_for, wrap_explanation
 
-# Enough real English that a continuation is not degenerate, and varied enough
-# that different positions genuinely differ.
+# Distinct topics, deliberately: the shuffled-activation control pairs an
+# explanation with ANOTHER document's continuation, so if the corpus were a few
+# passages repeated under different ids, a "mismatched" explanation would often
+# still be about the right subject and the control would read backwards.
 _DOCS = [
     "The Apollo programme ran from 1961 to 1972 and put twelve people on the "
     "surface of the Moon. Its Saturn V rocket remains the most powerful launch "
@@ -38,7 +40,7 @@ _DOCS = [
     "atmosphere, lowering its pH. Shell-forming organisms such as oysters, "
     "corals and pteropods struggle to build calcium carbonate structures in "
     "more acidic water, which affects the whole food web above them.",
-    "The Treaty of Vienna redrew the map of Europe after the Napoleonic wars. "
+    "The Congress of Vienna redrew the map of Europe after the Napoleonic wars. "
     "Delegates spent months arguing over the disposition of Saxony and Poland, "
     "and the balance of power they settled on lasted, with interruptions, until "
     "the outbreak of war in 1914.",
@@ -54,6 +56,54 @@ _DOCS = [
     "Their stilt roots trap sediment, protect coastlines from storm surge, and "
     "shelter juvenile fish, which makes them one of the most productive habitats "
     "per hectare anywhere on the planet.",
+    "The printing press spread through Europe in the second half of the "
+    "fifteenth century. Within fifty years the cost of a book had fallen by "
+    "more than an order of magnitude, and vernacular texts began to outnumber "
+    "Latin ones in the catalogues of the larger printing houses.",
+    "Superconductivity appears below a critical temperature at which electrons "
+    "pair up and move through the lattice without resistance. Type II "
+    "superconductors admit magnetic flux in quantised vortices, and pinning "
+    "those vortices is what lets a magnet levitate stably above the material.",
+    "The Silk Road was never a single road. It was a shifting network of caravan "
+    "routes across Central Asia along which silk, paper, glassware and religious "
+    "ideas moved in both directions, with most goods changing hands many times "
+    "between the workshop and the buyer.",
+    "Bees navigate using polarised skylight and a memory of landmarks near the "
+    "hive. A returning forager communicates the direction and distance of a "
+    "food source with a waggle dance whose angle encodes the bearing relative "
+    "to the sun and whose duration encodes the distance.",
+    "Double-entry bookkeeping was described in print by Luca Pacioli in 1494, "
+    "though Venetian merchants had used it for generations. Every transaction "
+    "is recorded twice, as a debit and a credit, so that an arithmetic check on "
+    "the ledger catches most clerical errors before they compound.",
+    "Plate tectonics explains why earthquakes cluster along narrow belts. Oceanic "
+    "crust is created at spreading ridges and consumed at subduction zones, and "
+    "the great majority of the planet's seismic energy is released where one "
+    "plate grinds past or beneath another.",
+    "The tuning of a piano is a compromise. Pure intervals cannot all be "
+    "satisfied at once on a fixed-pitch instrument, so equal temperament spreads "
+    "the discrepancy evenly across the twelve semitones, leaving every key "
+    "slightly out of tune but all of them equally usable.",
+    "Antibiotic resistance spreads faster than most people expect because "
+    "bacteria exchange plasmids directly rather than only inheriting genes. A "
+    "resistance cassette that arose in one species can appear in an unrelated "
+    "one within a single hospital ward.",
+    "Medieval cathedral builders worked without structural calculations. They "
+    "relied on proportion rules handed down through masons' lodges, and on the "
+    "evidence of what had stood elsewhere, which is why a collapse at Beauvais "
+    "changed practice across a whole region.",
+    "Photographic film records an image as a latent pattern of silver halide "
+    "crystals that development amplifies. The grain that gives film its "
+    "characteristic texture is the physical size of those crystals, so faster "
+    "film is grainier for reasons that have nothing to do with the lens.",
+    "The Dutch East India Company issued the first widely traded shares and, "
+    "with them, the first market in speculative rumour. Amsterdam brokers were "
+    "trading options and short positions within decades, long before anyone had "
+    "a theory of what such contracts were worth.",
+    "Sleep consolidates memory in stages. Slow-wave sleep appears to strengthen "
+    "declarative traces in the hippocampus, while REM sleep is associated with "
+    "procedural and emotional material, which is one reason total sleep "
+    "deprivation degrades learning more than a shifted schedule does.",
 ]
 
 
@@ -67,7 +117,7 @@ def main():
                    help="Also write an AV-SFT parquet here (prompt/response/\nactivation), so the smoke test can train a tiny AV that actually emits\n<explanation> tags instead of an instruct model's thinking block.")
     p.add_argument("--positions-per-doc", type=int, default=4)
     p.add_argument("--min-position", type=int, default=12)
-    p.add_argument("--repeat-docs", type=int, default=6,
+    p.add_argument("--repeat-docs", type=int, default=1,
                    help="Repeat the document list this many times (with different "
                         "doc ids) so every split has rows to work with.")
     p.add_argument("--device", default="cpu")

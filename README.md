@@ -153,6 +153,40 @@ python scripts/show_nla_generations.py --av-lora <av_dir> --ar-ckpt <ar_dir> \
     --sidecar <data>/rl_shuf.parquet --parquet <data>/rl_shuf.parquet
 ```
 
+## Variant: training the AV for a frozen reader (`nla/pred/`)
+
+A pilot that swaps the reconstruction reward for a **behavioral** one. Instead of
+asking whether the AR can rebuild the activation from the AV's words, it shows
+the explanation to a *frozen, never-trained* reader LM and measures how much
+better that reader predicts the continuation the **target model itself** produced
+from that position. The AV is rewarded only for text that tells an outsider
+something true about what the model was about to do.
+
+```bash
+python -m nla.pred.continuations --source-parquet <rl.parquet> --sidecar <rl.parquet> \
+    --target-ckpt Qwen/Qwen3-8B --out <positions.parquet>      # sample the futures
+python -m nla.pred.gate --positions <positions.parquet> --checkpoint sft= --out-dir evals/gate
+python -m nla.pred.train_rl --config configs/pred/rl_behavioral.yaml \
+    --positions <positions.parquet> --save-dir <ckpts>/behavioral_rl
+python -m nla.pred.eval --positions <positions.parquet> --out-dir evals/final
+python -m nla.pred.report --eval-dir evals/final
+```
+
+The headline number is **predictive gain in nats per target token**, measured on
+a reader from a *different model family* than the one RL trained against — an
+improvement that does not survive that swap means the AV found reader-specific
+phrasing, not communication. `nla.pred.gate` refuses to start RL unless the score
+already distinguishes a correct explanation from a mismatched one.
+
+Smoke-test the whole chain on CPU first (no GPU, no spend):
+
+```bash
+bash scripts/smoke_pred_cpu.sh /tmp/pred_smoke
+```
+
+Full writeup, including what the measurement does and does not show:
+**[`docs/pred_nla.md`](docs/pred_nla.md)**.
+
 ## Layout
 
 ```
@@ -164,6 +198,7 @@ nla/
   train_rl_vllm.py                   # data-parallel vLLM GRPO RL (the fast path)
   train_rl_self_contained.py         # single-GPU GRPO RL
   datagen/                           # activation extraction + gold-explanation pipeline
+  pred/                              # frozen-reader (behavioral) RL variant — docs/pred_nla.md
   utils/                             # hooks, prompts, critic, logging, steering, config layer
 configs/                             # tuned run configs (rl_vllm, rl_sgpu, datagen/*)
 docs/                                # train_new_model.md, vllm-lens-setup.md

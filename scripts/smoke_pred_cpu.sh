@@ -58,20 +58,23 @@ if [ ! -f "$WORK/positions.parquet" ]; then
   $PY -m nla.pred.continuations \
       --source-parquet "$WORK/rl.parquet" --sidecar "$WORK/rl.parquet" \
       --target-ckpt "$BASE" --out "$WORK/positions.parquet" \
-      --n-rl 40 --n-val 8 --n-eval 8 --n-branches 2 --max-per-doc 4 \
+      --n-rl 32 --n-val 10 --n-eval 10 --n-branches 2 --max-per-doc 4 \
+      --val-permille 250 --eval-permille 250 \
       --batch-prefixes 8 --device cpu --dtype float32 --no-wandb
 fi
 
 # 4. The gate: matched vs shuffled vs no explanation, on both readers.
-#    Expected to FAIL its verdict here - eight positions from a 60-step 0.6B
-#    verbalizer is noise - so the exit code is tolerated. What is being checked
-#    is that both readers load, both tokenizer families bucket the same
-#    characters, and the verdict path runs.
+#    Expected to FAIL its verdict here - ten positions from a 40-step 0.6B
+#    verbalizer is noise, and the synthetic warm-start targets teach it to quote
+#    the prefix, which actively misleads a reader about what comes NEXT. So the
+#    exit code is tolerated. What is being checked is that both readers load,
+#    that two tokenizer families bucket the same characters, and that the
+#    verdict path runs in both directions.
 set +e
 $PY -m nla.pred.gate --positions "$WORK/positions.parquet" \
     --base-ckpt "$BASE" --checkpoint "sft=$AV_ADAPTER" \
     --readers "$READER_A" "$READER_B" \
-    --n-positions 8 --split val --branches 2 --max-new-tokens 96 \
+    --n-positions 10 --split val --branches 2 --max-new-tokens 96 \
     --gen-batch 4 --reader-batch-rows 4 --reader-batch-tokens 4096 \
     --device cpu --reader-dtype float32 --n-boot 300 \
     --out-dir "$WORK/gate" --no-wandb
@@ -95,7 +98,7 @@ $PY -m nla.pred.eval --positions "$WORK/positions.parquet" \
     --checkpoint "sft=$AV_ADAPTER" \
     --checkpoint "behavioral_rl=$(ls -d "$WORK"/rl_ckpt/iter_* | sort | tail -1)" \
     --readers "$READER_A" "$READER_B" \
-    --n-positions 8 --split eval --branches 2 --max-new-tokens 96 \
+    --n-positions 10 --split eval --branches 2 --max-new-tokens 96 \
     --gen-batch 4 --reader-batch-rows 4 --reader-batch-tokens 4096 \
     --device cpu --reader-dtype float32 --n-boot 300 \
     --out-dir "$WORK/final" --baseline-checkpoint sft --no-wandb
