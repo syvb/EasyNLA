@@ -182,19 +182,33 @@ def plan(a):
         print(f"\n(balance unavailable: {type(e).__name__})")
 
 
-def status(a):
-    import runpod
+# get_pods()/get_pod() return a `runtime` dict WITHOUT uptimeInSeconds, so the
+# obvious `runtime["uptimeInSeconds"] or 0` silently reports every pod as 0.00 h
+# and $0.00 spent — which is exactly the number you would use to decide whether
+# to keep a pod alive. GraphQL has the field; ask for it directly.
+_UPTIME_Q = ("query { myself { pods { id name desiredStatus costPerHr "
+             "runtime { uptimeInSeconds } machine { gpuDisplayName } } } }")
 
-    runpod.api_key = _key(".runpod_key")
-    pods = runpod.get_pods()
+
+def _pods_with_uptime():
+    import requests
+
+    r = requests.post(f"https://api.runpod.io/graphql?api_key={_key('.runpod_key')}",
+                      json={"query": _UPTIME_Q}, timeout=30)
+    r.raise_for_status()
+    return r.json()["data"]["myself"]["pods"]
+
+
+def status(a):
+    pods = _pods_with_uptime()
     if not pods:
         print("no pods")
     for p in pods:
         up = (p.get("runtime") or {}).get("uptimeInSeconds") or 0
+        cost = p.get("costPerHr") or 0
         print(f"{p['id']} {p['name']} {p['desiredStatus']} "
               f"{(p.get('machine') or {}).get('gpuDisplayName')} "
-              f"${p.get('costPerHr')}/h up={up / 3600:.2f}h "
-              f"spent=${(p.get('costPerHr') or 0) * up / 3600:.2f}")
+              f"${cost}/h up={up / 3600:.2f}h spent=${cost * up / 3600:.2f}")
 
 
 def terminate(a):
