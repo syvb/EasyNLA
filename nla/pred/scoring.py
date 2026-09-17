@@ -36,18 +36,29 @@ def target_tokens_per_bucket(buckets=DEFAULT_BUCKETS) -> np.ndarray:
 
 @dataclass
 class BaselineCache:
-    """Per-reader cache of no-explanation scores, keyed by (row_id, branch set)."""
+    """Cache of no-explanation scores.
+
+    The key covers everything the value depends on: which reader, which prompt
+    template, which position, which branches and which buckets. Leaving any of
+    those out would let a cached score be served to a caller measuring something
+    slightly different - the kind of mistake that produces a plausible number
+    rather than an error.
+    """
 
     store: dict = field(default_factory=dict)
 
-    def _key(self, reader_name, row_id, branches):
-        return (reader_name, int(row_id), tuple(branches))
+    def _key(self, reader, row_id, branches, buckets):
+        name = getattr(reader, "model_name", reader)
+        tmpl = getattr(reader, "templates", None)
+        tmpl_key = hash(tuple(sorted(tmpl.as_dict().items()))) if tmpl else None
+        return (name, tmpl_key, int(row_id), tuple(branches),
+                tuple(tuple(b) for b in buckets))
 
-    def get(self, reader_name, row_id, branches):
-        return self.store.get(self._key(reader_name, row_id, branches))
+    def get(self, reader, row_id, branches, buckets=DEFAULT_BUCKETS):
+        return self.store.get(self._key(reader, row_id, branches, buckets))
 
-    def put(self, reader_name, row_id, branches, value):
-        self.store[self._key(reader_name, row_id, branches)] = value
+    def put(self, reader, row_id, branches, value, buckets=DEFAULT_BUCKETS):
+        self.store[self._key(reader, row_id, branches, buckets)] = value
 
     def __len__(self):
         return len(self.store)
@@ -92,16 +103,27 @@ _SKIP = _Skip()
 
 def score_explanations(
     reader, rows, explanations, *, branches=(0, 1, 2, 3), buckets=DEFAULT_BUCKETS,
+    allow_none=False,
 ) -> np.ndarray:
     """[n_rows, n_buckets] summed log-prob, averaged over branches.
 
-    `explanations[i] is None` means "score this row with the NO-EXPLANATION
-    template" (that is what None means to the reader). Rows whose explanation
-    could not be extracted should be passed as the `SKIP` sentinel and come back
-    NaN, so the caller decides what a failure is worth rather than having it
-    silently averaged in.
+    Rows whose explanation could not be extracted must be passed as the `SKIP`
+    sentinel and come back NaN, so the caller decides what a failure is worth
+    rather than having it silently averaged in.
+
+    None is REJECTED by default. One layer up, `extract_explanation` returns None
+    to mean "extraction failed", while to the reader None means "use the
+    no-explanation template" - forwarding one as the other would turn a failed
+    rollout into a free, legitimate-looking baseline score. `baseline_scores`
+    passes allow_none=True because there it is deliberate.
     """
-    return _run_jobs(reader, rows, list(explanations), branches, buckets)
+    expl = list(explanations)
+    if not allow_none:
+        assert not any(e is None for e in expl), (
+            "score_explanations got None, which means the NO-EXPLANATION template "
+            "here but 'extraction failed' in extract_explanation. Map failures to "
+            "SKIP, or pass allow_none=True if you really want the baseline prompt.")
+    return _run_jobs(reader, rows, expl, branches, buckets)
 
 
 def baseline_scores(
@@ -113,7 +135,7 @@ def baseline_scores(
     todo = []
     for i in range(n):
         hit = None if cache is None else cache.get(
-            reader.model_name, rows[i]["row_id"], branches)
+            reader, rows[i]["row_id"], branches, buckets)
         if hit is None:
             todo.append(i)
         else:
@@ -124,7 +146,7 @@ def baseline_scores(
         for k, i in enumerate(todo):
             out[i] = vals[k]
             if cache is not None:
-                cache.put(reader.model_name, rows[i]["row_id"], branches, vals[k])
+                cache.put(reader, rows[i]["row_id"], branches, vals[k], buckets)
     return out
 
 

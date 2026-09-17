@@ -104,7 +104,7 @@ def run(args, *, split, n_positions, job_type, group):
         temperature=args.gen_temperature, batch_size=args.gen_batch, seed=args.seed,
     )
     del cfg
-    records, partner = score_all(
+    records, partner, reader_diag = score_all(
         rows, expl_sets, args.readers, buckets=DEFAULT_BUCKETS, branches=branches,
         device=args.device, dtype=args.reader_dtype, seed=args.seed,
         max_batch_rows=args.reader_batch_rows,
@@ -113,6 +113,7 @@ def run(args, *, split, n_positions, job_type, group):
     del partner
     summary = summarize(records, expl_sets, buckets=DEFAULT_BUCKETS,
                         n_boot=args.n_boot, seed=args.seed)
+    summary["reader_diagnostics"] = reader_diag
     summary["readers"] = list(args.readers)
     summary["training_reader"] = args.readers[0]
     summary["split"] = split

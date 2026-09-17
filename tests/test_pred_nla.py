@@ -68,11 +68,33 @@ def test_split_respects_custom_permille():
 
 def test_shuffled_partner_is_a_derangement_across_documents():
     rows = [{"doc_id": f"doc{i // 2}", "row_id": i} for i in range(200)]
-    perm = shuffled_partner(rows, np.random.default_rng(0))
+    perm, valid = shuffled_partner(rows, np.random.default_rng(0))
     assert sorted(perm) == list(range(200)), "must be a permutation"
+    assert all(valid), "a 100-document pool admits a clean derangement"
     assert all(perm[i] != i for i in range(200)), "no self-pairs"
     assert all(rows[perm[i]]["doc_id"] != rows[i]["doc_id"] for i in range(200)), \
         "a shuffled partner from the same document would leak real context"
+
+
+def test_unshufflable_rows_are_flagged_not_silently_self_paired():
+    """All positions from one document: there is no valid shuffled partner for
+    any of them. Those rows must come back flagged, because scoring a row against
+    itself makes the control identical to the matched condition and biases
+    matched-minus-shuffled toward zero."""
+    rows = [{"doc_id": "only-doc", "row_id": i} for i in range(4)]
+    perm, valid = shuffled_partner(rows, np.random.default_rng(0))
+    assert sorted(perm) == list(range(4))
+    assert not any(valid), "no row in a single-document pool has a usable partner"
+
+
+def test_partly_shufflable_pool_keeps_the_good_rows():
+    rows = ([{"doc_id": "a", "row_id": i} for i in range(6)]
+            + [{"doc_id": f"b{i}", "row_id": 6 + i} for i in range(6)])
+    perm, valid = shuffled_partner(rows, np.random.default_rng(1))
+    assert sorted(perm) == list(range(12))
+    for i, ok in enumerate(valid):
+        if ok:
+            assert perm[i] != i and rows[perm[i]]["doc_id"] != rows[i]["doc_id"]
 
 
 # ---------------------------------------------------------------- char bounds
@@ -420,3 +442,56 @@ def test_multimodal_gemma_wrapper_scores_text_only():
                     logits_to_keep=5).logits
     assert full.shape[-1] == tc.vocab_size
     torch.testing.assert_close(win, full[:, -5:], rtol=1e-4, atol=1e-4)
+
+
+def test_echoed_marker_in_the_response_is_rejected():
+    """The update forwards prompt+response, so a marker the policy echoes into its
+    own explanation is a SECOND injection site and aborts the run. Checking only
+    the prompt misses it; this is the failure that killed a 400-step run at step
+    224 on the vLLM path before commit a2e4a5a."""
+    from nla.injection import marker_well_formed
+
+    INJ, L, R = 149705, 29, 522
+    prompt = [7, 8, L, INJ, R, 9, 10]
+    clean_resp = [11, 12, 13]
+    echo_resp = [11, 12, L, INJ, R, 13]
+    assert marker_well_formed(prompt, INJ, L, R)
+    assert marker_well_formed(prompt + clean_resp, INJ, L, R)
+    assert marker_well_formed(prompt, INJ, L, R), "prompt-only check passes the echo"
+    assert not marker_well_formed(prompt + echo_resp, INJ, L, R), (
+        "the echoed marker must be caught on the full sequence")
+
+
+def test_trainer_validates_the_marker_over_the_full_sequence():
+    """Guard the fix itself: the trainer must pass prompt+response to the check."""
+    import inspect
+
+    from nla.pred import train_rl
+
+    src = inspect.getsource(train_rl.main)
+    assert 'marker_well_formed(s["prompt_ids"] + s["resp_ids"]' in src, (
+        "train_rl must validate the injection marker over prompt+response; "
+        "checking the prompt alone lets an echoed marker through")
+
+
+def test_baseline_cache_key_covers_what_the_value_depends_on():
+    """A cached no-explanation score must not be served to a caller measuring
+    something else: different reader, template, branches or buckets."""
+    from nla.pred.reader import ReaderTemplates
+    from nla.pred.scoring import BaselineCache
+
+    class FakeReader:
+        def __init__(self, name, templates):
+            self.model_name, self.templates = name, templates
+
+    a = FakeReader("Qwen/Qwen3-4B-Base", ReaderTemplates())
+    b = FakeReader("google/gemma-3-4b-pt", ReaderTemplates())
+    c = FakeReader("Qwen/Qwen3-4B-Base", ReaderTemplates(without="Different.\n"))
+    cache = BaselineCache()
+    cache.put(a, 7, (0, 1), np.array([1.0, 2.0, 3.0]), DEFAULT_BUCKETS)
+    assert cache.get(a, 7, (0, 1), DEFAULT_BUCKETS) is not None
+    assert cache.get(b, 7, (0, 1), DEFAULT_BUCKETS) is None, "different reader"
+    assert cache.get(c, 7, (0, 1), DEFAULT_BUCKETS) is None, "different template"
+    assert cache.get(a, 8, (0, 1), DEFAULT_BUCKETS) is None, "different position"
+    assert cache.get(a, 7, (0, 1, 2), DEFAULT_BUCKETS) is None, "different branches"
+    assert cache.get(a, 7, (0, 1), ((0, 4), (4, 8))) is None, "different buckets"

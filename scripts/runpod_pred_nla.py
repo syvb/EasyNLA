@@ -53,7 +53,7 @@ def build_script(a) -> str:
     setup = [
         "/start.sh >/dev/null 2>&1 & mkdir -p /workspace && "
         "exec > >(tee -a /workspace/boot.log) 2>&1; set -o pipefail; set -x",
-        "cd /workspace && rm -rf EasyNLA && git clone -q -b %s %s && cd EasyNLA" % (a.branch, REPO),
+        f"cd /workspace && rm -rf EasyNLA && git clone -q -b {a.branch} {REPO} && cd EasyNLA",
         "pip install -q -e . 2>&1 | tail -2",
         "pip install -q bitsandbytes 2>&1 | tail -1",
         "python -c \"import torch,transformers;print(torch.__version__,transformers.__version__)\"",
@@ -122,11 +122,21 @@ def build_script(a) -> str:
         if a.recon_adapter:
             ckpts.append(f"--checkpoint recon_rl={a.recon_adapter}")
         if "rl" in stages or a.behavioral_adapter:
-            ckpts.append(f"--checkpoint behavioral_rl="
+            # Prefer the checkpoint the training reader liked best over the last
+            # one written. train_rl records that in best.json as a directory name
+            # that exists on disk (evals and saves happen on different cadences,
+            # so the best STEP usually has no checkpoint of its own).
+            parts.append(
+                "BEST=$(python -c \"import json,pathlib;"
+                f"p=pathlib.Path('{ck}/behavioral_rl/best.json');"
+                "d=json.loads(p.read_text()) if p.exists() else {};"
+                f"print(d.get('best_ckpt') or 'iter_{a.rl_steps:06d}')\")"
+                f" && echo \"[eval] behavioral checkpoint: $BEST\"")
+            ckpts.append("--checkpoint behavioral_rl="
                          + (a.behavioral_adapter
-                            or f"{ck}/behavioral_rl/iter_{a.rl_steps:06d}"))
+                            or f"{ck}/behavioral_rl/$BEST"))
         if "rl_recon" in stages:
-            ckpts.append(f"--checkpoint recon_matched="
+            ckpts.append("--checkpoint recon_matched="
                          f"{ck}/recon_matched/iter_{a.rl_steps:06d}")
         parts.append(
             f"python -m nla.pred.eval --positions {pos} --base-ckpt {a.av_ckpt} "
@@ -203,8 +213,9 @@ def plan(a):
         try:
             d = runpod.get_gpu(g["id"])
             rates[g["id"]] = (d.get("lowestPrice") or {}).get("uninterruptablePrice")
-        except Exception:                                      # noqa: BLE001
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            # One unpriceable GPU should not stop the estimate for the others.
+            print(f"  (no price for {g['id']}: {type(e).__name__})")
     stages = a.stages.split(",")
     hours = sum(STAGE_HOURS.get(s, 1.0) for s in stages)
     overhead = 0.35        # image pull + pip + model downloads, per pod

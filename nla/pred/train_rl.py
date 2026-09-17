@@ -512,7 +512,12 @@ def main():
             cursor = 0
         cursor += args.batch_prompts
     eval_table: list[list] = []
-    best = {"step": -1, "score": -float("inf")}
+    # Selection has to name a checkpoint that exists on disk. Evals run every
+    # --eval-every steps and saves every --save-every, which do not coincide, so
+    # track the most recent eval score and attach it to each checkpoint as it is
+    # written. `best_ckpt` is then something a later stage can actually load.
+    best = {"step": -1, "score": -float("inf"), "best_ckpt": None, "ckpt_scores": {}}
+    last_eval = {"step": -1, "score": float("nan")}
 
     for step in range(args.start_step, args.num_steps):
         t0 = time.time()
@@ -532,8 +537,17 @@ def main():
         expls = [extract_explanation(s["text"]) for s in samples]
         cjk_bad = [cjk_fraction(s["text"]) > 0.05 for s in samples]
         # A silent injection failure is the one bug that looks exactly like "the
-        # method does not work", so check the mechanism every step.
-        marker_ok = [marker_well_formed(s["prompt_ids"], cfg.injection_token_id,
+        # method does not work", so check the mechanism every step - and check it
+        # over the FULL sequence, not just the prompt. The update's forward runs
+        # on prompt+response, so a marker the policy echoes into its own
+        # explanation (verbatim "<concept>X</concept>", which tokenizes with
+        # canonical neighbours) adds a second valid injection site while
+        # vectors_ref still holds one row per sample, and the hook's count check
+        # aborts the run. That is not hypothetical: it took down a 400-step run at
+        # step 224 once KL drift set in (fixed for the vLLM path in a2e4a5a), and
+        # it cannot show up in a short smoke test because it needs the drift.
+        marker_ok = [marker_well_formed(s["prompt_ids"] + s["resp_ids"],
+                                        cfg.injection_token_id,
                                         cfg.injection_left_neighbor_id,
                                         cfg.injection_right_neighbor_id)
                      for s in samples]
@@ -620,7 +634,13 @@ def main():
               f"upd {log['time/update_s']:.0f})", flush=True)
 
         # ---- held-out eval, TRAINING READER ONLY ----
-        if args.eval_every > 0 and val_rows and step % args.eval_every == 0:
+        # Also evaluate immediately before a save, so every checkpoint on disk
+        # carries a fresh score. Otherwise the two cadences never coincide
+        # (evals at 0, 10, 20...; saves after 49, 99, ...) and selection has to
+        # fall back on a score from up to --eval-every steps earlier.
+        will_save = (step + 1) % args.save_every == 0
+        if args.eval_every > 0 and val_rows and (step % args.eval_every == 0
+                                                 or will_save):
             t_ev = time.time()
             model.eval()
             et = (args.eval_temperature if args.eval_temperature is not None
@@ -638,8 +658,9 @@ def main():
             log["eval/extraction_rate"] = float(np.mean([e is not None for e in e_expl]))
             log["eval/resp_len"] = float(np.mean([s["n_resp"] for s in ev]))
             log["time/eval_s"] = time.time() - t_ev
+            last_eval = {"step": step, "score": mean_s}
             if np.isfinite(mean_s) and mean_s > best["score"]:
-                best = {"step": step, "score": mean_s}
+                best.update(step=step, score=mean_s)
             print(f"  [eval@{step}] score {mean_s:+.4f} "
                   f"| ext {log['eval/extraction_rate']:.0%} "
                   f"| len {log['eval/resp_len']:.0f} "
@@ -663,6 +684,10 @@ def main():
             out_dir = save_dir / f"iter_{step + 1:06d}"
             out_dir.mkdir(parents=True, exist_ok=True)
             model.save_pretrained(str(out_dir))
+            if np.isfinite(last_eval["score"]):
+                best["ckpt_scores"][out_dir.name] = last_eval["score"]
+                best["best_ckpt"] = max(best["ckpt_scores"],
+                                        key=best["ckpt_scores"].get)
             tmp = save_dir / "optim_latest.pt.tmp"
             torch.save({"step": step + 1, "actor_optim": optim.state_dict()}, str(tmp))
             os.replace(str(tmp), str(save_dir / "optim_latest.pt"))
@@ -670,8 +695,8 @@ def main():
             print(f"[save] {out_dir}", flush=True)
 
     (save_dir / "best.json").write_text(json.dumps(best, indent=2))
-    print(f"done. best held-out score {best['score']:+.4f} at step {best['step']}",
-          flush=True)
+    print(f"done. best held-out score {best['score']:+.4f} at step {best['step']}; "
+          f"best saved checkpoint {best['best_ckpt']}", flush=True)
     if run is not None:
         run.summary["best/eval_score"] = best["score"]
         run.summary["best/step"] = best["step"]

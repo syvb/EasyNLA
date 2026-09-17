@@ -60,6 +60,9 @@ DEFAULT_BUCKETS: tuple[tuple[int, int], ...] = ((0, 8), (8, 16), (16, 24))
 # Bucket carrying the RL reward and the headline table entry.
 HEADLINE_BUCKET = (16, 24)
 
+# Cache key for the no-explanation prefix (a real explanation is never this).
+NO_EXPLANATION_KEY = "\x00NO_EXPLANATION"
+
 
 @dataclass(frozen=True)
 class ReaderTemplates:
@@ -166,7 +169,14 @@ class FrozenReader:
     templates: ReaderTemplates = field(default_factory=ReaderTemplates)
     max_batch_tokens: int = 65536
     max_batch_rows: int = 64
-    # caches (bounded by callers reusing the same explanations/continuations)
+    # RL generates ~256 fresh explanations a step and never rescores one, so the
+    # prefix cache is kept small on purpose: an unbounded one accumulates roughly
+    # 0.6 GB of dead host RAM over a 300-step run, in a process that is also
+    # holding an 8B policy and a 4B reader.
+    max_prefix_cache: int = 512
+    # Diagnostics that must not stay silent (see score()).
+    n_nonfinite: int = 0
+    n_empty_buckets: int = 0
     _prefix_cache: dict = field(default_factory=dict, repr=False)
     _cont_cache: dict = field(default_factory=dict, repr=False)
 
@@ -205,13 +215,19 @@ class FrozenReader:
     def prefix_ids(self, explanation: str | None) -> list[int]:
         """Token ids for the framing (+ explanation). Special tokens ON, so
         Gemma gets its required <bos> and Qwen gets whatever its config says."""
-        key = explanation if explanation is not None else "\x00NONE"
+        key = explanation if explanation is not None else NO_EXPLANATION_KEY
         hit = self._prefix_cache.get(key)
         if hit is None:
             text = self.templates.render(explanation)
             hit = self.tokenizer(text, add_special_tokens=True)["input_ids"]
-            if len(self._prefix_cache) < 100_000:
-                self._prefix_cache[key] = hit
+            if len(self._prefix_cache) >= self.max_prefix_cache:
+                # FIFO, but never evict the no-explanation prefix: it is the one
+                # key that IS reused on every single scoring call.
+                for k in list(self._prefix_cache):
+                    if k != NO_EXPLANATION_KEY:
+                        del self._prefix_cache[k]
+                        break
+            self._prefix_cache[key] = hit
         return hit
 
     def cont_tokens(self, cont_text: str) -> tuple[list[int], list[int]]:
@@ -322,9 +338,24 @@ class FrozenReader:
                         continue
                     v = lp_l[t]
                     if not math.isfinite(v):
-                        v = -20.0  # a reader assigning ~0 probability; keep the sum finite
-                    b_logp[b] += v
+                        # Substituting a finite floor here would be far worse than
+                        # a missing value: it lands ~17 nats from anything real,
+                        # survives every isfinite() check downstream, and enters
+                        # the mean and the CI as a legitimate observation. NaN the
+                        # bucket instead - the paired statistics already drop NaN
+                        # rows on both sides - and count it so it is not silent.
+                        b_logp[b] = float("nan")
+                        self.n_nonfinite += 1
+                    elif math.isfinite(b_logp[b]):
+                        b_logp[b] += v
                     b_ntok[b] += 1
+                for b in range(nb):
+                    if b_ntok[b] == 0:
+                        # No reader token starts inside this bucket's characters.
+                        # Rare, but a 0.0 here would read as "no gain" rather than
+                        # "not measured".
+                        b_logp[b] = float("nan")
+                        self.n_empty_buckets += 1
                 results[job_i] = ScoreResult(
                     key=jobs[job_i].key, bucket_logp=b_logp, bucket_ntok=b_ntok,
                     n_prefix_tokens=np_,

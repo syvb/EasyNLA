@@ -148,6 +148,15 @@ in which continuation each is paired with.
 H2 is the result. A large Qwen gain with a flat Gemma gain is a clean negative
 and should stop the line of work rather than start a bigger run.
 
+**Expect a strong SFT baseline.** The warm-start explanations were written by
+Claude under an instruction that asked, in as many words, for "the 2-3 most
+important features [the model] would use for this prediction", ending with "the
+last token, its role, immediate constraints [on what follows]". That is almost
+exactly the objective being measured here, so the SFT checkpoint should already
+post a positive predictive gain, and H1 is a harder test than it looks. It also
+raises the stakes on H3: if everything scores well, the question of whether a
+gain is tied to *this* activation is the only one left worth asking.
+
 Two failure modes get explicit machinery rather than trust:
 
 **Length.** The reward rises with explanation length essentially for free — more
@@ -159,7 +168,35 @@ trainer's (~0.5).
 
 **Legibility.** RL on any proxy can drift into text that works on the metric and
 reads badly. `report.md` carries representative explanations per checkpoint with
-the source text and the true continuation beside them, for the qualitative pass.
+the source text and the true continuation beside them, and `--blind` hides which
+checkpoint wrote which (the key prints after them) so the writing can be judged
+before the label is known.
+
+**Missing scores stay missing.** A reader log-probability that comes back
+non-finite, or a bucket no reader token starts inside, is recorded as NaN and
+counted, never substituted with a plausible floor. A finite stand-in would be far
+worse than a gap: it would pass every `isfinite` check downstream and enter the
+mean and the confidence interval as a legitimate observation. The counts are
+logged (`reader/nonfinite_logp`, `reader/empty_buckets`) so a degrading
+measurement is visible rather than silent.
+
+### Reading the result
+
+The pilot is meant to make a decision cheap, so the decision rules are written
+down before the numbers exist.
+
+| what comes back | reading | what to do next |
+|---|---|---|
+| behavioral > SFT on **both** readers, matched > shuffled | the objective works and communicates | scale: more readers, more horizons, multiple seeds |
+| behavioral > SFT on Qwen only | reader-specific phrasing | strengthen reader independence, not the training budget |
+| both readers improve, shuffled nearly as good | generic predictive boilerplate, not this activation | fix activation-dependence before anything else |
+| reconstruction matches or beats behavioral | direct behavioral supervision may not be worth the swap | still a useful result, especially if reconstruction gains frozen-reader usefulness it was never trained for |
+| training reward flat | the task is too noisy for a short GRPO run | check whether the score separates good from bad explanations at all before adding machinery |
+| gains up, explanations degraded | the metric is being gamed | read the blinded samples and the length table before believing the gain |
+
+Proceed to a larger experiment only if the held-out-reader result is positive
+**and** the gain is clearly activation-specific. If it is not, the priority is
+understanding the failure, not running longer.
 
 ---
 
@@ -208,9 +245,17 @@ one prompt at a time, which on this workload is the entire step; batching turns
 32×8 rollouts into a handful of `generate()` calls and is the difference between
 a two-hour pilot and a two-day one.
 
-Injection health is checked every step (marker well-formedness and a CJK-output
-canary), because a silently broken injection looks exactly like "the method does
-not work".
+Injection health is checked every step, because a silently broken injection looks
+exactly like "the method does not work". Two checks: a CJK-output canary, and
+marker well-formedness **over the full prompt-plus-response sequence**. The
+second one matters more than it sounds. The update's forward runs on
+prompt+response, so once KL drift sets in and the policy starts echoing
+`<concept>…</concept>` into its own explanation, that echo tokenizes with
+canonical neighbours and becomes a *second* injection site while there is still
+one activation per rollout — which aborts the run. That is a real failure, not a
+hypothetical: it killed a 400-step run at step 224 on the vLLM path before
+commit a2e4a5a. It cannot appear in a short smoke test, because it needs the
+drift.
 
 ### 4. Eval — `nla.pred.eval`
 
@@ -260,8 +305,12 @@ dataset through datagen's own marker picker and sidecar serializer, warm-starts
 an AV so it actually emits `<explanation>` tags, samples continuations, runs the
 gate with two readers from different tokenizer families, takes GRPO steps on the
 frozen-reader reward, and writes a report. It proves the plumbing, not the
-science: a 0.6B verbalizer trained for 40 steps on six documents is evidence of
-nothing.
+science: a 0.6B verbalizer trained for 40 steps on eighteen documents is evidence
+of nothing, and its gate verdict is expected to fail on ten positions.
+
+Run it on its own. The box this was developed on has 15 GB of RAM, and running
+the test suite at the same time was enough to get the smoke's target model killed
+mid-stage with no traceback.
 
 ### On a pod
 

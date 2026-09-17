@@ -61,8 +61,6 @@ def pull(a):
 def wait(a):
     """Block until a path exists in the repo. Lets a later stage start on a
     second pod the moment an earlier one has uploaded, without a shared disk."""
-    from huggingface_hub import HfApi
-
     api, _ = _api()
     deadline = time.time() + a.timeout_min * 60
     while time.time() < deadline:

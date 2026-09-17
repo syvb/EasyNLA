@@ -177,24 +177,38 @@ def main():
         nonlocal row_id, n_roundtrip_fail, add_special
         if not pending:
             return []
-        # One-time detection of the source pipeline's special-token convention.
+        # Detect the source pipeline's special-token convention once, from a
+        # HANDFUL of rows rather than one. Latching the wrong convention off a
+        # single unlucky row would fail the round-trip check on every subsequent
+        # row, and the job would stream the entire source parquet before dying on
+        # "no positions written" - so fail here, loudly, instead.
         if add_special is None:
-            probe = pending[0]
+            probes = pending[: min(8, len(pending))]
+            hits = {}
             for cand in (False, True):
-                n = len(tokenizer(probe["prefix_text"], add_special_tokens=cand)["input_ids"])
-                if n == probe["n_raw_tokens"]:
-                    add_special = cand
-                    break
-            if add_special is None:
-                add_special = False
+                hits[cand] = sum(
+                    len(tokenizer(r["prefix_text"], add_special_tokens=cand)["input_ids"])
+                    == r["n_raw_tokens"] for r in probes)
+            best = max(hits, key=hits.get)
+            assert hits[best] > 0, (
+                f"No special-token convention reproduces n_raw_tokens on any of "
+                f"{len(probes)} probe rows (add_special_tokens=False matched "
+                f"{hits[False]}, True matched {hits[True]}). The prefixes in "
+                f"{args.source_parquet} do not round-trip under this tokenizer, so "
+                f"continuations would be sampled from the wrong context. Check "
+                f"that --target-ckpt matches the model that produced the data.")
+            add_special = best
             print(f"[prefix] add_special_tokens={add_special} "
-                  f"(probe re-tokenized to {n} vs n_raw_tokens "
-                  f"{probe['n_raw_tokens']})", flush=True)
+                  f"({hits[best]}/{len(probes)} probe rows round-trip exactly)",
+                  flush=True)
         keep = []
         for r in pending:
             n = len(tokenizer(r["prefix_text"], add_special_tokens=add_special)["input_ids"])
             if n != r["n_raw_tokens"]:
                 n_roundtrip_fail += 1
+                # The quota was claimed when the row was queued; give it back, or
+                # --n-eval 2000 quietly yields 2000 minus the failures.
+                taken[r["split"]] -= 1
                 continue
             keep.append(r)
         if not keep:

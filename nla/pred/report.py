@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from nla.pred.stats import bootstrap_mean, paired_bootstrap_diff
+from nla.pred.stats import paired_bootstrap_diff
 
 
 def _read_jsonl(path):
@@ -33,13 +33,14 @@ def _read_jsonl(path):
 
 
 def _fmt(mean, lo, hi, digits=4):
-    if not np.isfinite(mean):
+    # mean/lo/hi are absent entirely when the shuffled condition was not run.
+    if mean is None or lo is None or hi is None or not np.isfinite(mean):
         return "n/a"
     return f"{mean:+.{digits}f} [{lo:+.{digits}f}, {hi:+.{digits}f}]"
 
 
 def build_report(eval_dir: Path, title: str, wandb_url: str | None = None,
-                 n_examples: int = 12, seed: int = 0) -> str:
+                 n_examples: int = 12, seed: int = 0, blind: bool = False) -> str:
     summary = json.loads((eval_dir / "summary.json").read_text())
     scores = _read_jsonl(eval_dir / "scores.jsonl")
     expls = _read_jsonl(eval_dir / "explanations.jsonl")
@@ -131,13 +132,41 @@ def build_report(eval_dir: Path, title: str, wandb_url: str | None = None,
             gt = np.nanmean(list(by[(ck, train_reader)].values())) if by[(ck, train_reader)] else np.nan
             for hr in held_out:
                 gh = np.nanmean(list(by[(ck, hr)].values())) if by[(ck, hr)] else np.nan
-                ratio = gh / gt if np.isfinite(gt) and abs(gt) > 1e-9 else float("nan")
+                # A ratio of two negative numbers is not a transfer fraction: it
+                # would read as "transfers better than it trained" when both
+                # readers are simply being hurt. Only report it when the training
+                # reader actually gained.
+                ratio = (f"{gh / gt:.2f}" if np.isfinite(gt) and np.isfinite(gh)
+                         and gt > 0.001 else "n/a")
                 L.append(f"| {ck} | {gt:+.4f} | {gh:+.4f} ({hr.split('/')[-1]}) "
-                         f"| {ratio:.2f} |")
+                         f"| {ratio} |")
         L.append("")
-        L.append("A ratio near zero with a positive training-reader gain is the "
-                 "reader-specific-phrasing failure mode: the verbalizer found "
-                 "words that suit one reader rather than words that communicate.")
+        L.append("The ratio is the held-out gain as a fraction of the training-reader "
+                 "gain, and is only shown where the training-reader gain is "
+                 "positive - a ratio of two negative numbers says nothing about "
+                 "transfer. A ratio near zero alongside a solid training-reader "
+                 "gain is the reader-specific-phrasing failure mode: the verbalizer "
+                 "found words that suit one reader rather than words that "
+                 "communicate.")
+
+        # --- where the two readers disagree most (the failure analysis) ---
+        L += ["", "### Positions where the readers disagree most", "",
+              "The cases to read first when the training reader improves and the "
+              "held-out one does not.", "",
+              "| position | training-reader gain | held-out gain | difference |",
+              "|---|---|---|---|"]
+        hr = held_out[0]
+        # The experimental arm is the interesting one here, not whichever name
+        # happens to sort last.
+        best_ck = next((c for c in checkpoints if "behavioral" in c), checkpoints[-1])
+        gt_map, gh_map = by[(best_ck, train_reader)], by[(best_ck, hr)]
+        both = [(k, gt_map[k], gh_map[k]) for k in sorted(set(gt_map) & set(gh_map))
+                if np.isfinite(gt_map[k]) and np.isfinite(gh_map[k])]
+        both.sort(key=lambda t: t[1] - t[2], reverse=True)
+        for k, a_, b_ in both[:5]:
+            L.append(f"| {k} | {a_:+.4f} | {b_:+.4f} | {a_ - b_:+.4f} |")
+        L.append("")
+        L.append(f"(checkpoint `{best_ck}`, largest training-minus-held-out gaps)")
 
     # ---- length check ----
     L += ["", "## 5. Length check", "",
@@ -168,6 +197,17 @@ def build_report(eval_dir: Path, title: str, wandb_url: str | None = None,
     # ---- examples ----
     L += ["", "## 6. Representative explanations", ""]
     rng = np.random.default_rng(seed)
+    # Blinding for the qualitative read: judge the writing before knowing which
+    # objective produced it. The key is printed at the end, not beside each one.
+    label = dict(zip(checkpoints, checkpoints))
+    if blind:
+        shuffled_names = list(checkpoints)
+        rng.shuffle(shuffled_names)
+        label = {ck: f"model {chr(65 + i)}" for i, ck in enumerate(shuffled_names)}
+        L.append("Checkpoint identities are blinded; the key is at the end of this "
+                 "section. Read for grammar, repetition, unexplained shorthand, "
+                 "quoted continuations and invented context before unblinding.")
+        L.append("")
     per_ck = defaultdict(list)
     for e in expls:
         if e["explanation"]:
@@ -191,8 +231,12 @@ def build_report(eval_dir: Path, title: str, wandb_url: str | None = None,
             if not e:
                 continue
             gv = by[(ck, train_reader)].get(row_id, float("nan"))
-            L += [f"**{ck}** (gain {gv:+.3f}, {e['n_tokens']} tokens):", "",
+            L += [f"**{label[ck]}** (gain {gv:+.3f}, {e['n_tokens']} tokens):", "",
                   (e["explanation"] or "<extraction failed>").strip(), ""]
+
+    if blind:
+        L += ["", "Key: " + ", ".join(f"{v} = `{k}`" for k, v in sorted(
+            label.items(), key=lambda kv: kv[1])), ""]
 
     # ---- failure notes ----
     L += ["", "## 7. Notes and caveats", "",
@@ -221,9 +265,14 @@ def main():
     p.add_argument("--wandb-url", default=None)
     p.add_argument("--n-examples", type=int, default=12)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--blind", action="store_true",
+                   help="Hide checkpoint identities in the examples section (the "
+                        "key is printed after them) so the writing-quality read "
+                        "happens before you know which objective wrote it.")
     args = p.parse_args()
     d = Path(args.eval_dir)
-    md = build_report(d, args.title, args.wandb_url, args.n_examples, args.seed)
+    md = build_report(d, args.title, args.wandb_url, args.n_examples, args.seed,
+                      blind=args.blind)
     out = Path(args.out) if args.out else d / "report.md"
     out.write_text(md)
     print(md)

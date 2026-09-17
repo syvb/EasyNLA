@@ -124,33 +124,43 @@ def split_counts(path: str) -> dict[str, int]:
     return out
 
 
-def shuffled_partner(rows: list[dict], rng) -> list[int]:
-    """A derangement over row indices: partner[i] != i, and no two positions from
-    the same document are paired (a same-document mismatch would leak real
-    context and understate the matched-vs-shuffled gap).
+def shuffled_partner(rows: list[dict], rng) -> tuple[list[int], list[bool]]:
+    """A derangement over row indices, plus a validity flag per row.
 
-    Falls back to allowing same-document pairs only if the document structure
-    makes a clean derangement impossible, and reports how often.
+    A shuffled partner must be a DIFFERENT position from a DIFFERENT document:
+    pairing a row with itself makes the shuffled condition identical to the
+    matched one and drags matched-minus-shuffled toward zero (i.e. toward failing
+    the gate), and pairing within a document leaks real context the other way.
+
+    When the document structure makes a clean derangement impossible - a handful
+    of positions from one document, which happens in smoke configs, not on the
+    real run - the offending rows come back flagged False so the caller can score
+    them as missing instead of scoring a control that is not a control.
+
+    Returns (partner, valid) with len == len(rows).
     """
     n = len(rows)
-    idx = list(range(n))
+    perm = list(range(n))
     for _ in range(64):
         perm = list(rng.permutation(n))
-        bad = [k for k in range(n) if perm[k] == k or rows[perm[k]]["doc_id"] == rows[k]["doc_id"]]
+        bad = [k for k in range(n)
+               if perm[k] == k or rows[perm[k]]["doc_id"] == rows[k]["doc_id"]]
         if not bad:
-            return perm
-        # repair pass: swap offenders with random partners
-        for k in bad:
+            return perm, [True] * n
+        for k in bad:                      # repair pass: swap offenders out
             j = int(rng.integers(0, n))
             perm[k], perm[j] = perm[j], perm[k]
         if not any(perm[k] == k or rows[perm[k]]["doc_id"] == rows[k]["doc_id"]
                    for k in range(n)):
-            return perm
-    n_bad = sum(1 for k in range(n)
-                if perm[k] == k or rows[perm[k]]["doc_id"] == rows[k]["doc_id"])
-    print(f"[shuffle] WARNING: {n_bad}/{n} shuffled pairs share a document "
-          f"(or are self-pairs) after repair attempts", flush=True)
-    return perm
+            return perm, [True] * n
+    valid = [perm[k] != k and rows[perm[k]]["doc_id"] != rows[k]["doc_id"]
+             for k in range(n)]
+    n_bad = valid.count(False)
+    print(f"[shuffle] WARNING: {n_bad}/{n} rows have no usable shuffled partner "
+          f"(same document or self) - those rows are EXCLUDED from the shuffled "
+          f"condition rather than scored against themselves. Too few documents?",
+          flush=True)
+    return perm, valid
 
 
 __all__ = [

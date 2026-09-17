@@ -26,7 +26,7 @@ texts, and differ only in which continuation each is paired with.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -130,8 +130,9 @@ def score_all(
     from nla.pred.reader import FrozenReader
 
     rng = np.random.default_rng(seed)
-    partner = shuffled_partner(rows, rng)
+    partner, partner_ok = shuffled_partner(rows, rng)
     records = []
+    reader_diag: dict = {}
     for reader_name in reader_names:
         reader = FrozenReader.load(
             reader_name, device=device, dtype=dtype, templates=templates,
@@ -145,7 +146,8 @@ def score_all(
                 if cond == "matched":
                     texts = [t if t is not None else SKIP for t in es.texts]
                 elif cond == "shuffled":
-                    texts = [es.texts[partner[i]] if es.texts[partner[i]] is not None
+                    texts = [es.texts[partner[i]]
+                             if (partner_ok[i] and es.texts[partner[i]] is not None)
                              else SKIP for i in range(len(rows))]
                 else:
                     raise ValueError(f"unknown condition {cond!r}")
@@ -162,17 +164,26 @@ def score_all(
                         "baseline": [float(b) for b in base[i]],
                         "scored": bool(np.isfinite(sc[i]).all()),
                     })
+        if reader.n_nonfinite or reader.n_empty_buckets:
+            print(f"[reader] {reader_name}: {reader.n_nonfinite} non-finite "
+                  f"log-probs and {reader.n_empty_buckets} empty buckets were "
+                  f"scored as MISSING (not as zero)", flush=True)
+        reader_diag[reader_name] = {"n_nonfinite": reader.n_nonfinite,
+                                    "n_empty_buckets": reader.n_empty_buckets}
         del reader
         if device.startswith("cuda"):
             torch.cuda.empty_cache()
-    return records, partner
+    return records, partner, reader_diag
 
 
 def _bucket_index(buckets, target=HEADLINE_BUCKET) -> int:
     for i, b in enumerate(buckets):
         if tuple(b) == tuple(target):
             return i
-    return len(buckets) - 1
+    # Silently falling back to the last bucket would report a different span than
+    # the one RL optimized, under the headline's name.
+    raise AssertionError(
+        f"headline bucket {tuple(target)} is not among {[tuple(b) for b in buckets]}")
 
 
 def summarize(records, expl_sets, *, buckets=DEFAULT_BUCKETS, n_boot=10000, seed=0):
@@ -209,16 +220,36 @@ def summarize(records, expl_sets, *, buckets=DEFAULT_BUCKETS, n_boot=10000, seed
             for bi in range(len(buckets)):
                 gm = [r["gain"][bi] for r in m]
                 mean, lo, hi = bootstrap_mean(gm, clusters=docs, n_boot=n_boot, seed=seed)
-                entry = {"bucket": list(buckets[bi]), "gain": mean,
-                         "gain_lo": lo, "gain_hi": hi}
+                entry = {"bucket": list(buckets[bi]), "gain_all": mean,
+                         "gain_all_lo": lo, "gain_all_hi": hi,
+                         "gain": mean, "gain_lo": lo, "gain_hi": hi}
                 if s:
                     gs = [r["gain"][bi] for r in s]
                     d, dlo, dhi, p, npair = paired_bootstrap_diff(
                         gm, gs, clusters=docs, n_boot=n_boot, seed=seed)
+                    # Report both columns over the PAIRED subset. Taking each
+                    # column's own mean would put them on different row sets
+                    # (matched drops row i's failures, shuffled drops its
+                    # partner's), so `gain - shuffled` would not equal the paired
+                    # difference printed beside it.
+                    # Every number in a headline row is computed on ONE row set:
+                    # the positions where both the matched and the shuffled
+                    # explanation scored. Otherwise `gain` and `shuffled` sit on
+                    # different subsets (matched drops row i's extraction
+                    # failures, shuffled drops its partner's) and subtracting the
+                    # printed columns does not give the printed difference.
+                    # `gain_all` keeps the all-matched-rows figure for reference.
+                    pair_ok = [np.isfinite(a) and np.isfinite(b) for a, b in zip(gm, gs)]
+                    gm_p = [a for a, k in zip(gm, pair_ok) if k]
+                    gs_p = [b for b, k in zip(gs, pair_ok) if k]
+                    docs_p = [c for c, k in zip(docs, pair_ok) if k]
+                    pm, plo, phi = bootstrap_mean(gm_p, clusters=docs_p,
+                                                  n_boot=n_boot, seed=seed)
                     entry.update({
-                        "shuffled_gain": float(np.nanmean(gs)),
+                        "gain": pm, "gain_lo": plo, "gain_hi": phi,
+                        "shuffled_gain": float(np.mean(gs_p)) if gs_p else float("nan"),
                         "matched_minus_shuffled": d, "mms_lo": dlo, "mms_hi": dhi,
-                        "mms_p": p, "mms_n": npair,
+                        "mms_p": p, "mms_n": npair, "n_paired": len(gm_p),
                     })
                 cell["per_bucket"].append(entry)
             cell["headline"] = cell["per_bucket"][hb]

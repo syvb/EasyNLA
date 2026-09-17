@@ -75,6 +75,11 @@ class ReaderGainReward:
             "reader/baseline_nats_per_tok":
                 float(np.mean(base_rep[:, self.hb]) / self.tgt_tok[self.hb]),
             "reader/cache_size": len(self.cache),
+            # Scores the reader could not produce. These become NaN (and then the
+            # failure floor), never a plausible-looking number, but a rising count
+            # means the measurement is degrading and should be visible.
+            "reader/nonfinite_logp": float(self.reader.n_nonfinite),
+            "reader/empty_buckets": float(self.reader.n_empty_buckets),
         }
         for bi, (lo, hi) in enumerate(self.buckets):
             g = gains[:, bi]
