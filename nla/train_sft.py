@@ -584,13 +584,17 @@ def main():
     p.add_argument("--wandb-tags", default=None,
                    help="comma-separated wandb tags for explicit experiments (e.g. 'sweep,lr3e5').")
     p.add_argument("--no-wandb", action="store_true")
+    p.add_argument("--device", default="cuda",
+                   help="Compute device. 'cpu' exists so the whole SFT path can "
+                        "be smoke-tested on a small model without a GPU; bf16 "
+                        "autocast is skipped there.")
     apply_config_defaults(p)   # YAML (--config) -> argparse defaults; CLI still overrides
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    device = "cuda"
-    dtype = torch.bfloat16
+    device = args.device
+    dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
     if args.lr is None:
         # Mode-aware default: non-comp AV warmstart is 1e-4 (2x-data 1-epoch best, held-out
         # val ppl 3.86; optimum dropped from the old 1x 2e-4 after the data doubled);
@@ -604,7 +608,11 @@ def main():
     amp_enabled = param_dtype is torch.float32
 
     def amp():
-        return torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled)
+        # CPU has no bf16 autocast worth using here; the flag only exists for
+        # smoke tests, where fp32 throughout is both simpler and correct.
+        return torch.autocast(
+            device.split(":")[0], dtype=torch.bfloat16,
+            enabled=amp_enabled and device.startswith("cuda"))
 
     if amp_enabled:
         print("[dtype] full-FT: fp32 params + bf16 autocast compute "

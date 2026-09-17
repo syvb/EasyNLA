@@ -1,0 +1,48 @@
+# Behavioral RL: GRPO on the frozen-reader predictive gain.
+# python -m nla.pred.train_rl --config configs/pred/rl_behavioral.yaml \
+#     --positions <positions.parquet> --save-dir <ckpts>/behavioral_rl
+#
+# Every condition in the experiment sits on the SAME merged AV, so the policy is
+# a fresh LoRA on it and disable_adapter() is the SFT reference exactly.
+
+reward: reader_gain
+base_ckpt: syvb/nanonla-qwen3-8b-L24-av
+reader: Qwen/Qwen3-4B-Base      # TRAINING reader. Gemma is held out and never loaded here.
+branches: 4                     # continuation branches averaged per position
+
+# --- optimization ---
+num_steps: 300                  # ~1 epoch of a 10k-position pool at 32 prompts/step
+batch_prompts: 32
+group_size: 8                   # 4 gives a noisy group baseline; rollouts are cheap here
+lr: 1.0e-5
+lora_r: 32
+lora_alpha: 16
+use_rslora: true
+kl_beta: 0.02                   # toward the SFT init
+
+# Explanation budget. The SFT policy writes a median 119 tokens (p99 149), so a
+# 128 cap would truncate a fifth of its own explanations and the first thing RL
+# learned would be brevity. 192 leaves headroom; the hinge applies gentle
+# pressure from 160 up.
+max_new_tokens: 192
+length_threshold: 160
+# In REWARD units. The gain reward lives on a ~0.01-0.3 scale, so the
+# reconstruction trainer's 0.01/token would swamp the signal outright.
+length_penalty: 0.001
+fail_gain: 1.0                  # failed/truncated rollout, in nats below baseline
+
+# --- throughput ---
+gen_batch: 64                   # rollouts batched ACROSS prompts, not one at a time
+logp_micro_batch: 2
+reader_batch_rows: 48
+reader_batch_tokens: 49152
+quant: none                     # bf16: the policy is 8B and the reader 4B
+
+# --- eval / io ---
+eval_every: 10
+eval_n_positions: 200           # held-out val positions, TRAINING reader only
+save_every: 50
+wandb_project: pred-nla
+wandb_group: rl
+wandb_name: behavioral_rl
+seed: 0
