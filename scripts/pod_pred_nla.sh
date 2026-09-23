@@ -44,7 +44,7 @@ finish() {
 
 has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
 for s in ${STAGES//,/ }; do
-  case "$s" in prep|gate|rl|rl_recon|eval|trunc) ;; *) finish "unknown stage '$s'";; esac
+  case "$s" in prep|gate|rl|rl_recon|eval|trunc|trunc_expl) ;; *) finish "unknown stage '$s'";; esac
 done
 
 DATA=/workspace/data; CK=/workspace/ckpts; EV=/workspace/evals; SRC=/workspace/source
@@ -85,6 +85,16 @@ else
       || finish "could not pull positions from $HF_REPO"
 fi
 
+# Retry a push under a timeout; the premise-check stages call this and, if it still fails, keep
+# the pod up for 2 h so the results can be copied off by hand rather than die with it.
+push_retry() {
+  for i in 1 2 3; do
+    timeout -k 1m 20m $SYNC push "$HF_REPO" "$1" "$2" && return 0
+    log "push of $2 failed (attempt $i)"; sleep 60
+  done
+  return 1
+}
+
 # --------------------------------------------------------------- trunc ----
 # Premise check for a truncated-context reader (scripts/trunc_check.py): does the
 # target's state hold usable memory of the document beyond its last 20 tokens?
@@ -94,19 +104,24 @@ if has trunc; then
       --states-dir "$EV/trunc_states" 2>&1 | tee "$EV/trunc.log"
   log "trunc_check exit ${PIPESTATUS[0]}"
   mkdir -p "$EV/trunc" && cp "$EV/trunc.log" "$EV/trunc/"
-  # small results first, then the large states file; retry each, and if a push still fails keep
-  # the pod up for 2 h so the results can be copied off by hand rather than die with it
-  push_retry() {
-    for i in 1 2 3; do
-      timeout -k 1m 20m $SYNC push "$HF_REPO" "$1" "$2" && return 0
-      log "push of $2 failed (attempt $i)"; sleep 60
-    done
-    return 1
-  }
+  # small results first, then the large states file (push_retry: see above)
   RESCUE=0
   push_retry "$EV/trunc" evals/trunc || RESCUE=1
   if [ -d "$EV/trunc_states" ]; then push_retry "$EV/trunc_states" evals/trunc_states || RESCUE=1; fi
   if [ "$RESCUE" = "1" ]; then log "a push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; fi
+fi
+
+# ---------------------------------------------------------- trunc_expl ----
+# Does the existing SFT verbalizer express the memory trunc found? (scripts/trunc_expl.py)
+if has trunc_expl; then
+  $SYNC pull "$HF_REPO" evals/trunc_states "${EV}_dl" || finish "could not pull evals/trunc_states"
+  timeout -k 2m "${MAX_HOURS}h" python scripts/trunc_expl.py --positions "$POS" \
+      --states "${EV}_dl/evals/trunc_states/states.npz" --av "$AV_CKPT" --reader "$TRAIN_READER" \
+      --out "$EV/trunc_expl" 2>&1 | tee "$EV/trunc_expl.log"
+  log "trunc_expl exit ${PIPESTATUS[0]}"
+  mkdir -p "$EV/trunc_expl" && cp "$EV/trunc_expl.log" "$EV/trunc_expl/"
+  push_retry "$EV/trunc_expl" evals/trunc_expl \
+      || { log "push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; }
 fi
 
 # ---------------------------------------------------------------- gate ----
