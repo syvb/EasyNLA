@@ -33,17 +33,6 @@ log() { echo "[pod $(date -u +%H:%M:%S)] $*"; }
 : "${WANDB_PROJECT:=pred-nla}" "${WANDB_GROUP:=pred-nla-s${SEED}}"
 : "${FORCE_RL:=0}" "${KEEP_POD:=1}" "${N_EXAMPLES:=100}" "${CHECK_OVERLAP:=1}"
 
-has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
-for s in ${STAGES//,/ }; do
-  case "$s" in prep|gate|rl|rl_recon|eval) ;; *) log "unknown stage '$s'"; exit 2;; esac
-done
-
-DATA=/workspace/data; CK=/workspace/ckpts; EV=/workspace/evals; SRC=/workspace/source
-POS=$DATA/positions.parquet
-mkdir -p "$DATA" "$CK" "$EV" "$SRC"
-SYNC="python scripts/pred_hf_sync.py"
-READERS="$TRAIN_READER $HELDOUT_READER"
-
 finish() {
   # The cheapest way to lose a run is to terminate before the upload finishes,
   # so the default is to stay up. --no-keep opts into self-termination.
@@ -52,6 +41,18 @@ finish() {
   runpodctl remove pod "$RUNPOD_POD_ID" 2>/dev/null || true
   exit 0
 }
+
+has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
+for s in ${STAGES//,/ }; do
+  case "$s" in prep|gate|rl|rl_recon|eval|trunc) ;; *) finish "unknown stage '$s'";; esac
+done
+
+DATA=/workspace/data; CK=/workspace/ckpts; EV=/workspace/evals; SRC=/workspace/source
+POS=$DATA/positions.parquet
+mkdir -p "$DATA" "$CK" "$EV" "$SRC"
+SYNC="python scripts/pred_hf_sync.py"
+READERS="$TRAIN_READER $HELDOUT_READER"
+
 
 # ---------------------------------------------------------------- data ----
 if has prep; then
@@ -82,6 +83,30 @@ if has prep; then
 else
   $SYNC pull "$HF_REPO" data "${DATA}_dl" && cp "${DATA}_dl"/data/positions.parquet* "$DATA/" \
       || finish "could not pull positions from $HF_REPO"
+fi
+
+# --------------------------------------------------------------- trunc ----
+# Premise check for a truncated-context reader (scripts/trunc_check.py): does the
+# target's state hold usable memory of the document beyond its last 20 tokens?
+if has trunc; then
+  timeout -k 2m "${MAX_HOURS}h" python scripts/trunc_check.py --positions "$POS" \
+      --target "$TARGET_CKPT" --reader "$TRAIN_READER" --out "$EV/trunc" \
+      --states-dir "$EV/trunc_states" 2>&1 | tee "$EV/trunc.log"
+  log "trunc_check exit ${PIPESTATUS[0]}"
+  mkdir -p "$EV/trunc" && cp "$EV/trunc.log" "$EV/trunc/"
+  # small results first, then the large states file; retry each, and if a push still fails keep
+  # the pod up for 2 h so the results can be copied off by hand rather than die with it
+  push_retry() {
+    for i in 1 2 3; do
+      timeout -k 1m 20m $SYNC push "$HF_REPO" "$1" "$2" && return 0
+      log "push of $2 failed (attempt $i)"; sleep 60
+    done
+    return 1
+  }
+  RESCUE=0
+  push_retry "$EV/trunc" evals/trunc || RESCUE=1
+  if [ -d "$EV/trunc_states" ]; then push_retry "$EV/trunc_states" evals/trunc_states || RESCUE=1; fi
+  if [ "$RESCUE" = "1" ]; then log "a push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; fi
 fi
 
 # ---------------------------------------------------------------- gate ----
