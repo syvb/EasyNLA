@@ -38,12 +38,12 @@ FALLBACK_GPUS = [
     "NVIDIA H200", "NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL",
     "NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe",
 ]
-STAGES = ("prep", "gate", "rl", "rl_recon", "eval", "trunc", "trunc_expl")
+STAGES = ("prep", "gate", "rl", "rl_recon", "eval", "trunc", "trunc_expl", "memsft")
 # Wall-clock per stage at the default pilot sizes. The RL figures come from a
 # per-step cost model (rollout decode + reward forwards + the GRPO update's
 # forward/backward/reference passes): ~55 s/step for the reader reward and
 # ~45 s/step for reconstruction on an H100-class card.
-STAGE_HOURS = {"prep": 0.7, "gate": 0.8, "rl": 4.6, "rl_recon": 3.7, "eval": 1.5, "trunc": 0.4, "trunc_expl": 0.5}
+STAGE_HOURS = {"prep": 0.7, "gate": 0.8, "rl": 4.6, "rl_recon": 3.7, "eval": 1.5, "trunc": 0.4, "trunc_expl": 0.5, "memsft": 2.5}
 STARTUP_HOURS = 0.35     # image pull + pip + four model downloads, per pod
 
 # The bootstrap must contain NO single quotes (see the module docstring).

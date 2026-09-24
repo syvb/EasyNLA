@@ -44,7 +44,7 @@ finish() {
 
 has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
 for s in ${STAGES//,/ }; do
-  case "$s" in prep|gate|rl|rl_recon|eval|trunc|trunc_expl) ;; *) finish "unknown stage '$s'";; esac
+  case "$s" in prep|gate|rl|rl_recon|eval|trunc|trunc_expl|memsft) ;; *) finish "unknown stage '$s'";; esac
 done
 
 DATA=/workspace/data; CK=/workspace/ckpts; EV=/workspace/evals; SRC=/workspace/source
@@ -122,6 +122,46 @@ if has trunc_expl; then
   mkdir -p "$EV/trunc_expl" && cp "$EV/trunc_expl.log" "$EV/trunc_expl/"
   push_retry "$EV/trunc_expl" evals/trunc_expl \
       || { log "push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; }
+fi
+
+# -------------------------------------------------------------- memsft ----
+# Supervised ceiling: can a verbalizer TRAINED to name the hidden prefix's keywords do so from the
+# full-context state (F) better than from the window-only state (S)? (scripts/memsft.py)
+if has memsft; then
+  MS=/workspace/memsft
+  mkdir -p "$EV/memsft"
+  msrun() { timeout -k 2m "${MAX_HOURS}h" "$@" 2>&1 | tee -a "$EV/memsft/memsft.log"; return ${PIPESTATUS[0]}; }
+  huggingface-cli download syvb/nanonla-qwen3-8b-L24-data-full --repo-type dataset \
+      --include "*_full.parquet*" --local-dir "$SRC/nla8b" || finish "could not download the NLA parquets"
+  $SYNC pull "$HF_REPO" evals/trunc_states "${EV}_dl" || finish "could not pull evals/trunc_states"
+  if msrun python scripts/memsft.py build \
+        --sources "$SRC/nla8b/rl_full.parquet" "$SRC/nla8b/ar_sft_full.parquet" \
+        --prompt-source "$SRC/nla8b/av_sft_full.parquet" --sidecar-source "$SRC/nla8b/av_sft_full.parquet" \
+        --positions "$POS" --target "$TARGET_CKPT" --out "$MS/data"; then
+    for H in F S; do
+      msrun python -m nla.train_sft --mode av --base-ckpt "$AV_CKPT" --parquet "$MS/data/${H}_train.parquet" \
+          --save-dir "$MS/ckpt_$H" --use-lora --lora-r 128 --lora-alpha 16 --save-every 100000 \
+          --seed "$SEED" --wandb-project "$WANDB_PROJECT" --wandb-group "$WANDB_GROUP" --wandb-name "memsft_$H" \
+        || { log "memsft: training $H failed"; break; }
+    done
+  else
+    log "memsft: build failed"
+  fi
+  F_AD=$(ls -d "$MS"/ckpt_F/iter_* 2>/dev/null | sort | tail -1)
+  S_AD=$(ls -d "$MS"/ckpt_S/iter_* 2>/dev/null | sort | tail -1)
+  if [ -n "$F_AD" ] && [ -n "$S_AD" ]; then
+    msrun python scripts/memsft.py eval --positions "$POS" --states "${EV}_dl/evals/trunc_states/states.npz" \
+        --av "$AV_CKPT" --f-adapter "$F_AD" --s-adapter "$S_AD" --reader "$TRAIN_READER" \
+        --build-json "$MS/data/build.json" --out "$EV/memsft" || log "memsft: eval failed"
+  else
+    log "memsft: missing adapter(s) (F='$F_AD' S='$S_AD'); skipping eval"
+  fi
+  cp "$MS/data/build.json" "$EV/memsft/" 2>/dev/null
+  RESCUE=0
+  push_retry "$EV/memsft" evals/memsft || RESCUE=1
+  if [ -n "$F_AD" ]; then push_retry "$F_AD" ckpts/memsft_F || RESCUE=1; fi
+  if [ -n "$S_AD" ]; then push_retry "$S_AD" ckpts/memsft_S || RESCUE=1; fi
+  if [ "$RESCUE" = "1" ]; then log "a push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; fi
 fi
 
 # ---------------------------------------------------------------- gate ----
