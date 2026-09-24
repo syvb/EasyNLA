@@ -44,7 +44,7 @@ finish() {
 
 has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
 for s in ${STAGES//,/ }; do
-  case "$s" in prep|gate|rl|rl_recon|eval|trunc|trunc_expl|memsft) ;; *) finish "unknown stage '$s'";; esac
+  case "$s" in prep|gate|rl|rl_recon|eval|trunc|trunc_expl|memsft|bon) ;; *) finish "unknown stage '$s'";; esac
 done
 
 DATA=/workspace/data; CK=/workspace/ckpts; EV=/workspace/evals; SRC=/workspace/source
@@ -162,6 +162,21 @@ if has memsft; then
   if [ -n "$F_AD" ]; then push_retry "$F_AD" ckpts/memsft_F || RESCUE=1; fi
   if [ -n "$S_AD" ]; then push_retry "$S_AD" ckpts/memsft_S || RESCUE=1; fi
   if [ "$RESCUE" = "1" ]; then log "a push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; fi
+fi
+
+# ----------------------------------------------------------------- bon ----
+# Best-of-N from the memsft heads: headroom for RL near the SFT policy? (scripts/bon.py)
+if has bon; then
+  $SYNC pull "$HF_REPO" evals/trunc_states "${EV}_dl" || finish "could not pull evals/trunc_states"
+  $SYNC pull "$HF_REPO" ckpts/memsft_F "${CK}_dl" || finish "could not pull ckpts/memsft_F"
+  $SYNC pull "$HF_REPO" ckpts/memsft_S "${CK}_dl" || finish "could not pull ckpts/memsft_S"
+  mkdir -p "$EV/bon"
+  timeout -k 2m "${MAX_HOURS}h" python scripts/bon.py --positions "$POS" \
+      --states "${EV}_dl/evals/trunc_states/states.npz" --av "$AV_CKPT" \
+      --f-adapter "${CK}_dl/ckpts/memsft_F" --s-adapter "${CK}_dl/ckpts/memsft_S" \
+      --reader "$TRAIN_READER" --out "$EV/bon" 2>&1 | tee "$EV/bon/bon.log"
+  log "bon exit ${PIPESTATUS[0]}"
+  push_retry "$EV/bon" evals/bon || { log "push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; }
 fi
 
 # ---------------------------------------------------------------- gate ----
