@@ -44,7 +44,7 @@ finish() {
 
 has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
 for s in ${STAGES//,/ }; do
-  case "$s" in prep|gate|rl|rl_recon|eval|trunc|trunc_expl|memsft|bon) ;; *) finish "unknown stage '$s'";; esac
+  case "$s" in prep|gate|rl|rl_recon|eval|trunc|trunc_expl|memsft|bon|fvecmp) ;; *) finish "unknown stage '$s'";; esac
 done
 
 DATA=/workspace/data; CK=/workspace/ckpts; EV=/workspace/evals; SRC=/workspace/source
@@ -177,6 +177,21 @@ if has bon; then
       --reader "$TRAIN_READER" --out "$EV/bon" 2>&1 | tee "$EV/bon/bon.log"
   log "bon exit ${PIPESTATUS[0]}"
   push_retry "$EV/bon" evals/bon || { log "push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; }
+fi
+
+# -------------------------------------------------------------- fvecmp ----
+# Do normal NLA explanations reconstruct better than a text-only description? (scripts/fve_cmp.py)
+if has fvecmp; then
+  huggingface-cli download asher577/easynla-warmstart-data --repo-type dataset \
+      --include "av_sft_val.parquet*" --local-dir "$SRC/ws" || finish "could not download av_sft_val"
+  huggingface-cli download syvb/nanonla-qwen3-8b-L24-data-full --repo-type dataset \
+      --include "av_sft_full.parquet" "ar_sft_full.parquet" --local-dir "$SRC/nla8b" || finish "could not download training parquets"
+  mkdir -p "$EV/fvecmp"
+  timeout -k 2m "${MAX_HOURS}h" python scripts/fve_cmp.py --val "$SRC/ws/av_sft_val.parquet" \
+      --exclude "$SRC/nla8b/av_sft_full.parquet" "$SRC/nla8b/ar_sft_full.parquet" \
+      --av "$AV_CKPT" --ar "$AR_CKPT" --out "$EV/fvecmp" 2>&1 | tee "$EV/fvecmp/fvecmp.log"
+  log "fvecmp exit ${PIPESTATUS[0]}"
+  push_retry "$EV/fvecmp" evals/fvecmp || { log "push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; }
 fi
 
 # ---------------------------------------------------------------- gate ----
