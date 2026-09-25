@@ -46,6 +46,8 @@ def main():
     ap.add_argument("--exclude", nargs="*", default=[], help="parquets whose documents the models trained on")
     ap.add_argument("--av", default="syvb/nanonla-qwen3-8b-L24-av")
     ap.add_argument("--ar", default="syvb/nanonla-qwen3-8b-L24-ar")
+    ap.add_argument("--rl-adapter", default=None,
+                    help="reconstruction-RL LoRA on the SFT verbalizer, 'repo#subfolder' (e.g. ...-rl-lora#p0.0)")
     ap.add_argument("--n", type=int, default=None)
     ap.add_argument("--gen-batch", type=int, default=64)
     ap.add_argument("--max-new-tokens", type=int, default=192)
@@ -76,22 +78,28 @@ def main():
 
     tok = AutoTokenizer.from_pretrained(a.av)
     cfg = load_nla_config(a.val, tok)
+    heads = [("av", None, None)]
+    if a.rl_adapter:
+        repo, _, sub = a.rl_adapter.partition("#"); heads.append(("rl", repo, sub or None))
     if not a.fake:
         from nla.pred.av import generate_explanations, load_av
-        model, vref = load_av(a.av, None, device=a.device, dtype=torch.bfloat16,
-                              inj_ids=(cfg.injection_token_id, cfg.injection_left_neighbor_id,
-                                       cfg.injection_right_neighbor_id))
         rows = [{"prompt": p, "activation": v} for p, v in zip(prompts, ACT.numpy())]
-        for name, temp in (("av_greedy", 0.0), ("av_sample", 1.0)):
-            t0 = time.time(); torch.manual_seed(0)
-            E[name] = generate_explanations(model, tok, vref, rows, cfg.injection_char, max_new_tokens=a.max_new_tokens,
-                                            temperature=temp, batch_size=a.gen_batch, device=a.device)
-            log(f"{name}: extraction {np.mean([e is not None for e in E[name]]):.1%} ({(time.time() - t0) / 60:.1f} min)")
-        del model, vref
-        if a.device.startswith("cuda"):
-            torch.cuda.empty_cache()
+        for head, repo, sub in heads:
+            model, vref = load_av(a.av, repo, adapter_subfolder=sub, device=a.device, dtype=torch.bfloat16,
+                                  inj_ids=(cfg.injection_token_id, cfg.injection_left_neighbor_id,
+                                           cfg.injection_right_neighbor_id))
+            for mode, temp in (("greedy", 0.0), ("sample", 1.0)):
+                name = f"{head}_{mode}"; t0 = time.time(); torch.manual_seed(0)
+                E[name] = generate_explanations(model, tok, vref, rows, cfg.injection_char, max_new_tokens=a.max_new_tokens,
+                                                temperature=temp, batch_size=a.gen_batch, device=a.device)
+                log(f"{name}: extraction {np.mean([e is not None for e in E[name]]):.1%}, median words "
+                    f"{np.median([len(e.split()) for e in E[name] if e]):.0f} ({(time.time() - t0) / 60:.1f} min)")
+            del model, vref
+            if a.device.startswith("cuda"):
+                torch.cuda.empty_cache()
     else:
-        E["av_greedy"] = [g[: len(g) // 2] for g in E["gold"]]; E["av_sample"] = list(E["av_greedy"])
+        for head, _, _ in heads:
+            E[f"{head}_greedy"] = [g[: len(g) // 2] for g in E["gold"]]; E[f"{head}_sample"] = list(E[f"{head}_greedy"])
     # wrong: av_greedy of a row from a DIFFERENT document
     rng = np.random.default_rng(3); n = len(keep); other = np.empty(n, int)
     for i in range(n):
@@ -121,19 +129,23 @@ def main():
     np.savez_compressed(os.path.join(a.out, "fve.npz"), doc_id=docs, **F)
     res = {"n_rows": n, "n_docs": int(len(set(docs))), "baseline_mse": base}
     lines = [f"FVE on {n} validation rows from {len(set(docs))} unseen documents (95% CI bootstrapped over documents)"]
-    for k in ("av_greedy", "av_sample", "gold", "quote", "wrong"):
+    for k in [f"{h}_{m}" for h, _, _ in heads for m in ("greedy", "sample")] + ["gold", "quote", "wrong"]:
         d = boot_docs(F[k], docs); res[k] = d
         fn = 1.0 - M[k] / 0.6704; dn = boot_docs(fn, docs); res[f"{k} (nanoNLA baseline 0.6704)"] = dn
         lines.append(f"  {k:<10} FVE {d[0]:.3f} [{d[1]:.3f}, {d[2]:.3f}]   (on the nanoNLA baseline: {dn[0]:.3f})"
                      f"   (scored {int((~np.isnan(F[k])).sum())})")
     lines.append("paired differences:")
-    for x, y in (("av_greedy", "gold"), ("av_sample", "gold"), ("gold", "quote"), ("av_greedy", "quote"),
-                 ("av_greedy", "wrong"), ("gold", "wrong")):
+    pairs = [("av_greedy", "gold"), ("av_sample", "gold"), ("gold", "quote"), ("av_greedy", "quote"),
+             ("av_greedy", "wrong"), ("gold", "wrong")]
+    if a.rl_adapter:
+        pairs = [("rl_greedy", "gold"), ("rl_sample", "gold"), ("rl_greedy", "av_greedy"), ("rl_sample", "av_sample")] + pairs
+    for x, y in pairs:
         d = boot_docs(F[x] - F[y], docs); res[f"{x} - {y}"] = d
         lines.append(f"  {x} - {y}: {d[0]:+.3f} [{d[1]:+.3f}, {d[2]:+.3f}]")
-    both = ~np.isnan(F["av_greedy"]) & ~np.isnan(F["gold"])
-    res["frac_rows_av_beats_gold"] = float(np.mean(F["av_greedy"][both] > F["gold"][both]))
-    lines.append(f"  rows where av_greedy reconstructs better than gold: {res['frac_rows_av_beats_gold']:.1%}")
+    for h, _, _ in heads:
+        both = ~np.isnan(F[f"{h}_greedy"]) & ~np.isnan(F["gold"])
+        res[f"frac_rows_{h}_beats_gold"] = float(np.mean(F[f"{h}_greedy"][both] > F["gold"][both]))
+        lines.append(f"  rows where {h}_greedy reconstructs better than gold: {res[f'frac_rows_{h}_beats_gold']:.1%}")
     lines.append("examples (gold text-only | av_greedy from activation):")
     for i in range(min(3, n)):
         lines.append(f"  [{(E['gold'][i] or '')[:260]}]\n    [{(E['av_greedy'][i] or '')[:260]}]")

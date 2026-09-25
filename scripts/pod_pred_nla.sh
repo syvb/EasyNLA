@@ -189,7 +189,9 @@ if has fvecmp; then
   mkdir -p "$EV/fvecmp"
   timeout -k 2m "${MAX_HOURS}h" python scripts/fve_cmp.py --val "$SRC/ws/av_sft_val.parquet" \
       --exclude "$SRC/nla8b/av_sft_full.parquet" "$SRC/nla8b/ar_sft_full.parquet" \
-      --av "$AV_CKPT" --ar "$AR_CKPT" --out "$EV/fvecmp" 2>&1 | tee "$EV/fvecmp/fvecmp.log"
+      --av "$AV_CKPT" --ar "$AR_CKPT" --rl-adapter "$RECON_ADAPTER" --out "$EV/fvecmp" \
+      --rl-adapters "p0.0=syvb/nanonla-qwen3-8b-L24-rl-lora#p0.0" "p0.001=syvb/nanonla-qwen3-8b-L24-rl-lora#p0.001" \
+      2>&1 | tee "$EV/fvecmp/fvecmp.log"
   log "fvecmp exit ${PIPESTATUS[0]}"
   push_retry "$EV/fvecmp" evals/fvecmp || { log "push failed; keeping the pod up 2 h for manual rescue"; sleep 7200; }
 fi
