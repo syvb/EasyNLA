@@ -120,7 +120,7 @@ from nla.schema import (
 
 
 
-def load_rl_dataset(parquet_path, n_max=None, exclude_doc_pred=None):
+def load_rl_dataset(parquet_path, n_max=None, exclude_doc_pred=None, extra_cols=()):
     """Streaming + vectorized load — reads only the columns/rows we need, and keeps
     activations as numpy float32 (zero-copy from arrow), NEVER python floats.
 
@@ -131,12 +131,13 @@ def load_rl_dataset(parquet_path, n_max=None, exclude_doc_pred=None):
 
     exclude_doc_pred: optional doc_id -> bool; rows whose doc matches are DROPPED
     (the auto-split's held-out val docs — see nla/val_split.py). n_max counts
-    kept rows.
+    kept rows. extra_cols are copied into each row dict as-is.
     """
     import numpy as np
     import pyarrow.parquet as pq_inner
     pf = pq_inner.ParquetFile(parquet_path)
-    cols = ["prompt", "activation_vector"] + (["doc_id"] if exclude_doc_pred else [])
+    cols = (["prompt", "activation_vector"] + (["doc_id"] if exclude_doc_pred else [])
+            + list(extra_cols))
     rows = []
     for rg_idx in range(pf.num_row_groups):
         if n_max is not None and len(rows) >= n_max:
@@ -151,16 +152,19 @@ def load_rl_dataset(parquet_path, n_max=None, exclude_doc_pred=None):
         # .flatten() respects the slice offsets; np.asarray is zero-copy.
         col = rg.column("activation_vector").combine_chunks()
         acts = np.asarray(col.flatten(), dtype=np.float32).reshape(len(prompts), -1)
+        extras = {c: rg.column(c).to_pylist() for c in extra_cols}
         if exclude_doc_pred is not None:
             dids = rg.column("doc_id").to_pylist()
             for i, p in enumerate(prompts):
                 if n_max is not None and len(rows) >= n_max:
                     break
                 if not exclude_doc_pred(dids[i]):
-                    rows.append({"prompt": p, "activation": acts[i]})
+                    rows.append({"prompt": p, "activation": acts[i],
+                                 **{c: extras[c][i] for c in extra_cols}})
         else:
             for i, p in enumerate(prompts):
-                rows.append({"prompt": p, "activation": acts[i]})
+                rows.append({"prompt": p, "activation": acts[i],
+                             **{c: extras[c][i] for c in extra_cols}})
     return rows
 
 
@@ -507,9 +511,16 @@ def sync_actor_to_vllm(actor, llm, ipc=False, only_adapted=True):
 
 def score_with_critic(
     critic, tokenizer, explanations, activations, template, mse_scale_f, device,
-    batch_size=32,
+    batch_size=32, splice=None, prefixes=None, fail_dir=None,
 ):
     """Returns list of rewards (None for failed extractions), reward = -recon_MSE.
+
+    With `splice` (--recon-loss kl) returns (rewards, neg_kls, neg_kl_floors):
+    neg_kls[i] = -KL(p_orig || p_splice) of rollout i's reconstruction (None
+    where rewards[i] is None), neg_kl_floors[i] = -KL of splicing a vector
+    orthogonal to the gold (kl_splice.orthogonal_fail_vectors), the failure
+    reward — the KL analogue of the MSE floor -2.0. One splice call, so each
+    prompt's prefix runs once for all its rollouts.
 
     BATCHED critic forward: tokenize all explanations, run the critic over chunks of
     `batch_size` (right-padded + attention_mask, so critic_predict extracts each row's
@@ -527,6 +538,7 @@ def score_with_critic(
         if 0 < len(ids) <= 1024:
             ids_list[i] = ids
     valid = [i for i in range(n) if ids_list[i] is not None]
+    preds_by_i = {}
     for cs in range(0, len(valid), batch_size):
         chunk = valid[cs:cs + batch_size]
         maxlen = max(len(ids_list[i]) for i in chunk)
@@ -545,7 +557,21 @@ def score_with_critic(
         for r, i in enumerate(chunk):
             m = mse[r].item()
             rewards[i] = (-m) if math.isfinite(m) else None
-    return rewards
+            if splice is not None and rewards[i] is not None:
+                preds_by_i[i] = preds[r]
+    if splice is None:
+        return rewards
+    from nla.utils.kl_splice import orthogonal_fail_vectors
+    idx = list(preds_by_i)
+    golds = torch.stack([a.to(device).float() for a in activations])
+    vecs = torch.cat([torch.stack([preds_by_i[i] for i in idx]).float()
+                      if idx else golds[:0], orthogonal_fail_vectors(golds, fail_dir)])
+    with torch.no_grad():
+        kl = splice.kl([prefixes[i] for i in idx] + list(prefixes), vecs).tolist()
+    neg_kls = [None] * n
+    for k, i in enumerate(idx):
+        neg_kls[i] = -kl[k] if math.isfinite(kl[k]) else None
+    return rewards, neg_kls, [-x for x in kl[len(idx):]]
 
 
 def _reference_logits(actor, batch_ids, attn):
@@ -1023,6 +1049,21 @@ def main():
     p.add_argument("--critic-micro-batch", type=int, default=8,
                    help="Micro-batch size for the critic's training-time forward. "
                         "Single full-batch forward OOMs at B*G=256.")
+    p.add_argument("--recon-loss", choices=["mse", "kl"], default="mse",
+                   help="mse = reward -MSE and AR co-trained on MSE (paper). kl = "
+                        "SAE-style: splice the AR's prediction (rescaled to the natural "
+                        "norm) into the frozen target model at the extraction layer; "
+                        "reward = -KL(p_orig || p_splice) on the next token at the "
+                        "extraction position, the co-trained AR minimises that KL "
+                        "(nla/utils/kl_splice.py). Loads a 2nd bf16 base per rank. "
+                        "Needs the parquet's detokenized_text_truncated + n_raw_tokens. "
+                        "FVE is still reported from the MSE.")
+    p.add_argument("--kl-target-ckpt", default=None,
+                   help="--recon-loss kl: model the activations came from. "
+                        "Default: sidecar extraction.base_model.")
+    p.add_argument("--kl-micro-batch", type=int, default=8,
+                   help="--recon-loss kl: unique prefixes per target forward "
+                        "(bounds KV-cache memory; prefixes run up to ~4k tokens).")
     p.add_argument("--logp-micro-batch", type=int, default=8)  # 8 validated on H200 (full-AR, TP1): grpo ~halves vs 2, fits under vllm-gpu-mem 0.35; 16 OOMs
     p.add_argument("--vllm-gpu-mem", type=float, default=0.5,
                    help="vLLM gpu_memory_utilization; trimmed to leave room for "
@@ -1527,8 +1568,17 @@ def main():
           f"val_doc_permille={val_permille})", flush=True)
     from nla.val_split import is_val_doc
     _val_pred = (lambda d: is_val_doc(d, val_permille)) if val_permille else None
+    splice = None
+    if args.recon_loss == "kl":
+        assert not args.log_reward, "--log-reward is an MSE transform; not with --recon-loss kl"
+        from nla.utils.kl_splice import PREFIX_COLUMNS, attach_prefix_ids, load_splice_kl
+        splice = load_splice_kl(args.kl_target_ckpt, args.sidecar,
+                                cfg.extraction_layer_index, device, args.kl_micro_batch)
     rows = load_rl_dataset(args.rl_parquet, n_max=args.max_rows,
-                           exclude_doc_pred=_val_pred)
+                           exclude_doc_pred=_val_pred,
+                           extra_cols=PREFIX_COLUMNS if splice is not None else ())
+    if splice is not None:
+        rows = attach_prefix_ids(rows, tokenizer, tag="train")
     print(f"[data] {len(rows)} rows", flush=True)
 
     # ---- FVE baseline: predict-the-mean MSE on this dataset ----
@@ -1545,6 +1595,7 @@ def main():
     fve_baseline_meannorm, fve_baseline = compute_predict_mean_baselines(
         _act_stack, mse_scale_f,
     )
+    kl_fail_dir = normalize_activation(_act_stack, 1.0).mean(0)  # --recon-loss kl floor
     del _act_stack
     print(f"[fve] predict-the-mean baseline mse_nrm = {fve_baseline:.4f} "
           f"(paper def; meannorm baseline = {fve_baseline_meannorm:.4f})",
@@ -1657,6 +1708,7 @@ def main():
                 break
             _tj_cols = (["detokenized_text_truncated"]
                         if "detokenized_text_truncated" in _pf.schema_arrow.names else [])
+            _tj_cols += ["n_raw_tokens"] if splice is not None else []
             _rg = _pf.read_row_group(
                 _rg_idx, columns=["prompt", "activation_vector", "doc_id"] + _tj_cols)
             _prompts = _rg.column("prompt").to_pylist()
@@ -1666,10 +1718,12 @@ def main():
             _dids = _rg.column("doc_id").to_pylist()
             _srcs = (_rg.column("detokenized_text_truncated").to_pylist()
                      if _tj_cols else [""] * len(_prompts))
+            _nraw = (_rg.column("n_raw_tokens").to_pylist()
+                     if splice is not None else [None] * len(_prompts))
             for _i, _d in enumerate(_dids):
                 if is_val_doc(_d, val_permille):
                     eval_rows.append({"prompt": _prompts[_i], "activation": _acts[_i],
-                                      "source": _srcs[_i] or ""})
+                                      "source": _srcs[_i] or "", "n_raw_tokens": _nraw[_i]})
                     if len(eval_rows) >= args.eval_n_prompts:
                         break
         print(f"[eval] {len(eval_rows)} held-out-doc prompts loaded "
@@ -1696,6 +1750,7 @@ def main():
                 break
             _tj_cols = (["detokenized_text_truncated"]
                         if "detokenized_text_truncated" in _pf.schema_arrow.names else [])
+            _tj_cols += ["n_raw_tokens"] if splice is not None else []
             _rg = _pf.read_row_group(
                 _rg_idx, columns=["prompt", "activation_vector", "doc_id"] + _tj_cols,
             )
@@ -1709,11 +1764,13 @@ def main():
             _dids = _rg.column("doc_id").to_pylist()
             _srcs = (_rg.column("detokenized_text_truncated").to_pylist()
                      if _tj_cols else [""] * _n)
+            _nraw = (_rg.column("n_raw_tokens").to_pylist()
+                     if splice is not None else [None] * _n)
             for _i in range(_start, _n):
                 if _dids[_i] in _train_doc_ids:
                     continue
                 eval_rows.append({"prompt": _prompts[_i], "activation": _acts[_i],
-                                  "source": _srcs[_i] or ""})
+                                  "source": _srcs[_i] or "", "n_raw_tokens": _nraw[_i]})
                 if len(eval_rows) >= args.eval_n_prompts:
                     break
             _seen += _n
@@ -1725,12 +1782,21 @@ def main():
     # by the variance of the population actually being scored) — with random
     # doc-hash splits the two differ only by sampling noise, but self-consistency
     # is free: use the eval rows' own predict-the-mean variance.
+    if eval_rows and splice is not None:
+        from nla.utils.kl_splice import tokenize_prefixes
+        _pids = tokenize_prefixes(tokenizer, [r["source"] for r in eval_rows],
+                                  [r["n_raw_tokens"] for r in eval_rows])
+        for r, i in zip(eval_rows, _pids):
+            r["prefix_ids"] = i   # None = prefix doesn't round-trip; left out of eval KL
+        print(f"[kl] eval: {sum(i is not None for i in _pids)}/{len(eval_rows)} rows "
+              f"have a usable prefix", flush=True)
     eval_fve_baseline = fve_baseline   # fallback if no eval rows
     if eval_rows:
         _e_acts = torch.stack([
             torch.as_tensor(r["activation"], dtype=torch.float32) for r in eval_rows
         ])
         _, eval_fve_baseline = compute_predict_mean_baselines(_e_acts, mse_scale_f)
+        eval_mean_dir = normalize_activation(_e_acts, 1.0).mean(0)  # eval KL baseline
         del _e_acts
         print(f"[fve] eval-set baseline = {eval_fve_baseline:.4f} "
               f"(train-set baseline = {fve_baseline:.4f})", flush=True)
@@ -1832,6 +1898,7 @@ def main():
         all_full_ids = []
         all_prompt_lens = []
         all_activations = []
+        all_prefixes = []
         all_explanations = []
         all_response_text = []
         all_prompt_group = []
@@ -1844,6 +1911,8 @@ def main():
             all_prompt_lens.append(r["prompt_len"])
             # Re-attach the activation for this sample's prompt
             all_activations.append(prompts_with_acts[r["prompt_idx"]][1])
+            if splice is not None:
+                all_prefixes.append(rows[batch_idxs[r["prompt_idx"]]]["prefix_ids"])
             all_explanations.append(expl)
             all_response_text.append(r["text"])
             all_prompt_group.append(r["prompt_idx"])
@@ -1904,7 +1973,10 @@ def main():
         rewards = score_with_critic(
             critic, tokenizer, all_explanations, all_activations,
             template, mse_scale_f, device,
+            splice=splice, prefixes=all_prefixes, fail_dir=kl_fail_dir,
         )
+        if splice is not None:
+            rewards, neg_kls, neg_kl_floors = rewards
         # TRUNCATED -> FAILED: a rollout that hit the max_new_tokens cap must not
         # be scored as if its explanation were complete (a cut-off <explanation>
         # that still parses scores artificially — the "FVE peaks then drops"
@@ -1921,6 +1993,10 @@ def main():
                 _floor if r is None else -math.log(min(max(-r, 1e-3), 2.0))
                 for r in rewards
             ]
+        elif splice is not None:
+            # reward = -KL; failed / truncated / non-finite -> the orthogonal-vector floor
+            rewards_filled = [f if (r is None or k is None) else k
+                              for r, k, f in zip(rewards, neg_kls, neg_kl_floors)]
         else:
             rewards_filled = [-2.0 if r is None else r for r in rewards]
         rewards_t = torch.tensor(rewards_filled, dtype=torch.float32, device=device)
@@ -2039,11 +2115,13 @@ def main():
         # actor just produced this step; targets h_l = the gold activations.
         # Gradient from this update does NOT flow into the actor (z is discrete).
         critic_loss_val = float("nan")
+        critic_kl_val = float("nan")
         critic_grad_norm_val = float("nan")
         critic_bwd_ok = False  # DP: did THIS rank run a finite critic backward this step?
         if args.train_critic and critic_optim is not None:
             crit_inputs = []
             crit_golds = []
+            crit_prefixes = []
             # `keep` excludes injection-failed rollouts (cjk/marker) — don't train the
             # AR reconstructor on garbage explanations (corrupt regression targets).
             # Also exclude sampler-mismatch-masked rollouts (see grpo): their
@@ -2064,6 +2142,8 @@ def main():
                     continue
                 crit_inputs.append(torch.tensor(ids, dtype=torch.long))
                 crit_golds.append(act)
+                if splice is not None:
+                    crit_prefixes.append(all_prefixes[i])
             if crit_inputs:
                 # Micro-batch the critic update — single forward on 256 sequences
                 # × 200 tokens × 5.5B-param critic with grad blows past 130GB.
@@ -2074,6 +2154,7 @@ def main():
                 if is_accum_start:
                     critic_optim.zero_grad()
                 accumulated = 0.0
+                accumulated_kl = 0.0
                 finite = True
                 cmb = max(1, args.critic_micro_batch)
                 for cs in range(0, bs_total, cmb):
@@ -2095,15 +2176,22 @@ def main():
                     # Scale so the sum across micro-batches = MSE over full batch;
                     # extra /accum for gradient accumulation across steps.
                     raw_mse = F.mse_loss(pred_n, gold_n) * (bs / bs_total)
-                    if not torch.isfinite(raw_mse):
+                    crit_loss = raw_mse
+                    if splice is not None:
+                        crit_loss = splice.kl([crit_prefixes[i] for i in chunk],
+                                              pred).mean() * (bs / bs_total)
+                    if not torch.isfinite(crit_loss):
                         print(f"step {step}: critic loss non-finite (chunk {cs}), skipping", flush=True)
                         finite = False
                         break
-                    (raw_mse / accum).backward()
+                    (crit_loss / accum).backward()
                     accumulated += raw_mse.item()
+                    accumulated_kl += crit_loss.item()
                 critic_bwd_ok = finite
                 if finite:
                     critic_loss_val = accumulated  # full-batch mean MSE (logged every step)
+                    if splice is not None:
+                        critic_kl_val = accumulated_kl  # full-batch mean KL (the kl-mode loss)
                     if is_accum_end and not is_dist:  # DP: step in unified block below
                         critic_grad_norm = torch.nn.utils.clip_grad_norm_(
                             critic_trainable, args.max_grad_norm,
@@ -2236,7 +2324,14 @@ def main():
                     f"cumulative={_health['preemptions_total']}",
                     flush=True,
                 )
-        print(rl_logging.format_console_line(step, log, train_ar=args.train_critic), flush=True)
+        _line = rl_logging.format_console_line(step, log, train_ar=args.train_critic)
+        if splice is not None:
+            _vk = [-k for r, k in zip(rewards, neg_kls) if r is not None and k is not None]
+            log["kl/mean"] = float(np.mean(_vk)) if _vk else float("nan")
+            log["kl/floor_mean"] = float(-np.mean(neg_kl_floors)) if neg_kl_floors else float("nan")
+            log["kl/ar_train"] = critic_kl_val
+            _line += f" | KL {log['kl/mean']:.4f} (floor {log['kl/floor_mean']:.3f})"
+        print(_line, flush=True)
         # [timing] per-phase breakdown (sync subtracted from the critic window)
         print(
             f"  [timing@{step}] roll {t_roll_end - t0:.1f}s | "
@@ -2282,6 +2377,7 @@ def main():
             # rollout_batch_vllm may return responses in any order; key each by
             # the prompt index it stamps (group_size=1 -> exactly one per prompt).
             _resp_by_idx = {r["prompt_idx"]: r["text"] for r in _eval_responses}
+            _e_kl_pred, _e_kl_pref = [], []
             # --- Phase 2: scoring (per-row, reads the pre-generated responses) ---
             for ei, row in enumerate(eval_rows):
                 activation = _eval_prompts_with_acts[ei][1]
@@ -2301,6 +2397,9 @@ def main():
                         mse = F.mse_loss(pn, gn).item()
                         if math.isfinite(mse):
                             e_reward = -mse
+                            if splice is not None and row.get("prefix_ids") is not None:
+                                _e_kl_pred.append(pred)
+                                _e_kl_pref.append(row["prefix_ids"])
                 eval_rewards_s.append(e_reward)
                 eval_records.append({
                     "step": step, "idx": ei, "reward": e_reward,
@@ -2320,6 +2419,14 @@ def main():
                 (1.0 - (-float(np.mean(valid_e))) / eval_fve_baseline) * 100.0
                 if valid_e else float("nan")
             )
+            if _e_kl_pred:
+                _ep = torch.stack(_e_kl_pred)
+                with torch.no_grad():
+                    _ekl = splice.kl(_e_kl_pref, _ep).mean().item()
+                    _ekl_b = splice.kl(_e_kl_pref, eval_mean_dir.to(device).expand_as(_ep)).mean().item()
+                log["eval/kl"] = _ekl
+                log["eval/kl_mean_baseline"] = _ekl_b
+                log["eval/kl_recovered_pct"] = (1.0 - _ekl / _ekl_b) * 100.0
             log["eval/extraction_rate"] = (
                 sum(1 for r in eval_records if r["extracted"]) / len(eval_records)
                 if eval_records else 0.0
@@ -2339,7 +2446,9 @@ def main():
             print(
                 f"  [eval@{step}] reward {log['eval/reward_mean']:.3f} "
                 f"| FVE {log['eval/fve_pct']:.1f}% "
-                f"| ext {log['eval/extraction_rate']:.0%}",
+                + (f"| KL {log['eval/kl']:.4f} (recovered {log['eval/kl_recovered_pct']:.1f}%) "
+                   if "eval/kl" in log else "")
+                + f"| ext {log['eval/extraction_rate']:.0%}",
                 flush=True,
             )
             # ---- Opus text-attribute judges (opt-in; reuses THIS round's

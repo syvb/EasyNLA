@@ -60,14 +60,15 @@ from nla.schema import (
 
 
 
-def load_sft_dataset(parquet_path, n_max=None, *, mode):
+def load_sft_dataset(parquet_path, n_max=None, *, mode, extra_cols=()):
     """Stream-load AV (prompt: list[dict], response: str, activation_vector)
     or AR (prompt: str, activation_vector). Slice rowgroups so n_max=N takes
-    only N rows, not the full first rowgroup."""
+    only N rows, not the full first rowgroup. extra_cols are copied into each
+    row dict as-is (e.g. the source prefix for --recon-loss kl)."""
     cols = (
         ["prompt", "response", "activation_vector"] if mode == "av"
         else ["prompt", "activation_vector"]
-    )
+    ) + list(extra_cols)
     pf = pq.ParquetFile(parquet_path)
     rows = []
     for rg_idx in range(pf.num_row_groups):
@@ -85,16 +86,19 @@ def load_sft_dataset(parquet_path, n_max=None, *, mode):
                    .astype(np.float32).reshape(len(acts_col), -1))
         prompts = rg.column("prompt").to_pylist()
         responses = rg.column("response").to_pylist() if mode == "av" else None
+        extras = {c: rg.column(c).to_pylist() for c in extra_cols}
         for i in range(take):
             row = {"prompt": prompts[i], "activation_vector": acts_np[i]}
             if mode == "av":
                 row["response"] = responses[i]
+            for c in extra_cols:
+                row[c] = extras[c][i]
             rows.append(row)
     return rows
 
 
-def load_heldout_explanation_pairs(parquet_path, n_rows):
-    """(explanation, activation) pairs from an AV-split parquet (has `response`).
+def load_heldout_explanation_pairs(parquet_path, n_rows, extra_cols=()):
+    """(explanation, activation, *extra_cols) tuples from an AV-split parquet (has `response`).
 
     The AV split is DOC-DISJOINT from the AR training data by stage-1
     construction, so FVE on these pairs is a genuine held-out number —
@@ -105,16 +109,17 @@ def load_heldout_explanation_pairs(parquet_path, n_rows):
     for rg_idx in range(pf.num_row_groups):
         if len(pairs) >= n_rows:
             break
-        rg = pf.read_row_group(rg_idx, columns=["response", "activation_vector"])
+        rg = pf.read_row_group(rg_idx, columns=["response", "activation_vector", *extra_cols])
         responses = rg.column("response").to_pylist()
+        extras = [rg.column(c).to_pylist() for c in extra_cols]
         acts_col = rg.column("activation_vector").combine_chunks()
         acts = (acts_col.flatten().to_numpy(zero_copy_only=False)
                 .astype(np.float32).reshape(len(acts_col), -1))
-        for resp, act in zip(responses, acts):
+        for i, (resp, act) in enumerate(zip(responses, acts)):
             expl = extract_explanation(resp)
             if expl is None:
                 continue
-            pairs.append((expl, act))
+            pairs.append((expl, act, *(e[i] for e in extras)))
             if len(pairs) >= n_rows:
                 break
     return pairs
@@ -122,24 +127,27 @@ def load_heldout_explanation_pairs(parquet_path, n_rows):
 
 @torch.no_grad()
 def heldout_fve_mse(critic, tokenizer, pairs, template, mse_scale_f, device,
-                    micro_batch=16, max_len=1024):
+                    micro_batch=16, max_len=1024, splice=None, mean_act=None):
     """Mean per-sample MSE on normalized (pred, gold) over held-out pairs.
 
-    Returns (mean_mse, n_scored). Caller divides by a predict-the-mean
+    Returns (mean_mse, n_scored, kl). Caller divides by a predict-the-mean
     baseline for FVE. Skips pairs whose critic prompt exceeds max_len
-    (would truncate the suffix anchor).
+    (would truncate the suffix anchor). With `splice` (pairs then carry
+    prefix ids third), kl = (mean KL of the prediction, mean KL of splicing
+    `mean_act`, the predict-the-mean baseline); otherwise None.
     """
-    mses = []
+    mses, kls, kls_base = [], [], []
     for cs in range(0, len(pairs), micro_batch):
         chunk = pairs[cs:cs + micro_batch]
-        ids_list, golds = [], []
-        for expl, act in chunk:
+        ids_list, golds, prefixes = [], [], []
+        for expl, act, *rest in chunk:
             ids = tokenizer.encode(template.format(explanation=expl),
                                    add_special_tokens=False)
             if not 0 < len(ids) <= max_len:
                 continue
             ids_list.append(torch.tensor(ids, dtype=torch.long))
             golds.append(act)
+            prefixes.append(rest[0] if rest else None)
         if not ids_list:
             continue
         bs = len(ids_list)
@@ -155,7 +163,11 @@ def heldout_fve_mse(critic, tokenizer, pairs, template, mse_scale_f, device,
         pred_n = normalize_activation(pred, mse_scale_f)
         gold_n = normalize_activation(gold, mse_scale_f)
         mses.extend(((pred_n - gold_n) ** 2).mean(dim=-1).tolist())
-    return float(np.mean(mses)) if mses else float("nan"), len(mses)
+        if splice is not None:
+            kls.extend(splice.kl(prefixes, pred).tolist())
+            kls_base.extend(splice.kl(prefixes, mean_act.to(device).expand_as(pred)).tolist())
+    kl = (float(np.mean(kls)), float(np.mean(kls_base))) if kls else None
+    return float(np.mean(mses)) if mses else float("nan"), len(mses), kl
 
 
 def ar_debug_stats(pred, gold, mse_scale_f):
@@ -473,7 +485,7 @@ def _ar_prepare_chunk(rows, tokenizer, device, max_len=1024):
         np.stack([r["activation_vector"] for r in kept_rows]),
         dtype=torch.float32, device=device,
     )
-    return batch_ids, attn, gold
+    return batch_ids, attn, gold, kept_rows
 
 
 # ----------------------------------------------------------------------------
@@ -505,6 +517,19 @@ def main():
                         "blocks. Default: sidecar extraction.layer_index + 1 (falls "
                         "back to 25 = Qwen3-8B layer-24 if the sidecar lacks it); "
                         "an explicit value is asserted against the sidecar.")
+    p.add_argument("--recon-loss", choices=["mse", "kl"], default="mse",
+                   help="AR mode. mse = reconstruction MSE. kl = SAE-style: splice "
+                        "the prediction (rescaled to the natural norm) into the frozen "
+                        "target model at the extraction layer and minimise "
+                        "KL(p_orig || p_splice) on the next token at the extraction "
+                        "position (nla/utils/kl_splice.py). Needs the parquet's "
+                        "detokenized_text_truncated + n_raw_tokens. MSE/FVE still logged.")
+    p.add_argument("--kl-target-ckpt", default=None,
+                   help="--recon-loss kl: model the activations came from. "
+                        "Default: sidecar extraction.base_model.")
+    p.add_argument("--kl-micro-batch", type=int, default=8,
+                   help="--recon-loss kl: unique prefixes per target forward "
+                        "(bounds KV-cache memory; prefixes run up to ~4k tokens).")
     p.add_argument("--freeze-backbone", action="store_true", default=False,
                    help="AR mode: freeze the backbone and train ONLY the "
                         "value_head — a linear-probe baseline for how much of "
@@ -761,9 +786,19 @@ def main():
                   "(linear-probe baseline, --freeze-backbone)")
     model.train()
 
+    splice = None
+    if args.recon_loss == "kl":
+        assert args.mode == "ar", "--recon-loss kl is an AR-mode loss"
+        from nla.utils.kl_splice import PREFIX_COLUMNS, attach_prefix_ids, load_splice_kl
+        splice = load_splice_kl(args.kl_target_ckpt, args.sidecar,
+                                cfg.extraction_layer_index, device, args.kl_micro_batch)
+
     # ---- data ----
     print(f"[data] loading {args.parquet} (max_rows={args.max_rows})", flush=True)
-    rows = load_sft_dataset(args.parquet, n_max=args.max_rows, mode=args.mode)
+    rows = load_sft_dataset(args.parquet, n_max=args.max_rows, mode=args.mode,
+                            extra_cols=PREFIX_COLUMNS if splice is not None else ())
+    if splice is not None:
+        rows = attach_prefix_ids(rows, tokenizer, tag="train")
     print(f"[data] {len(rows)} rows", flush=True)
     if args.num_steps is None:
         eff_batch = args.batch_size * args.gradient_accumulation_steps
@@ -833,11 +868,20 @@ def main():
         )
         heldout_pairs = load_heldout_explanation_pairs(
             args.heldout_parquet, args.heldout_rows,
+            extra_cols=PREFIX_COLUMNS if splice is not None else (),
         )
+        if splice is not None:
+            from nla.utils.kl_splice import tokenize_prefixes
+            _pids = tokenize_prefixes(tokenizer, [p[2] for p in heldout_pairs],
+                                      [p[3] for p in heldout_pairs])
+            heldout_pairs = [(p[0], p[1], i) for p, i in zip(heldout_pairs, _pids)
+                             if i is not None]
         _h_acts = torch.tensor(
-            np.stack([a for _, a in heldout_pairs]), dtype=torch.float32,
+            np.stack([p[1] for p in heldout_pairs]), dtype=torch.float32,
         )
         _, heldout_baseline = compute_predict_mean_baselines(_h_acts, mse_scale_f)
+        # predict-the-mean direction for the held-out KL baseline
+        heldout_mean_act = normalize_activation(_h_acts, 1.0).mean(0)
         del _h_acts
         print(f"[ar] {len(heldout_pairs)} held-out pairs from "
               f"{args.heldout_parquet}; baseline (paper def) = {heldout_baseline:.4f}")
@@ -875,6 +919,7 @@ def main():
         accum_resp_tokens = 0  # AV only: total response tokens for normalization
         accum_av_entropy = 0.0  # AV only: mean policy entropy over response tokens (nats)
         accum_n = 0
+        accum_mse = 0.0        # AR: reconstruction MSE (== loss unless --recon-loss kl)
         ar_dbg = {}            # AR: last-chunk norms/cosine snapshot
 
         for accum_idx in range(grad_accum):
@@ -923,14 +968,19 @@ def main():
                     lsm = F.log_softmax(resp_logits, dim=-1)
                     accum_av_entropy += float((-(lsm.exp() * lsm).sum(-1)).mean())
             else:  # ar, single-vector
-                ids, attn, gold = _ar_prepare_chunk(
+                ids, attn, gold, kept = _ar_prepare_chunk(
                     chunk_rows, tokenizer, device, max_len=args.max_len,
                 )
                 with amp():
                     pred = critic_predict(model, ids, attn, mse_scale_f)
                 pred_n = normalize_activation(pred, mse_scale_f)
                 gold_n = normalize_activation(gold, mse_scale_f)
-                loss = F.mse_loss(pred_n, gold_n)
+                mse = F.mse_loss(pred_n, gold_n)
+                if splice is not None:
+                    loss = splice.kl([r["prefix_ids"] for r in kept], pred).mean()
+                else:
+                    loss = mse
+                accum_mse += mse.item()
                 ar_dbg = ar_debug_stats(pred, gold, mse_scale_f)
 
             # Scale loss for accumulation; gradients sum correctly.
@@ -959,8 +1009,11 @@ def main():
         }
         line = (f"step {step:04d} | loss {mean_loss:.4f} | lr {cur_lr:.2e} "
                 f"| grad {log['grad_norm']:.3f} | t {log['wall_s']:.1f}s")
+        if args.mode == "ar" and splice is not None:
+            log["kl"] = mean_loss
+            log["mse"] = accum_mse / max(accum_n, 1)
         if args.mode == "ar" and fve_baseline is not None:
-            fve = (1.0 - mean_loss / fve_baseline) * 100.0
+            fve = (1.0 - (accum_mse / max(accum_n, 1)) / fve_baseline) * 100.0
             log["fve_pct"] = fve
             line += f" | FVE {fve:.1f}%"
         if args.mode == "av":
@@ -1001,7 +1054,7 @@ def main():
             else:  # ar: reconstruction examples
                 model.eval()
                 for i, row in enumerate(sample_rows):
-                    ids, attn, gold = _ar_prepare_chunk(
+                    ids, attn, gold, _ = _ar_prepare_chunk(
                         [row], tokenizer, device, max_len=args.max_len,
                     )
                     with torch.no_grad(), amp():
@@ -1041,15 +1094,22 @@ def main():
         ):
             model.eval()
             with amp():
-                h_mse, h_n = heldout_fve_mse(
+                h_mse, h_n, h_kl = heldout_fve_mse(
                     model, tokenizer, heldout_pairs, cfg.critic_prompt_template,
                     mse_scale_f, device, max_len=args.max_len,
+                    splice=splice, mean_act=heldout_mean_act,
                 )
             model.train()
             h_fve = (1.0 - h_mse / heldout_baseline) * 100.0
             log["heldout_fve_pct"] = h_fve
             log["heldout_mse"] = h_mse
-            print(f"  [heldout@{step}] mse {h_mse:.4f} | FVE {h_fve:.1f}% "
+            kl_str = ""
+            if h_kl is not None:
+                log["heldout_kl"], log["heldout_kl_mean_baseline"] = h_kl
+                log["heldout_kl_recovered_pct"] = (1.0 - h_kl[0] / h_kl[1]) * 100.0
+                kl_str = (f" | KL {h_kl[0]:.4f} (mean-baseline {h_kl[1]:.4f}, "
+                          f"recovered {log['heldout_kl_recovered_pct']:.1f}%)")
+            print(f"  [heldout@{step}] mse {h_mse:.4f} | FVE {h_fve:.1f}%{kl_str} "
                   f"(n={h_n})", flush=True)
 
         if not args.no_wandb:
