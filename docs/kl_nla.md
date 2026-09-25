@@ -80,6 +80,29 @@ copies, so each prefix runs once.
 - The next-token indicator explains most of the KL gain: expect RL to degenerate. Phase 1b before Phase 2.
 - Otherwise go to Phase 1.
 
+### Phase 0 result (2026-09-25, pod 02n7d5wlluz4iy, H100, ~20 min)
+
+HF `syvb/kl-nla-qwen3-8b:evals/audit0` (summary.md / summary.json / rows.npz). 2,844 rows, 287 docs.
+Brackets are 95% doc-bootstrap intervals.
+
+- **Gates pass.** G1: stored-activation KL median 5.0e-4, p90 1.8e-3 nats (max 0.045). G2: 100%.
+  FVE reproduces fvecmp exactly (gold 0.641, av_greedy 0.491, wrong −0.841), so the rows and the AR
+  loading match.
+- **Ordering holds, same ranking as FVE.** KL recovered: gold 0.842 [0.826, 0.857] > rl_greedy 0.764 >
+  rl_sample 0.743 > av_greedy 0.720 [0.697, 0.741] > av_sample 0.627 > quote 0.605 ≫ wrong −1.075
+  (KL 11.3 nats, as bad as the orthogonal vector and worse than the mean direction's 5.4). KL is heavy-tailed:
+  av_greedy median 0.45, mean 1.53, p90 4.2 nats.
+- **Per-row KL and MSE agree only loosely:** Spearman 0.29 (gold) to 0.60 (quote), well below the 0.9
+  "KL adds nothing" bar.
+- **The AR's error is concentrated on output-relevant directions.** Gold explanations reach FVE 0.641
+  with 0.86 nats of KL. The gold vector randomly rotated to the same FVE (cos 0.9) costs only 0.115 nats.
+  At equal vector error the AR's miss is ~7× costlier to the model than an isotropic one. This is the gap a
+  KL-trained AR could close.
+- **Next-token diagnostic: not dominant (yet).** On the 1,690 rows whose greedy next token is a content
+  word, av_greedy names it 60% of the time. Those rows carry 56% of av_greedy's KL gain: proportional, not
+  concentrated. Recovered is 0.82 named vs 0.71 not named. Quote names it 34% of the time and gets 24% of its gain there.
+- Decision per the rules above: proceed to Phase 1. Phase 1b is not triggered.
+
 ## Phase 1: AR only, KL vs MSE, same start (matched)
 
 One H100, ~1.5 h for both arms plus evals, ≈ $5–8.
