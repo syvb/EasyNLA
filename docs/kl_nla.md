@@ -53,7 +53,10 @@ matches `explanations.json`. Each row is one `SpliceKL.kl` call with all conditi
 copies, so each prefix runs once.
 
 **Gates (stop and fix if any fails):**
-- G1: splicing the *stored* activation gives KL ≈ 0 (median < 1e-3 nats) at 8B in bf16. This checks
+- G1: splicing the *stored* activation gives KL ≈ 0 (median < 1e-2 and p90 < 5e-2 nats) at 8B in bf16.
+  The threshold was set at 1e-3 in the first draft and loosened before any 8B data existed: the stored
+  vectors came from a batched, right-padded bf16 extraction, so recompute noise is expected, whereas a real
+  bug gives nats. G1 checks
   layer indexing, the re-tokenization and bf16 at full scale. The CPU tests covered a tiny model and 0.6B.
 - G2: ≥ 99% of the 2,844 prefixes round-trip.
 
@@ -83,8 +86,15 @@ One H100, ~1.5 h for both arms plus evals, ≈ $5–8.
 
 - Both arms start from `syvb/nanonla-qwen3-8b-L24-ar` (`--base-ckpt` takes the prepared critic),
   LoRA r128 (the `train_sft` default; a bf16 AR plus the bf16 target fits in 80 GB, full-FT fp32 does not).
-  Same data (`ar_sft_full`, 1 epoch = 782 steps at batch 64), same lr and seed. The only difference
-  is `--recon-loss kl` vs `mse`.
+  Same data (`ar_sft_full`, 1 epoch = 782 steps at effective batch 64 = 16 × 4 accumulation), lr 5e-5
+  (warmup 50, cosine to 2e-6), seed 0. The only difference is `--recon-loss kl` vs `mse`.
+  The micro-batch is 16 because `train_sft` does not enable gradient checkpointing for an unquantized
+  LoRA AR. The AR must be passed as a local directory: `train_sft` treats `--base-ckpt` as a prepared
+  critic only if `value_head.safetensors` is on disk.
+- How to run: `scripts/runpod_kl_nla.py launch --stages audit0` then
+  `--stages ar_kl,ar_mse,audit1`. `scripts/pod_kl_nla.sh` is the pod side. Results go to the private HF
+  dataset `syvb/kl-nla-qwen3-8b` (`evals/audit0`, `ckpts/ar_kl`, `ckpts/ar_mse`, `evals/audit1`).
+  Training curves go to W&B project `kl-nla`.
 - Gradient clipping at 1.0 binds on both losses (the smoke run's grad norms were 90–270), so the
   ~10× loss-scale difference does not need its own lr.
 - Eval: rerun the Phase 0 audit with each new AR. Primary contrast: KL recovered on **av_greedy**,

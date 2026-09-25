@@ -67,11 +67,13 @@ class SpliceKL:
         resid = torch.cat([resid[:, :-q], h], dim=1)
         return resid if rest is None else (resid, *rest)
 
-    def kl(self, prefixes, vectors):
+    def kl(self, prefixes, vectors, return_argmax=False):
         """KL(p_orig || p_splice) [N] for vector j spliced after prefixes[j].
 
         prefixes: N token-id lists (full prefix x_<=t; rows sharing a prefix are
         deduplicated). vectors: [N, d]; grad flows into it if it requires grad.
+        return_argmax: also return the argmax token of p_orig and of p_splice
+        ([N] each, no grad).
         """
         n = len(prefixes)
         assert vectors.shape[0] == n
@@ -80,6 +82,7 @@ class SpliceKL:
             groups.setdefault(tuple(ids), []).append(j)
         keys = list(groups)
         out = [None] * n
+        top_o, top_s = [0] * n, [0] * n
         dev = self.model.get_input_embeddings().weight.device
         for cs in range(0, len(keys), self.micro_batch):
             chunk = keys[cs:cs + self.micro_batch]
@@ -125,8 +128,14 @@ class SpliceKL:
             logp = F.log_softmax(logits, dim=-1)              # [c, q, V]
             lp_orig = logp[:, :1].detach()
             kl = (lp_orig.exp() * (lp_orig - logp)).sum(-1)  # [c, q]; col 0 ~ 0
+            if return_argmax:
+                am = logp.detach().argmax(-1).tolist()
             for r, s, j in slots:
                 out[j] = kl[r, s]
+                if return_argmax:
+                    top_o[j], top_s[j] = am[r][0], am[r][s]
+        if return_argmax:
+            return torch.stack(out), torch.tensor(top_o), torch.tensor(top_s)
         return torch.stack(out)
 
 
