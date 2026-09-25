@@ -130,6 +130,43 @@ One H100, ~1.5 h for both arms plus evals, ≈ $5–8.
 - Optional extra arm, only if Phase 1 is flat: AR-KL from the truncated base instead of from the
   MSE-trained AR (~$3). That rules out "the MSE solution is a basin KL can't leave in one epoch".
 
+### Phase 1 result (2026-09-25, pod 92gm22kd38x5vu, H100, 1.4 h ≈ $5)
+
+HF `syvb/kl-nla-qwen3-8b`: `ckpts/ar_kl`, `ckpts/ar_mse` (LoRA + value head, `iter_0000782`), and
+`evals/audit1` (summary.md, contrasts.md from `scripts/kl_phase1_contrasts.py`, rows.npz).
+W&B `kl-nla` / `kl-nla-phase1`. Speed: 15 steps/min for KL (52 min), 70 steps/min for MSE (11 min).
+Gates pass again (G1 median 4.9e-4).
+
+| AR (same 2,844 rows) | KL recovered, av_greedy | FVE, av_greedy | KL recovered, gold | FVE, gold |
+|---|---|---|---|---|
+| sft (start) | 0.720 | 0.491 | 0.842 | 0.641 |
+| mse (+1 epoch MSE) | 0.721 | 0.499 | 0.845 | 0.651 |
+| kl (+1 epoch KL) | **0.860** | 0.343 | **0.915** | 0.464 |
+
+- **Primary contrast passes.** KL recovered, kl − mse, on av_greedy: **+0.139 [+0.126, +0.153]**. It is positive
+  for every text condition: gold +0.071, rl_greedy +0.110, av_sample +0.165, quote +0.189. The matched MSE
+  control is flat (mse − sft +0.001 [−0.001, +0.004]), so the gain comes from the loss, not the extra epoch.
+  Top-1 agreement is +0.109 on av_greedy (0.560 → 0.668).
+- **The cost is FVE:** av_greedy 0.499 → 0.343, gold 0.651 → 0.464. KL and vector reconstruction pull apart.
+  The KL-trained AR from the *SFT AV's* explanations (0.860) now beats the MSE AR from *gold* explanations (0.845).
+- **The gain sits in the tail.** Split rows by the mse-AR's own KL: the worst quartile goes 4.97 → 2.31 nats
+  (kl better on 96% of rows), Q3 0.79 → 0.44, Q2 0.28 → 0.22. The best quartile gets slightly worse, 0.047 → 0.073
+  (kl better on only 48%).
+- **Not a next-token effect.** The gain on rows whose explanation does *not* name the greedy next token
+  (0.712 → 0.840) is at least as large as on rows that do (0.821 → 0.911).
+- **Caveat: part of it is hedging.** A wrong document's explanation now beats the mean-direction
+  baseline on 30% of rows (sft/mse AR: 5%). Wrong-document KL falls from 11.3 to 6.9 nats, and the wrong − matched
+  KL gap shrinks from 9.8 to 6.2 nats. The KL AR has learned to avoid confidently wrong predictions: less committal
+  vectors, a better "prior" than the mean direction. So some of the +0.139 is not extra information read from the
+  explanation. The top-1 gain and the not-named-rows gain say some of it is, but these numbers can't split the two.
+- **Decision per the rules above:** the Phase 2 go criteria are met (CI > 0, not next-token-explained). But the
+  hedging caveat has to be controlled first, because an RL reward that pays for hedging would teach the AV
+  to be vague. Cheap control (~$1, one H100 audit), not yet run:
+  1. each AR's **own no-information baseline**: an empty and a generic explanation → KL, and report KL recovered
+     against that instead of against the mean direction;
+  2. the mse-AR's prediction **shrunk toward the mean direction** with the blend weight fit on half the docs,
+     scored on the other half. If shrinkage alone closes most of the +0.139, the KL AR is mostly a better-calibrated MSE AR.
+
 ## Phase 1b (conditional): multi-position KL
 
 Needed if the next-token diagnostic dominates. Generate a greedy 16-token continuation of each prefix
