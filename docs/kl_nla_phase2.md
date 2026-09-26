@@ -146,7 +146,8 @@ Each piece is CPU-smoked on Qwen3-0.6B stand-ins first, like Phases 0/1.
    - `rl_smoke`: 10 steps of the KL arm at 16 × 4, logging peak memory and s/step;
    - `rl_kl` and `rl_mse`: one per pod, pushing checkpoints and W&B as they go;
    - `rl_gen` + `audit2`: the final evaluation.
-5. **Launcher:** `--gpu "NVIDIA H200"` for the RL stages. Watchdog: 8 h per RL pod.
+5. **Launcher:** `--gpu "NVIDIA H200"` for the RL stages. Watchdog: 8 h per RL pod. Secure Cloud
+   only (the launcher no longer falls back to Community Cloud).
 
 ## Risks and limits
 
@@ -164,9 +165,9 @@ Each piece is CPU-smoked on Qwen3-0.6B stand-ins first, like Phases 0/1.
 | step | GPU | est. cost | gate to the next step |
 |---|---|---|---|
 | engineering + CPU smoke | local | $0 | smokes pass |
-| A: merge ARs + best-of-16 probe | 1×H100 | ~$3.5 | A1 ∧ A2 ∧ A3 |
-| B0: RL smoke (KL arm, 10 steps) | 1×H200 | ~$3 | runs; memory and s/step measured |
-| B: two RL arms, in parallel | 2×H200 | ~$47–66 (listed $3.59/h; H100 bills ran ~30% over the listing) | stop rules |
+| A: merge ARs + best-of-16 probe | 1×H100 | ~$3.5 (Secure $3.49/h) | A1 ∧ A2 ∧ A3 |
+| B0: RL smoke (KL arm, 10 steps) | 1×H200 | ~$3.5 (Secure $4.59/h) | runs; memory and s/step measured |
+| B: two RL arms, in parallel | 2×H200 | ~$46–64 (Secure $4.59/h) | stop rules |
 | B-eval: generate + cross-score | 1×H100 | ~$5 | — |
 
 Total if every gate passes: about $60–80. Wall-clock: about a day, most of it the two RL arms running side by side.

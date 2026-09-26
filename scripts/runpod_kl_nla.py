@@ -83,8 +83,8 @@ def launch(a):
     runpod.api_key = _key(".runpod_key")
     env.update({"WANDB_API_KEY": _key(".wandb_key"), "HF_TOKEN": _key(".hf_token"),
                 "RUNPOD_API_KEY": runpod.api_key})
-    attempts = [(a.gpu, a.cloud)] + [(g, c) for g in FALLBACK_GPUS for c in ("SECURE", "COMMUNITY")
-                                     if (g, c) != (a.gpu, a.cloud)]
+    # SECURE only: Community Cloud pods have been unreliable, so never fall back to them.
+    attempts = [(g, "SECURE") for g in [a.gpu] + [x for x in FALLBACK_GPUS if x != a.gpu]]
     pod = None
     for gpu, cloud in attempts:
         try:
@@ -117,14 +117,17 @@ def plan(a):
     for s in st:
         print(f"  {s:<8} {STAGE_HOURS[s]:>4.1f} h")
     print(f"  startup  {STARTUP_HOURS:>4.1f} h\nGPU-hours: {h:.1f}")
+    # securePrice is what our (SECURE-only) pods bill. lowestPrice is the Community
+    # price and understated real runs by ~30% when this printed it as "the" price.
     for g in [a.gpu] + [x for x in FALLBACK_GPUS if x != a.gpu]:
         try:
-            r = (runpod.get_gpu(g).get("lowestPrice") or {}).get("uninterruptablePrice")
+            d = runpod.get_gpu(g)
         except Exception as e:                                  # noqa: BLE001
-            r = None
             print(f"  (no price for {g}: {type(e).__name__})")
-        if r:
-            print(f"{g:<28} ${r:.2f}/h listed  -> ${h * r:.2f}")
+            continue
+        sec = d.get("securePrice")
+        if sec:
+            print(f"{g:<28} SECURE ${sec:.2f}/h -> ${h * sec:.2f}" + ("  <- --gpu" if g == a.gpu else ""))
 
 
 _UPTIME_Q = ("query { myself { pods { id name desiredStatus costPerHr "
@@ -160,7 +163,8 @@ def main():
         p = sub.add_parser(name)
         p.add_argument("--stages", default="audit0", help=f"comma list of {','.join(STAGES)}")
         p.add_argument("--gpu", default="NVIDIA H100 80GB HBM3")
-        p.add_argument("--cloud", default="SECURE")
+        p.add_argument("--cloud", default="SECURE", choices=["SECURE"],
+                       help="SECURE only; Community Cloud is not used (unreliable)")
         p.add_argument("--branch", default="sv/kl-nla")
         p.add_argument("--hf-repo", default="syvb/kl-nla-qwen3-8b")
         p.add_argument("--ar-ckpt", default="syvb/nanonla-qwen3-8b-L24-ar")
