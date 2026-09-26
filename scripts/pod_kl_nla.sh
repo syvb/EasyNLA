@@ -10,6 +10,7 @@
 #   ar_kl   Phase 1: continue the SFT AR on KL      (LoRA, one epoch of ar_sft_full)
 #   ar_mse  Phase 1: continue the SFT AR on MSE     (matched control)
 #   audit1  Phase 1: KL audit of sft / ar_kl / ar_mse
+#   hedge   hedging control: no-info baselines + cross-fit shrinkage (kl_hedge_control.py)
 # Everything is pushed to the HF dataset repo $HF_REPO as it is produced;
 # stages that need earlier outputs pull them from there.
 
@@ -33,7 +34,7 @@ finish() {
 }
 has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
 for s in ${STAGES//,/ }; do
-  case "$s" in audit0|ar_kl|ar_mse|audit1) ;; *) finish "unknown stage '$s'";; esac
+  case "$s" in audit0|ar_kl|ar_mse|audit1|hedge) ;; *) finish "unknown stage '$s'";; esac
 done
 
 # Whole-pod watchdog: whatever hangs, the pod does not outlive MAX_HOURS.
@@ -103,7 +104,7 @@ has ar_kl && train_ar ar_kl kl
 has ar_mse && train_ar ar_mse mse
 
 # ---------------------------------------------------------------- audit1 ----
-if has audit1; then
+pull_ars() {   # Phase 1 ARs: trained on this pod, else pulled from HF; sets KLD / MSED
   for n in ar_kl ar_mse; do
     if [ ! -d "$CK/$n" ]; then
       $SYNC pull "$HF_REPO" "ckpts/$n" "${CK}_dl" && mkdir -p "$CK/$n" \
@@ -111,6 +112,9 @@ if has audit1; then
     fi
   done
   KLD=$(ls -d "$CK"/ar_kl/iter_* | tail -1); MSED=$(ls -d "$CK"/ar_mse/iter_* | tail -1)
+}
+if has audit1; then
+  pull_ars
   log "audit1: ar_kl=$KLD ar_mse=$MSED"
   mkdir -p "$EV/audit1"
   timeout -k 2m "${MAX_HOURS}h" python scripts/kl_audit.py "${AUDIT_ARGS[@]}" \
@@ -118,6 +122,22 @@ if has audit1; then
       --out "$EV/audit1" 2>&1 | tee "$EV/audit1/audit1.log"
   log "audit1 exit ${PIPESTATUS[0]}"
   push_retry "$EV/audit1" evals/audit1
+fi
+
+# ----------------------------------------------------------------- hedge ----
+if has hedge; then
+  pull_ars
+  log "hedge: ar_kl=$KLD ar_mse=$MSED"
+  mkdir -p "$EV/hedge"
+  timeout -k 2m "${MAX_HOURS}h" python scripts/kl_hedge_control.py \
+      --val "$SRC/ws/av_sft_val.parquet" \
+      --exclude "$SRC/nla8b/av_sft_full.parquet" "$SRC/nla8b/ar_sft_full.parquet" \
+      --explanations "$SRC/expl/evals/fvecmp/explanations.json" \
+      --target "$TARGET_CKPT" --micro-batch "$KL_MICRO_BATCH" \
+      --ar-kl "$SRC/ar:$KLD" --ar-mse "$SRC/ar:$MSED" \
+      --out "$EV/hedge" 2>&1 | tee "$EV/hedge/hedge.log"
+  log "hedge exit ${PIPESTATUS[0]}"
+  push_retry "$EV/hedge" evals/hedge
 fi
 
 finish "all stages done"

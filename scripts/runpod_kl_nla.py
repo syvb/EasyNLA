@@ -24,10 +24,10 @@ IMAGE = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
 REPO = "https://github.com/syvb/EasyNLA.git"
 FALLBACK_GPUS = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL", "NVIDIA H200",
                  "NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]
-STAGES = ("audit0", "ar_kl", "ar_mse", "audit1")
+STAGES = ("audit0", "ar_kl", "ar_mse", "audit1", "hedge")
 # Wall-clock guesses on an H100 (782 AR steps at eff. batch 64); replace with
 # measured numbers after the first run.
-STAGE_HOURS = {"audit0": 0.3, "ar_kl": 0.9, "ar_mse": 0.5, "audit1": 0.4}
+STAGE_HOURS = {"audit0": 0.3, "ar_kl": 0.9, "ar_mse": 0.2, "audit1": 0.3, "hedge": 0.3}
 STARTUP_HOURS = 0.3      # image pull + pip + ~30 GB of model/data downloads
 
 BOOTSTRAP = (

@@ -167,6 +167,27 @@ Gates pass again (G1 median 4.9e-4).
   2. the mse-AR's prediction **shrunk toward the mean direction** with the blend weight fit on half the docs,
      scored on the other half. If shrinkage alone closes most of the +0.139, the KL AR is mostly a better-calibrated MSE AR.
 
+### Hedging control: pre-registration (written 2026-09-26, before running)
+
+`scripts/kl_hedge_control.py`, pod stage `hedge`, same 2,844 rows restricted to those where av_greedy,
+gold and wrong all have a prediction. An explanation-free input gives an AR the same prompt on every row,
+so its "no-info" prediction is one constant vector, the AR's learned prior (three texts: empty, short
+generic, long generic). Shrinkage blends an AR's predicted direction with a prior direction,
+normalize(α·pred + (1−α)·prior), α ∈ {0.1, …, 1.0}. α is fit on half the documents by pooled KL recovered
+on av_greedy, applied to the other half (2-fold cross-fit), and reused unchanged for gold and wrong. The
+MSE AR is shrunk toward the mean direction and toward each of the KL AR's three no-info constants, the
+strongest available prior. The KL AR is shrunk toward the mean direction only.
+
+**Rule.** gap closed = (best cross-fit shrunk mse − raw mse) / (raw kl − raw mse), pooled KL recovered on
+av_greedy, where "best" is the prior that does best:
+- ≥ 50% → **mostly calibration**: the Phase 1 gain is hedging. Don't use −KL as an RL reward without a
+  calibration-neutral normalization.
+- < 25% **and** raw kl − best shrunk mse has CI > 0 → **mostly content**: Phase 2 can use −KL.
+- otherwise → **mixed**.
+
+Also reported: each AR's KL gain in nats over its own best no-info constant, and whether shrinkage
+reproduces the KL AR's milder wrong-document KL.
+
 ## Phase 1b (conditional): multi-position KL
 
 Needed if the next-token diagnostic dominates. Generate a greedy 16-token continuation of each prefix

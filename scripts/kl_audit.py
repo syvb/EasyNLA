@@ -135,6 +135,28 @@ def names_token(expl, tok_str):
     return float(re.search(rf"(?<![A-Za-z0-9]){re.escape(tok_str)}(?![A-Za-z0-9])", expl, re.I) is not None)
 
 
+def load_eval_rows(val, exclude, explanations, n=None):
+    """Exactly fvecmp's rows (same filter, same order), checked against its saved doc_ids.
+    Returns (table, kept row indices, explanations dict, doc_id array, gold [N, d])."""
+    from nla.schema import extract_explanation
+    T = pq.read_table(val, columns=["response", "activation_vector", "doc_id",
+                                    "detokenized_text_truncated", "n_raw_tokens"]).to_pandas()
+    seen = set()
+    for p in exclude:
+        seen |= set(pq.read_table(p, columns=["doc_id"]).column("doc_id").to_pylist())
+    keep = [i for i in range(len(T)) if T.doc_id[i] not in seen and extract_explanation(T.response[i])]
+    E = json.load(open(explanations))
+    assert [T.doc_id[i] for i in keep] == E["doc_id"], "row set differs from explanations.json"
+    if n:
+        keep = keep[:n]
+        E = {k: v[:n] for k, v in E.items()}
+    docs = np.array([T.doc_id[i] for i in keep])
+    log(f"{len(keep)} rows from {len(set(docs))} docs (excluded {len(seen)} training docs); "
+        f"matches explanations.json")
+    gold = torch.tensor(np.stack([np.asarray(T.activation_vector[i], dtype=np.float32) for i in keep]))
+    return T, keep, E, docs, gold
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--val", required=True, help="av_sft_val.parquet (+ its .nla_meta.yaml)")
@@ -151,25 +173,11 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     from transformers import AutoTokenizer
     from nla.config import load_nla_config
-    from nla.schema import compute_predict_mean_baselines, extract_explanation, normalize_activation
+    from nla.schema import compute_predict_mean_baselines, normalize_activation
     from nla.utils.kl_splice import load_splice_kl, orthogonal_fail_vectors, tokenize_prefixes
 
-    # ---- rows: exactly fvecmp's (same filter, same order), checked against its doc_ids ----
-    T = pq.read_table(a.val, columns=["response", "activation_vector", "doc_id",
-                                      "detokenized_text_truncated", "n_raw_tokens"]).to_pandas()
-    seen = set()
-    for p in a.exclude:
-        seen |= set(pq.read_table(p, columns=["doc_id"]).column("doc_id").to_pylist())
-    keep = [i for i in range(len(T)) if T.doc_id[i] not in seen and extract_explanation(T.response[i])]
-    E = json.load(open(a.explanations))
-    assert [T.doc_id[i] for i in keep] == E["doc_id"], "row set differs from explanations.json"
-    if a.n:
-        keep = keep[:a.n]
-        E = {k: v[:a.n] for k, v in E.items()}
-    docs = np.array([T.doc_id[i] for i in keep])
+    T, keep, E, docs, gold = load_eval_rows(a.val, a.exclude, a.explanations, a.n)
     N = len(keep)
-    log(f"{N} rows from {len(set(docs))} docs (excluded {len(seen)} training docs); matches explanations.json")
-    gold = torch.tensor(np.stack([np.asarray(T.activation_vector[i], dtype=np.float32) for i in keep]))
 
     ar_dir0 = a.ar[0].split("=", 1)[1].partition(":")[0]
     tok = AutoTokenizer.from_pretrained(ar_dir0)
