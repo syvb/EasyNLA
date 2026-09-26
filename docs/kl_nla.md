@@ -188,6 +188,36 @@ av_greedy, where "best" is the prior that does best:
 Also reported: each AR's KL gain in nats over its own best no-info constant, and whether shrinkage
 reproduces the KL AR's milder wrong-document KL.
 
+### Hedging control result (2026-09-26, pod dwxs48t06k4e5y, H100, ~25 min)
+
+HF `syvb/kl-nla-qwen3-8b:evals/hedge` (summary.md / summary.json / rows.npz). 2,794 rows (all three
+text conditions scorable), 287 docs.
+
+- **Pre-registered verdict: mostly calibration, narrowly.** The best shrunk MSE AR (toward the KL AR's
+  long-generic prior, α = 0.6 in both folds) closes **54.7% [50.6%, 58.7%]** of the gap. The other two KL-AR
+  priors close 48.8% and 51.1%. The mean direction closes only 7.4%: it is a poor prior for KL.
+- **Half the gain is content.** Raw KL AR − best shrunk MSE AR = **+0.063 [+0.056, +0.069]** KL recovered on
+  av_greedy, and +0.052 [+0.046, +0.057] on gold. Shrinking the KL AR itself gains nothing (best α = 1.0 in
+  both folds): it is already calibrated.
+- **Shrinkage reproduces the wrong-document effect.** Wrong-document KL recovered goes −1.082 (raw MSE AR) →
+  −0.323 (shrunk), vs −0.277 for the KL AR. So the KL AR's gentler errors are almost entirely calibration.
+- **The MSE AR's predictions are overconfident.** Its KL-vs-α curve peaks at α ≈ 0.6–0.7 for every prior,
+  and its own no-info constant is terrible (KL 8.2–10.7 nats vs 5.4 for the mean direction). The KL AR's
+  constants sit at 4.9–5.7. Gain over each AR's own prior (KL AR 4.13 nats, MSE AR 6.69) mostly reflects how bad
+  each prior is, so it doesn't compare ARs.
+
+**What this means.**
+- About half of Phase 1's +0.139 is the KL AR being calibrated. You get that for free by shrinking an MSE AR's
+  output toward a good prior.
+- The other half is extra output-relevant content read from the same explanations.
+- Per the rule, −KL shouldn't be the RL reward without a calibration-neutral normalization. The natural
+  candidate is scoring each explanation against the AR's own no-info prediction on the same row (a per-row gain).
+  An alternative is using a post-hoc-calibrated AR for both arms of any comparison.
+- Note on the rule's premise: calibration is a property of the fixed AR, not of the AV's explanations. A
+  hedging AR still pays more for specific, correct explanations (0.76 nats) than for vague ones (≈ its prior,
+  4.9 nats). So the risk to RL is miscredited comparisons between arms, more than a direct push toward
+  vagueness. That's an argument about design, not a result.
+
 ## Phase 1b (conditional): multi-position KL
 
 Needed if the next-token diagnostic dominates. Generate a greedy 16-token continuation of each prefix
