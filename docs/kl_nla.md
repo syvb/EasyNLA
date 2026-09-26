@@ -229,6 +229,9 @@ Then redo Phase 0's diagnostic, and Phase 1 if needed.
 
 ## Phase 2: RL pilot, −KL reward vs −MSE reward
 
+> **Superseded** by the full plan in [`docs/kl_nla_phase2.md`](kl_nla_phase2.md) (2026-09-26): a best-of-16
+> probe gates the RL run, and RL arms are judged by a calibrated MSE AR neither arm was trained on.
+
 One H200 per arm, needed because vLLM + actor + AR + a second 8B base is ~131 GB of 141. Budget ~5 h
 per arm for 250 steps at 64 prompts × G 8. That's a guess: measure it in the smoke. I haven't seen
 an H200 bill, so check the listing at launch.
