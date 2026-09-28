@@ -39,7 +39,7 @@ STARTUP_HOURS = 0.3      # image pull + pip + ~30 GB of model/data downloads
 BOOTSTRAP = (
     "/start.sh >/dev/null 2>&1 & mkdir -p /workspace && cd /workspace && "
     "rm -rf EasyNLA && git clone -q -b $KL_BRANCH $KL_REPO && cd EasyNLA && "
-    "pip install -q -e . 2>&1 | tail -2 && "
+    "pip install -q -e . 2>&1 | tail -2 && (pip install -q hf_transfer 2>&1 | tail -1; true) && "
     "exec bash scripts/pod_kl_nla.sh 2>&1 | tee -a /workspace/boot.log"
 )
 assert "'" not in BOOTSTRAP
@@ -68,7 +68,7 @@ def pod_env(a) -> dict:
         "MAX_HOURS": str(a.max_hours), "KEEP_POD": "1" if a.keep else "0",
         "WANDB_PROJECT": a.wandb_project, "WANDB_GROUP": a.wandb_group,
         "RL_STEPS": str(a.rl_steps), "RL_BATCH": str(a.rl_batch), "VLLM_GPU_MEM": str(a.vllm_gpu_mem),
-        "HF_HOME": "/workspace/hf", "HF_HUB_ENABLE_HF_TRANSFER": "0",
+        "HF_HOME": "/workspace/hf", "HF_HUB_ENABLE_HF_TRANSFER": "1",   # pod script turns it off if the wheel is missing
         "PYTHONUNBUFFERED": "1", "TOKENIZERS_PARALLELISM": "false",
     }
 

@@ -47,6 +47,10 @@ done
 ( sleep $((MAX_HOURS * 3600)); log "WATCHDOG: ${MAX_HOURS} h reached"; \
   runpodctl remove pod "$RUNPOD_POD_ID" 2>/dev/null ) &
 
+# Fast HF downloads (~50 GB per RL pod; plain downloads ran at ~36 MB/s on one pod) when
+# the bootstrap managed to install hf_transfer; otherwise fall back rather than error.
+python -c "import hf_transfer" 2>/dev/null || export HF_HUB_ENABLE_HF_TRANSFER=0
+log "HF_HUB_ENABLE_HF_TRANSFER=$HF_HUB_ENABLE_HF_TRANSFER"
 CK=/workspace/ckpts; EV=/workspace/evals; SRC=/workspace/source
 mkdir -p "$CK" "$EV" "$SRC"
 SYNC="python scripts/hf_sync.py"
