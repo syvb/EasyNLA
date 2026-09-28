@@ -24,6 +24,10 @@ IMAGE = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
 REPO = "https://github.com/syvb/EasyNLA.git"
 FALLBACK_GPUS = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL", "NVIDIA H200",
                  "NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]
+# RL stages hold vLLM + policy + AR + a second 8B target (~117 GB est.): only GPUs with
+# >= 141 GB. Never fall back to an 80 GB card for them (it would OOM after startup).
+RL_STAGES = ("rl_kl", "rl_mse")
+RL_GPUS = ["NVIDIA H200", "NVIDIA H200 NVL"]
 STAGES = ("audit0", "ar_kl", "ar_mse", "audit1", "hedge", "rl_kl", "rl_mse")
 # Wall-clock guesses on an H100 (782 AR steps at eff. batch 64); replace with
 # measured numbers after the first run.
@@ -76,6 +80,8 @@ def hours(stages):
 def launch(a):
     env = pod_env(a)
     st = _stages(a.stages)
+    if any(s in RL_STAGES for s in st) and a.gpu not in RL_GPUS:
+        sys.exit(f"--gpu {a.gpu!r} is too small for RL stages; use one of {RL_GPUS}")
     if a.dry_run:
         print("docker_args:\n  bash -lc '" + BOOTSTRAP + "'\n\nenv:")
         for k, v in env.items():
@@ -87,7 +93,8 @@ def launch(a):
     env.update({"WANDB_API_KEY": _key(".wandb_key"), "HF_TOKEN": _key(".hf_token"),
                 "RUNPOD_API_KEY": runpod.api_key})
     # SECURE only: Community Cloud pods have been unreliable, so never fall back to them.
-    attempts = [(g, "SECURE") for g in [a.gpu] + [x for x in FALLBACK_GPUS if x != a.gpu]]
+    pool = RL_GPUS if any(s in RL_STAGES for s in st) else FALLBACK_GPUS
+    attempts = [(g, "SECURE") for g in [a.gpu] + [x for x in pool if x != a.gpu]]
     pod = None
     for gpu, cloud in attempts:
         try:
