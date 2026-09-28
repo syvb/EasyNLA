@@ -249,6 +249,26 @@ excluding 0. Otherwise stop: the next token is where the activation's effect is.
 (Tightened before any 8B data: the first draft counted any change in the ranking, which a CPU smoke showed
 triggers on near-ties.)
 
+### Phase 1b result (2026-09-28, pod 3afaktpqifwx2l, H100, ~17 min ≈ $1)
+
+HF `syvb/kl-nla-qwen3-8b:evals/audit_future` (summary.md / summary.json / rows.npz with per-position KL
+and the continuations). **Pre-registered verdict: stop.** The activation's effect is at the next token.
+
+- **Future share of KL is tiny:** gold 5.4% [4.7, 6.2], av_greedy 4.7% [4.0, 5.4] (SFT AR), far below 0.25.
+  Even the most disruptive splices barely reach later tokens. The mean direction costs 5.45 nats at the next
+  token, then 0.060 at t+1, 0.018 at t+2 and ≤ 0.015 after; the orthogonal vector costs 11.2 then 0.062.
+  A single-position change to the layer-24 residual is washed out by the later positions' own
+  computation. Their only route to it is attention in layers 25–35.
+- **Rankings are identical** by next, future and total KL for all three ARs. No significant pair reversals.
+- **ρ(next, future) ≈ 0.2 is noise, not a second signal.** Future KL sits at the bf16 recompute floor:
+  splicing the stored activation back in already gives 0.012 nats of future KL (median), about a quarter of
+  gold's total future KL. The next-token column reproduces Phase 0/1 exactly (G1 median 4.5e-4).
+- **Caveat:** later tokens are teacher-forced on the original model's greedy continuation. Under free
+  generation a changed next token changes everything after it, but that effect runs through the next-token
+  distribution, which the next-token KL already measures.
+- **Consequence:** multi-position KL would not change the RL result. Next-token KL was not too narrow a
+  measure; it is where nearly all of the splice's effect is.
+
 ## Phase 2: RL pilot, −KL reward vs −MSE reward
 
 > **Superseded** by the full plan in [`docs/kl_nla_phase2.md`](kl_nla_phase2.md) (2026-09-26): a best-of-16
