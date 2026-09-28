@@ -11,6 +11,9 @@
 #   ar_mse  Phase 1: continue the SFT AR on MSE     (matched control)
 #   audit1  Phase 1: KL audit of sft / ar_kl / ar_mse
 #   hedge   hedging control: no-info baselines + cross-fit shrinkage (kl_hedge_control.py)
+#   rl_kl   RL pilot arm: reward -KL, AR co-trained on KL   (docs/kl_nla_phase2.md)
+#   rl_mse  RL pilot arm: reward -MSE, AR co-trained on MSE
+#           each RL stage then scores every saved checkpoint with frozen judges (kl_curve_eval.py)
 # Everything is pushed to the HF dataset repo $HF_REPO as it is produced;
 # stages that need earlier outputs pull them from there.
 
@@ -25,6 +28,9 @@ log() { echo "[pod $(date -u +%H:%M:%S)] $*"; }
 : "${AR_LR:=5e-5}" "${LORA_R:=128}" "${AR_BATCH:=16}" "${AR_ACCUM:=4}" "${AR_STEPS:=782}"
 : "${KL_MICRO_BATCH:=8}" "${SEED:=0}" "${MAX_HOURS:=6}" "${KEEP_POD:=1}"
 : "${WANDB_PROJECT:=kl-nla}" "${WANDB_GROUP:=kl-nla-phase1}"
+: "${AV_CKPT:=syvb/nanonla-qwen3-8b-L24-av}" "${RL_WANDB_GROUP:=kl-nla-rl-pilot}"
+: "${RL_STEPS:=100}" "${RL_BATCH:=32}" "${RL_GROUP:=8}" "${RL_EVAL_EVERY:=10}" "${RL_SAVE_EVERY:=20}"
+: "${VLLM_GPU_MEM:=0.30}" "${CURVE_N:=500}"
 
 finish() {
   log "FINISHED ($1)"
@@ -34,7 +40,7 @@ finish() {
 }
 has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
 for s in ${STAGES//,/ }; do
-  case "$s" in audit0|ar_kl|ar_mse|audit1|hedge) ;; *) finish "unknown stage '$s'";; esac
+  case "$s" in audit0|ar_kl|ar_mse|audit1|hedge|rl_kl|rl_mse) ;; *) finish "unknown stage '$s'";; esac
 done
 
 # Whole-pod watchdog: whatever hangs, the pod does not outlive MAX_HOURS.
@@ -139,5 +145,70 @@ if has hedge; then
   log "hedge exit ${PIPESTATUS[0]}"
   push_retry "$EV/hedge" evals/hedge
 fi
+
+# -------------------------------------------------------------------- rl ----
+# One arm per pod. The AR is ALWAYS co-trained with the AV (--train-critic --ar-lora),
+# never frozen. Everything goes to HF as it lands and to W&B group $RL_WANDB_GROUP.
+run_rl() {  # $1 = kl | mse
+  local ARM=$1 NAME=rl_$1 VENV=/workspace/vllm-venv P1
+  pull_ars
+  if [ "$ARM" = kl ]; then P1=$KLD; else P1=$MSED; fi
+  # rollout env: pinned vllm 0.19.0 + vllm-lens 1.1.0 + the injection patch (docs/vllm-lens-setup.md)
+  pip install -q uv || finish "uv install failed"
+  bash scripts/install_vllm_lens.sh "$VENV" 2>&1 | tail -5
+  [ -x "$VENV/bin/python" ] || finish "vllm-lens venv build failed"
+  uv pip install -q --python "$VENV/bin/python" pyarrow pyyaml orjson httpx tqdm safetensors \
+      huggingface_hub || finish "venv deps failed"
+  uv pip install -q --python "$VENV/bin/python" --no-deps -e . || finish "venv repo install failed"
+  huggingface-cli download "$AV_CKPT" --local-dir "$SRC/av" >/dev/null || finish "AV download failed"
+  huggingface-cli download syvb/nanonla-qwen3-8b-L24-data-full --repo-type dataset \
+      --include "rl_full.parquet*" --local-dir "$SRC/nla8b" >/dev/null || finish "rl_full download failed"
+  mkdir -p /workspace/data
+  python scripts/kl_rl_prep.py --src "$SRC/nla8b/rl_full.parquet" \
+      --explanations "$SRC/expl/evals/fvecmp/explanations.json" \
+      --out /workspace/data/rl_pilot.parquet || finish "rl data prep failed"
+  python scripts/merge_prepared_ar.py --base "$SRC/ar" --lora "$P1" --out "$CK/ar_${ARM}_merged" \
+      || finish "AR merge failed"
+  push_retry "$CK/ar_${ARM}_merged" "ckpts/ar_${ARM}_merged"
+  mkdir -p "$CK/$NAME"
+  # push adapters + logs every 20 min while training (the merged co-trained AR at the end)
+  ( while sleep 1200; do
+      timeout -k 1m 20m $SYNC push "$HF_REPO" "$CK/$NAME" "ckpts/$NAME" \
+          --ignore "optim_latest.pt,*.tmp,critic_latest*" >/dev/null 2>&1 && log "periodic push of ckpts/$NAME"
+    done ) &
+  local PUSHER=$!
+  nvidia-smi --query-gpu=memory.used --format=csv,noheader -l 60 > "$CK/$NAME/gpu_mem.log" 2>&1 &
+  local SMI=$!
+  env -u PYTORCH_CUDA_ALLOC_CONF timeout -k 2m "${MAX_HOURS}h" "$VENV/bin/python" -m nla.train_rl_vllm \
+      --config configs/rl_vllm.yaml --av-ckpt "$SRC/av" --ar-ckpt "$CK/ar_${ARM}_merged" \
+      --rl-parquet /workspace/data/rl_pilot.parquet --sidecar /workspace/data/rl_pilot.parquet \
+      --save-dir "$CK/$NAME" --num-steps "$RL_STEPS" --batch-prompts "$RL_BATCH" --group-size "$RL_GROUP" \
+      --train-critic --ar-lora --evals base_fve --eval-every "$RL_EVAL_EVERY" --eval-n-prompts 128 \
+      --save-every "$RL_SAVE_EVERY" --val-rows 2000 --vllm-gpu-mem "$VLLM_GPU_MEM" \
+      --recon-loss "$ARM" --kl-micro-batch "$KL_MICRO_BATCH" --seed "$SEED" \
+      --wandb-project "$WANDB_PROJECT" --wandb-group "$RL_WANDB_GROUP" --wandb-name "$NAME" \
+      2>&1 | tee "$CK/$NAME/train.log"
+  local RC=${PIPESTATUS[0]}
+  kill "$PUSHER" "$SMI" 2>/dev/null
+  log "$NAME exit $RC"
+  push_retry "$CK/$NAME" "ckpts/$NAME"
+  # checkpoint curves with the FROZEN Phase 1 judges (also when training died part-way)
+  if ls -d "$CK/$NAME"/iter_* >/dev/null 2>&1; then
+    mkdir -p "$EV/curves_$NAME"
+    timeout -k 2m 2h python scripts/kl_curve_eval.py \
+        --val "$SRC/ws/av_sft_val.parquet" \
+        --exclude "$SRC/nla8b/av_sft_full.parquet" "$SRC/nla8b/ar_sft_full.parquet" \
+        --explanations "$SRC/expl/evals/fvecmp/explanations.json" \
+        --av "$SRC/av" --run-dir "$CK/$NAME" --ar-kl "$SRC/ar:$KLD" --ar-mse "$SRC/ar:$MSED" \
+        --target "$TARGET_CKPT" --n "$CURVE_N" --micro-batch "$KL_MICRO_BATCH" \
+        --wandb-project "$WANDB_PROJECT" --wandb-group "$RL_WANDB_GROUP" --wandb-name "curves_$NAME" \
+        --out "$EV/curves_$NAME" 2>&1 | tee "$EV/curves_$NAME/curves.log"
+    log "curves_$NAME exit ${PIPESTATUS[0]}"
+    push_retry "$EV/curves_$NAME" "evals/curves_$NAME"
+  fi
+  [ "$RC" = "0" ] || finish "$NAME training failed (exit $RC)"
+}
+has rl_kl && run_rl kl
+has rl_mse && run_rl mse
 
 finish "all stages done"

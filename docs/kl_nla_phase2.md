@@ -1,7 +1,38 @@
 # KL-NLA Phase 2 plan: does a KL reward make better explanations?
 
-Status 2026-09-26: plan only; nothing built or launched. Follows `docs/kl_nla.md` (Phases 0, 1, and the hedging
-control). Every paid step below needs a go-ahead.
+Status 2026-09-28: the **slim pilot** below was adopted, replacing Steps A and B further down (kept for the
+record). Follows `docs/kl_nla.md` (Phases 0, 1, and the hedging control).
+
+## Adopted: slim RL pilot to see the shape of the curves (2026-09-28)
+
+The user wants the shape of the curves more than a final verdict, at lower cost. Two standing rules apply: the
+AR is **always co-trained, never frozen**, and every run **pushes to HF and tracks on W&B**.
+
+- **No best-of-16 probe and no separate smoke run.** The drift curves below answer the probe's question more
+  directly. The KL arm launches first and acts as the smoke test; the MSE arm launches once it steps cleanly.
+- **Both arms:** `nla.train_rl_vllm --config configs/rl_vllm.yaml`, merged SFT AV + fresh LoRA (r128/α16
+  rsLoRA). Overrides:
+  - `--num-steps 100 --batch-prompts 32 --group-size 8`;
+  - `--train-critic --ar-lora` (the AR co-trained as LoRA);
+  - `--eval-every 10 --eval-n-prompts 128 --save-every 20 --val-rows 2000`;
+  - `--vllm-gpu-mem 0.30`, and `--evals base_fve` (no judge key).
+  - The KL arm starts from Phase 1 `ar_kl` with `--recon-loss kl`; the MSE arm from Phase 1 `ar_mse` with
+    `--recon-loss mse`. Both Phase 1 ARs are merged into full critic dirs first (`scripts/merge_prepared_ar.py`,
+    checked against the LoRA-loaded AR).
+- **Data:** `rl_full` minus the 287 audit docs (`scripts/kl_rl_prep.py`).
+- **Curves**, two kinds:
+  1. each arm's own reward/eval curve from the trainer, every 10 steps, in W&B;
+  2. **frozen-judge curves** from `scripts/kl_curve_eval.py`. At steps 0 (SFT AV), 20, 40, 60, 80, 100:
+     greedy explanations on 500 audit rows, scored by `A_cal` (calibrated MSE AR), `A_kl` and `A_mse`.
+     Reported: KL recovered, FVE, extraction rate, and the drift measures (length, next-token naming, 4-gram
+     quoting, vagueness, specificity). These go to W&B as `curves_rl_kl` / `curves_rl_mse` with x = RL step,
+     and to HF `evals/curves_rl_*`. `A_cal` is built from the MSE arm's starting AR, so a KL-arm lead under it
+     is conservative. `A_kl` favours the KL arm. Both are shown.
+- **Hardware:** one Secure H200 per arm ($4.59/h), ~1.5–2 h each including the vllm-lens build →
+  **~$15–20 total**. Pod stages `rl_kl` / `rl_mse` in `scripts/pod_kl_nla.sh`. Adapters are pushed to HF every
+  20 min during training, then everything (including the co-trained AR) at the end. W&B group `kl-nla-rl-pilot`.
+- **What this can and can't show:** direction and early shape (does −KL move the frozen judges, and does
+  drift start?), not endpoints. 100 steps at 32 prompts per step is short and noisy.
 
 ## Where we are
 

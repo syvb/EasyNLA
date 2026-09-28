@@ -24,10 +24,12 @@ IMAGE = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
 REPO = "https://github.com/syvb/EasyNLA.git"
 FALLBACK_GPUS = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL", "NVIDIA H200",
                  "NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]
-STAGES = ("audit0", "ar_kl", "ar_mse", "audit1", "hedge")
+STAGES = ("audit0", "ar_kl", "ar_mse", "audit1", "hedge", "rl_kl", "rl_mse")
 # Wall-clock guesses on an H100 (782 AR steps at eff. batch 64); replace with
 # measured numbers after the first run.
-STAGE_HOURS = {"audit0": 0.3, "ar_kl": 0.9, "ar_mse": 0.2, "audit1": 0.3, "hedge": 0.3}
+STAGE_HOURS = {"audit0": 0.3, "ar_kl": 0.9, "ar_mse": 0.2, "audit1": 0.3, "hedge": 0.3,
+               # RL: vllm-lens build + 100 steps at 32x8 + checkpoint curves (guesses; measure)
+               "rl_kl": 1.8, "rl_mse": 1.4}
 STARTUP_HOURS = 0.3      # image pull + pip + ~30 GB of model/data downloads
 
 BOOTSTRAP = (
@@ -61,6 +63,7 @@ def pod_env(a) -> dict:
         "KL_MICRO_BATCH": str(a.kl_micro_batch), "SEED": str(a.seed),
         "MAX_HOURS": str(a.max_hours), "KEEP_POD": "1" if a.keep else "0",
         "WANDB_PROJECT": a.wandb_project, "WANDB_GROUP": a.wandb_group,
+        "RL_STEPS": str(a.rl_steps), "RL_BATCH": str(a.rl_batch), "VLLM_GPU_MEM": str(a.vllm_gpu_mem),
         "HF_HOME": "/workspace/hf", "HF_HUB_ENABLE_HF_TRANSFER": "0",
         "PYTHONUNBUFFERED": "1", "TOKENIZERS_PARALLELISM": "false",
     }
@@ -177,6 +180,9 @@ def main():
         p.add_argument("--kl-micro-batch", type=int, default=8)
         p.add_argument("--seed", type=int, default=0)
         p.add_argument("--max-hours", type=int, default=6, help="pod watchdog and per-stage timeout")
+        p.add_argument("--rl-steps", type=int, default=100)
+        p.add_argument("--rl-batch", type=int, default=32, help="prompts per RL step (x group 8)")
+        p.add_argument("--vllm-gpu-mem", type=float, default=0.30)
         p.add_argument("--wandb-project", default="kl-nla")
         p.add_argument("--wandb-group", default="kl-nla-phase1")
         p.add_argument("--disk-gb", type=int, default=150)
