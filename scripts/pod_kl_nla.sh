@@ -50,6 +50,18 @@ done
 CK=/workspace/ckpts; EV=/workspace/evals; SRC=/workspace/source
 mkdir -p "$CK" "$EV" "$SRC"
 SYNC="python scripts/hf_sync.py"
+
+# Heartbeat: every 5 min push the pod's boot log to HF status/<stages>/ so a stalled
+# setup is visible from outside (there is no remote log access on RunPod).
+HB=/workspace/heartbeat/${STAGES//,/-}
+mkdir -p "$HB"
+( while true; do
+    cp /workspace/boot.log "$HB/boot.log" 2>/dev/null
+    { date -u; nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader; df -h /workspace | tail -1; } \
+        > "$HB/status.txt" 2>&1
+    timeout -k 30s 4m $SYNC push "$HF_REPO" "$HB" "status/${STAGES//,/-}" >/dev/null 2>&1
+    sleep 300
+  done ) &
 push_retry() {
   for i in 1 2 3; do
     timeout -k 1m 30m $SYNC push "$HF_REPO" "$1" "$2" && return 0
