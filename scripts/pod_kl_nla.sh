@@ -191,7 +191,12 @@ run_rl() {  # $1 = kl | mse
   local PUSHER=$!
   nvidia-smi --query-gpu=memory.used --format=csv,noheader -l 60 > "$CK/$NAME/gpu_mem.log" 2>&1 &
   local SMI=$!
-  env -u PYTORCH_CUDA_ALLOC_CONF timeout -k 2m "${MAX_HOURS}h" "$VENV/bin/python" -m nla.train_rl_vllm \
+  # PYTORCH_CUDA_ALLOC_CONF unset: the IPC weight sync needs the legacy allocator.
+  # VLLM_ALLOW_INSECURE_SERIALIZATION=1: vLLM v1 runs EngineCore in a subprocess and
+  # apply_model ships a functools.partial, which msgspec refuses otherwise (as in
+  # scripts/smoke_sync_rl.sh; the first pilot pod died on it at the first weight sync).
+  env -u PYTORCH_CUDA_ALLOC_CONF VLLM_ALLOW_INSECURE_SERIALIZATION=1 \
+      timeout -k 2m "${MAX_HOURS}h" "$VENV/bin/python" -m nla.train_rl_vllm \
       --config configs/rl_vllm.yaml --av-ckpt "$SRC/av" --ar-ckpt "$CK/ar_${ARM}_merged" \
       --rl-parquet /workspace/data/rl_pilot.parquet --sidecar /workspace/data/rl_pilot.parquet \
       --save-dir "$CK/$NAME" --num-steps "$RL_STEPS" --batch-prompts "$RL_BATCH" --group-size "$RL_GROUP" \
