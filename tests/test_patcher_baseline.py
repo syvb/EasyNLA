@@ -67,6 +67,29 @@ class TestPatcherBaselines(unittest.TestCase):
                           f"hunk {i} not applied to installed vllm-lens — "
                           f"re-run utils/patch_vllm_lens.py")
 
+    def test_chained_hunks_fresh_install_and_idempotent(self):
+        """Hunks that anchor on text an EARLIER hunk writes (the real 1.1.0 case:
+        hunks 9/10/12/15), and a hunk whose NEW contains its own OLD that a later
+        hunk then edits (hunk 7). The patcher must (a) patch a pristine file rather
+        than refuse it, and (b) leave the result unchanged on a re-run."""
+        import tempfile
+        mod = _load_patcher()
+        chained = [("alpha", "alpha beta"),    # NEW contains OLD ...
+                   ("beta", "gamma")]          # ... and a later hunk edits that NEW
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "_worker_ext.py"
+            f.write_text("x = 'alpha'\n")
+            real = mod.HUNKS
+            mod.HUNKS = chained
+            try:
+                self.assertEqual(mod.main([str(f)]), 0)
+                once = f.read_text()
+                self.assertEqual(once, "x = 'alpha gamma'\n")
+                self.assertEqual(mod.main([str(f)]), 0)
+                self.assertEqual(f.read_text(), once, "second run changed the file")
+            finally:
+                mod.HUNKS = real
+
     def test_seqlens_fix_semantics(self):
         """The fixed seq_lens lookup on a vLLM-v1-style DICT attn_metadata:
         getattr on the dict yields None (the bug — abs_start=0 fallback for

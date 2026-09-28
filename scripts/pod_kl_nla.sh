@@ -151,26 +151,38 @@ fi
 # never frozen. Everything goes to HF as it lands and to W&B group $RL_WANDB_GROUP.
 run_rl() {  # $1 = kl | mse
   local ARM=$1 NAME=rl_$1 VENV=/workspace/vllm-venv P1
+  mkdir -p "$CK/$NAME"
+  # setup failures push their logs before the pod goes away
+  fail_rl() { log "$1"; push_retry "$CK/$NAME" "ckpts/$NAME"; finish "$1"; }
   pull_ars
   if [ "$ARM" = kl ]; then P1=$KLD; else P1=$MSED; fi
   # rollout env: pinned vllm 0.19.0 + vllm-lens 1.1.0 + the injection patch (docs/vllm-lens-setup.md)
-  pip install -q uv || finish "uv install failed"
-  bash scripts/install_vllm_lens.sh "$VENV" 2>&1 | tail -5
-  [ -x "$VENV/bin/python" ] || finish "vllm-lens venv build failed"
+  pip install -q uv || fail_rl "uv install failed"
+  bash scripts/install_vllm_lens.sh "$VENV" > "$CK/$NAME/vllm_install.log" 2>&1
+  log "vllm-lens install exit $? (log: ckpts/$NAME/vllm_install.log)"
+  [ -x "$VENV/bin/python" ] || fail_rl "vllm-lens venv build failed"
   uv pip install -q --python "$VENV/bin/python" pyarrow pyyaml orjson httpx tqdm safetensors \
-      huggingface_hub || finish "venv deps failed"
-  uv pip install -q --python "$VENV/bin/python" --no-deps -e . || finish "venv repo install failed"
-  huggingface-cli download "$AV_CKPT" --local-dir "$SRC/av" >/dev/null || finish "AV download failed"
+      huggingface_hub >> "$CK/$NAME/vllm_install.log" 2>&1 || fail_rl "venv deps failed"
+  uv pip install -q --python "$VENV/bin/python" --no-deps -e . >> "$CK/$NAME/vllm_install.log" 2>&1 \
+      || fail_rl "venv repo install failed"
+  # the patch is idempotent; re-run it and CHECK the hunks the trainer requires
+  "$VENV/bin/python" utils/patch_vllm_lens.py 2>&1 | tee -a "$CK/$NAME/vllm_install.log"
+  local VW
+  VW=$("$VENV/bin/python" -c "import importlib.util as u; print(u.find_spec('vllm_lens._worker_ext').origin)")
+  for m in _meta5 get_and_reset_steer_log log_key=per_req_log_key get_and_reset_steer_count; do
+    grep -q "$m" "$VW" || fail_rl "vllm-lens patch incomplete: '$m' missing in $VW"
+  done
+  log "vllm-lens patch verified ($VW)"
+  huggingface-cli download "$AV_CKPT" --local-dir "$SRC/av" >/dev/null || fail_rl "AV download failed"
   huggingface-cli download syvb/nanonla-qwen3-8b-L24-data-full --repo-type dataset \
-      --include "rl_full.parquet*" --local-dir "$SRC/nla8b" >/dev/null || finish "rl_full download failed"
+      --include "rl_full.parquet*" --local-dir "$SRC/nla8b" >/dev/null || fail_rl "rl_full download failed"
   mkdir -p /workspace/data
   python scripts/kl_rl_prep.py --src "$SRC/nla8b/rl_full.parquet" \
       --explanations "$SRC/expl/evals/fvecmp/explanations.json" \
-      --out /workspace/data/rl_pilot.parquet || finish "rl data prep failed"
+      --out /workspace/data/rl_pilot.parquet || fail_rl "rl data prep failed"
   python scripts/merge_prepared_ar.py --base "$SRC/ar" --lora "$P1" --out "$CK/ar_${ARM}_merged" \
-      || finish "AR merge failed"
+      || fail_rl "AR merge failed"
   push_retry "$CK/ar_${ARM}_merged" "ckpts/ar_${ARM}_merged"
-  mkdir -p "$CK/$NAME"
   # push adapters + logs every 20 min while training (the merged co-trained AR at the end)
   ( while sleep 1200; do
       timeout -k 1m 20m $SYNC push "$HF_REPO" "$CK/$NAME" "ckpts/$NAME" \

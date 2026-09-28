@@ -387,41 +387,52 @@ HUNKS = [
 ]
 
 
-def main() -> int:
-    spec = importlib.util.find_spec("vllm_lens._worker_ext")
-    assert spec and spec.origin, "vllm_lens not importable from this python"
-    path = Path(spec.origin)
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv:   # explicit file (lets the hunks be tested without vllm installed)
+        path = Path(argv[0])
+    else:
+        spec = importlib.util.find_spec("vllm_lens._worker_ext")
+        assert spec and spec.origin, "vllm_lens not importable from this python"
+        path = Path(spec.origin)
     src = path.read_text()
+    _orig = path.with_suffix(".py.orig")
 
-    # Per-hunk idempotency: a hunk whose NEW text is already present is skipped
-    # (lets us add new hunks to an already-partially-patched file). A hunk whose
-    # OLD text is missing AND whose NEW text is absent = version drift -> refuse.
-    to_apply = []
+    # Build the patched file by applying the hunks IN ORDER to the PRISTINE source
+    # (the .orig backup once one exists). Two properties this needs:
+    #  - order: later hunks anchor on text earlier hunks write, so checking every
+    #    hunk against the pristine file refused every FRESH vllm-lens 1.1.0 install;
+    #  - idempotency: hunk 7's NEW contains its own OLD and hunks 8-9 then edit that
+    #    NEW, so "skip if NEW present" re-applied hunk 7 on a second run. Rebuilding
+    #    from the pristine source makes the result the same on every run.
+    # Per hunk: skip if its NEW (or a satisfied baseline) is present; refuse if its
+    # OLD is missing too (version drift).
+    base = _orig.read_text() if _orig.exists() else src
+    patched, n_applied = base, 0
     for i, hunk in enumerate(HUNKS):
         old, new = hunk[0], hunk[1]
         satisfied = hunk[2] if len(hunk) > 2 else []
-        if new in src or any(alt in src for alt in satisfied):
+        if new in patched or any(alt in patched for alt in satisfied):
             continue
-        if old not in src:
+        if old not in patched:
             print(f"[patch_vllm_lens] hunk {i} not found (neither OLD, NEW, nor a "
                   f"satisfied baseline) — vllm_lens version drift? Refusing to patch {path}")
             return 1
-        to_apply.append((old, new))
+        patched = patched.replace(old, new, 1)
+        n_applied += 1
 
-    if not to_apply:
+    if patched == src:
         print(f"[patch_vllm_lens] already patched (all {len(HUNKS)} hunks): {path}")
         return 0
 
-    _orig = path.with_suffix(".py.orig")
-    if not _orig.exists():   # keep the PRISTINE original across incremental patches
+    if not _orig.exists():   # keep the PRISTINE original across re-patches
         shutil.copy2(path, _orig)
-    for old, new in to_apply:
-        src = src.replace(old, new, 1)
+    src = patched
     path.write_text(src)
     pycache = path.parent / "__pycache__"
     if pycache.exists():
         shutil.rmtree(pycache)
-    print(f"[patch_vllm_lens] applied {len(to_apply)} hunk(s) to {path} "
+    print(f"[patch_vllm_lens] applied {n_applied} hunk(s) to {path} "
           f"(backup: {path.name}.orig)")
     return 0
 
