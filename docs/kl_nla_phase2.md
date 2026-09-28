@@ -34,6 +34,41 @@ AR is **always co-trained, never frozen**, and every run **pushes to HF and trac
 - **What this can and can't show:** direction and early shape (does −KL move the frozen judges, and does
   drift start?), not endpoints. 100 steps at 32 prompts per step is short and noisy.
 
+### Result (2026-09-28)
+
+Pods: MSE arm `cchut9g12r3i5s`, KL arm `21pjb9nfafe9va` (both H200 Secure, ~28–30 s/step). HF
+`syvb/kl-nla-qwen3-8b`: `ckpts/rl_kl`, `ckpts/rl_mse` (LoRA every 20 steps + co-trained AR),
+`evals/curves_rl_kl`, `evals/curves_rl_mse`, `evals/rl_compare` (`scripts/kl_rl_compare.py`). W&B `kl-nla` /
+`kl-nla-rl-pilot`: training runs `rl_kl` / `rl_mse`, frozen-judge runs `curves_rl_kl` / `curves_rl_mse`.
+
+Frozen-judge curves, greedy explanations on the same 500 audit rows (240 docs):
+
+| step | KL rec. A_cal (kl / mse arm) | KL rec. A_kl (kl / mse) | FVE A_mse (kl / mse) | names next token (kl / mse) |
+|---|---|---|---|---|
+| 0 | 0.799 / 0.799 | 0.850 / 0.850 | 0.504 / 0.504 | 0.61 / 0.61 |
+| 20 | 0.832 / 0.851 | 0.882 / 0.900 | 0.551 / 0.585 | 0.67 / 0.66 |
+| 40 | 0.840 / 0.837 | 0.886 / 0.881 | 0.564 / 0.599 | 0.68 / 0.74 |
+| 60 | 0.843 / 0.857 | 0.888 / 0.901 | 0.556 / 0.595 | 0.69 / 0.72 |
+| 80 | 0.858 / 0.855 | 0.902 / 0.904 | 0.576 / 0.605 | 0.68 / 0.71 |
+| 100 | 0.845 / 0.856 | 0.884 / 0.902 | 0.572 / 0.608 | 0.77 / 0.63 |
+
+- **Shape:** both arms rise fast in the first 20 steps and then plateau, on every judge. Quoting stays at ~0,
+  vagueness is flat, specificity rises slightly and alike, length is similar.
+- **Both rewards improve the functional metric about equally.** Gain vs step 0, pooled over steps 20–100,
+  under A_cal: KL arm +0.046 [+0.027, +0.065], MSE arm +0.054 [+0.034, +0.075]. Under A_kl: +0.040 vs +0.049.
+- **−KL gives no KL advantage.** KL arm − MSE arm, paired and pooled over steps 20–100:
+  A_cal −0.007 [−0.017, +0.002], and A_kl −0.008 [−0.016, +0.000]. That holds even under the judge that favours the KL arm.
+- **It costs FVE:** the KL arm is ~0.035 lower at every checkpoint (step 100: 0.572 vs 0.608).
+- **Next-token drift: not established.** Pooled +0.004 [−0.021, +0.029]. Step 100 alone is +0.138
+  [+0.090, +0.188], but step 40 goes the other way (−0.066), so it's one checkpoint, not a trend.
+- **Reading:** at this scale the −MSE reward already moves explanations in the direction KL rewards, and a
+  −KL reward doesn't move them further. Phase 1's AR-side result (a KL-trained AR reads +0.063 more
+  output-relevant content from the same explanations) does not become better *explanations* under RL here.
+  Limits: one seed, 100 steps, 32 prompts per step, next-token KL only.
+- **Cost:** ~$23 of Secure H200/H100 time. About $10 of that was the two useful arms. The rest went on startup
+  bugs found and fixed on the way (the upstream vllm-lens patcher refused fresh installs; the vLLM v1
+  weight sync needs `VLLM_ALLOW_INSECURE_SERIALIZATION=1`), an 80 GB fallback, and one very slow machine.
+
 ## Where we are
 
 - **KL as a metric works.** It ranks explanations like FVE (gold > RL > SFT AV > quote ≫ wrong). Per row it
