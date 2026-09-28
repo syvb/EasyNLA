@@ -227,6 +227,28 @@ attention to it. Code: extend `SpliceKL.kl` to take continuation ids. The query 
 blocks of (1+m) tokens with a block-diagonal mask, ~40 lines, plus a test against the unpadded reference.
 Then redo Phase 0's diagnostic, and Phase 1 if needed.
 
+### Phase 1b audit: pre-registration (written 2026-09-28, before running)
+
+Run after the RL pilot showed next-token −KL gives no advantage over −MSE (`docs/kl_nla_phase2.md`).
+`scripts/kl_audit.py --future 16`, pod stage `audit_future`, same 2,844 rows, ARs sft / kl / mse.
+Continuations are the target's own greedy 16 tokens (`SpliceKL.greedy_continuations`), teacher-forced;
+the splice stays at t. Per condition it reports:
+- the future share, 1 − KL_next / KL_total;
+- KL recovered on next, future (positions 1–16 summed) and total;
+- the per-row Spearman ρ(next, future);
+- the ranking of text conditions by each;
+- mean KL by position.
+
+Sanity check: the stored activation's future KL should be ~0.
+
+**Rule**, on the SFT AR, gold and av_greedy: another RL pilot with a multi-position reward (~$10–12) is worth
+running only if the future share is ≥ 0.25 for both, **and** either ρ(next, future) < 0.7 for either or
+there's a *significant rank reversal*. A reversal is a pair of text conditions (SFT AR) ordered one way by
+next-token KL recovered and the other way by future KL recovered, with both paired doc-bootstrap CIs
+excluding 0. Otherwise stop: the next token is where the activation's effect is.
+(Tightened before any 8B data: the first draft counted any change in the ranking, which a CPU smoke showed
+triggers on near-ties.)
+
 ## Phase 2: RL pilot, −KL reward vs −MSE reward
 
 > **Superseded** by the full plan in [`docs/kl_nla_phase2.md`](kl_nla_phase2.md) (2026-09-26): a best-of-16

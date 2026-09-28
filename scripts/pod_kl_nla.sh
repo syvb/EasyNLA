@@ -11,6 +11,7 @@
 #   ar_mse  Phase 1: continue the SFT AR on MSE     (matched control)
 #   audit1  Phase 1: KL audit of sft / ar_kl / ar_mse
 #   hedge   hedging control: no-info baselines + cross-fit shrinkage (kl_hedge_control.py)
+#   audit_future  Phase 1b: multi-position KL audit of sft / ar_kl / ar_mse (--future 16)
 #   rl_kl   RL pilot arm: reward -KL, AR co-trained on KL   (docs/kl_nla_phase2.md)
 #   rl_mse  RL pilot arm: reward -MSE, AR co-trained on MSE
 #           each RL stage then scores every saved checkpoint with frozen judges (kl_curve_eval.py)
@@ -40,7 +41,7 @@ finish() {
 }
 has() { case ",$STAGES," in *",$1,"*) return 0;; *) return 1;; esac; }
 for s in ${STAGES//,/ }; do
-  case "$s" in audit0|ar_kl|ar_mse|audit1|hedge|rl_kl|rl_mse) ;; *) finish "unknown stage '$s'";; esac
+  case "$s" in audit0|ar_kl|ar_mse|audit1|hedge|audit_future|rl_kl|rl_mse) ;; *) finish "unknown stage '$s'";; esac
 done
 
 # Whole-pod watchdog: whatever hangs, the pod does not outlive MAX_HOURS.
@@ -160,6 +161,21 @@ if has hedge; then
       --out "$EV/hedge" 2>&1 | tee "$EV/hedge/hedge.log"
   log "hedge exit ${PIPESTATUS[0]}"
   push_retry "$EV/hedge" evals/hedge
+fi
+
+# ---------------------------------------------------------- audit_future ----
+if has audit_future; then
+  pull_ars
+  mkdir -p "$EV/audit_future"
+  timeout -k 2m "${MAX_HOURS}h" python scripts/kl_audit.py \
+      --val "$SRC/ws/av_sft_val.parquet" \
+      --exclude "$SRC/nla8b/av_sft_full.parquet" "$SRC/nla8b/ar_sft_full.parquet" \
+      --explanations "$SRC/expl/evals/fvecmp/explanations.json" \
+      --target "$TARGET_CKPT" --micro-batch 4 --future 16 \
+      --ar "sft=$SRC/ar" --ar "kl=$SRC/ar:$KLD" --ar "mse=$SRC/ar:$MSED" \
+      --out "$EV/audit_future" 2>&1 | tee "$EV/audit_future/audit_future.log"
+  log "audit_future exit ${PIPESTATUS[0]}"
+  push_retry "$EV/audit_future" evals/audit_future
 fi
 
 # -------------------------------------------------------------------- rl ----

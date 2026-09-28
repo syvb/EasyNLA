@@ -28,10 +28,10 @@ FALLBACK_GPUS = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL", "NVIDIA H200",
 # >= 141 GB. Never fall back to an 80 GB card for them (it would OOM after startup).
 RL_STAGES = ("rl_kl", "rl_mse")
 RL_GPUS = ["NVIDIA H200", "NVIDIA H200 NVL"]
-STAGES = ("audit0", "ar_kl", "ar_mse", "audit1", "hedge", "rl_kl", "rl_mse")
+STAGES = ("audit0", "ar_kl", "ar_mse", "audit1", "hedge", "audit_future", "rl_kl", "rl_mse")
 # Wall-clock guesses on an H100 (782 AR steps at eff. batch 64); replace with
 # measured numbers after the first run.
-STAGE_HOURS = {"audit0": 0.3, "ar_kl": 0.9, "ar_mse": 0.2, "audit1": 0.3, "hedge": 0.3,
+STAGE_HOURS = {"audit0": 0.3, "ar_kl": 0.9, "ar_mse": 0.2, "audit1": 0.3, "hedge": 0.3, "audit_future": 0.4,
                # RL: vllm-lens build + 100 steps at 32x8 + checkpoint curves (guesses; measure)
                "rl_kl": 1.8, "rl_mse": 1.4}
 STARTUP_HOURS = 0.3      # image pull + pip + ~30 GB of model/data downloads

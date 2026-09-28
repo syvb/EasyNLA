@@ -10,6 +10,12 @@ vectors normalised to mse_scale), so the prediction is rescaled to the natural
 residual's norm before splicing. Only position t is compared: the datasets
 keep the prefix up to t (`detokenized_text_truncated`), not the continuation.
 
+Multi-position (`conts=`): with the target's own continuation y_1..y_m of the
+prefix, each candidate becomes a block [x_t, y_1..y_m] (splice still only at
+x_t, the other tokens teacher-forced), and KL is returned per position:
+position 0 is the next-token KL above, positions 1..m are the KL on later
+tokens, which see the spliced state only through attention to position t.
+
 Cost: the prefix x_<t runs once per unique prefix, no grad, into a KV cache.
 The last token then runs as Q query copies at the SAME position (copy 0
 unspliced -> p_orig, copies 1.. spliced), each attending to the cached prefix
@@ -50,33 +56,62 @@ class SpliceKL:
         for p in self.model.parameters():
             p.requires_grad_(False)
         self.micro_batch = micro_batch
-        self._splice = None   # (vectors [c, Q, d], mask [c, Q] bool) while active
+        self._splice = None   # (vectors [c, Q, d], mask [c, Q] bool, block len) while active
         resolve_decoder_layers(model)[layer_index].register_forward_hook(self._hook)
 
     def _hook(self, module, args, output):
         if self._splice is None:
             return output
         resid, rest = (output[0], output[1:]) if isinstance(output, tuple) else (output, None)
-        vecs, mask = self._splice
-        q = vecs.shape[1]
-        h = resid[:, -q:]                                     # the query copies
+        vecs, mask, blk = self._splice
+        c, q = mask.shape
+        n = q * blk
+        blocks = resid[:, -n:].reshape(c, q, blk, resid.shape[-1])  # the query blocks
+        h = blocks[:, :, 0]                                   # first token of each block = x_t
         v = vecs.to(resid.device).float()
         v = v / v.norm(dim=-1, keepdim=True).clamp_min(1e-12)
         v = v * h.detach().float().norm(dim=-1, keepdim=True)  # natural norm
         h = torch.where(mask.to(resid.device)[..., None], v.to(resid.dtype), h)
-        resid = torch.cat([resid[:, :-q], h], dim=1)
+        blocks = torch.cat([h[:, :, None], blocks[:, :, 1:]], dim=2).reshape(c, n, resid.shape[-1])
+        resid = torch.cat([resid[:, :-n], blocks], dim=1)
         return resid if rest is None else (resid, *rest)
 
-    def kl(self, prefixes, vectors, return_argmax=False):
+    @torch.no_grad()
+    def greedy_continuations(self, prefixes, m, batch_size=16):
+        """The target's own greedy m-token continuation of each prefix (unspliced)."""
+        dev = self.model.get_input_embeddings().weight.device
+        uniq = list(dict.fromkeys(tuple(p) for p in prefixes))
+        cont = {}
+        for cs in range(0, len(uniq), batch_size):
+            chunk = uniq[cs:cs + batch_size]
+            T = max(len(k) for k in chunk)
+            ids = torch.zeros((len(chunk), T), dtype=torch.long, device=dev)
+            attn = torch.zeros((len(chunk), T), dtype=torch.long, device=dev)
+            for r, k in enumerate(chunk):
+                ids[r, T - len(k):] = torch.tensor(k, dtype=torch.long, device=dev)
+                attn[r, T - len(k):] = 1
+            g = self.model.generate(input_ids=ids, attention_mask=attn, max_new_tokens=m,
+                                    min_new_tokens=m, do_sample=False, pad_token_id=0)
+            for r, k in enumerate(chunk):
+                cont[k] = g[r, T:T + m].tolist()
+        return [cont[tuple(p)] for p in prefixes]
+
+    def kl(self, prefixes, vectors, return_argmax=False, conts=None):
         """KL(p_orig || p_splice) [N] for vector j spliced after prefixes[j].
 
         prefixes: N token-id lists (full prefix x_<=t; rows sharing a prefix are
         deduplicated). vectors: [N, d]; grad flows into it if it requires grad.
         return_argmax: also return the argmax token of p_orig and of p_splice
-        ([N] each, no grad).
+        ([N] each, no grad; next-token position).
+        conts: optional N continuation token lists (all of length m; the same for
+        rows sharing a prefix). Then returns [N, 1 + m]: per-position KL, column 0
+        = the next-token KL, column i = KL on predicting the token after y_i.
         """
         n = len(prefixes)
         assert vectors.shape[0] == n
+        m = len(conts[0]) if conts is not None else 0
+        assert conts is None or all(len(x) == m for x in conts), "continuations must share a length"
+        blk = 1 + m
         groups = {}
         for j, ids in enumerate(prefixes):
             groups.setdefault(tuple(ids), []).append(j)
@@ -96,6 +131,12 @@ class SpliceKL:
                 ids[r, T - len(k):] = torch.tensor(k, dtype=torch.long, device=dev)
                 attn[r, T - len(k):] = 1
             pos = (attn.cumsum(-1) - 1).clamp_min(0)
+            # block tokens per prefix: [x_t, y_1..y_m] at positions pos_t .. pos_t + m
+            btok = ids[:, -1:]
+            if m:
+                btok = torch.cat([btok, torch.tensor([conts[groups[k][0]] for k in chunk],
+                                                     dtype=torch.long, device=dev)], dim=1)
+            bpos = pos[:, -1:] + torch.arange(blk, device=dev)
             with torch.no_grad():
                 cache = self.model(
                     input_ids=ids[:, :-1], attention_mask=attn[:, :-1],
@@ -103,8 +144,12 @@ class SpliceKL:
                 ).past_key_values
             dtype = self.model.get_input_embeddings().weight.dtype
             neg = torch.finfo(dtype).min
-            keep = torch.cat([attn[:, :-1].bool()[:, None, :].expand(c, q, T - 1),
-                              torch.eye(q, dtype=torch.bool, device=dev).expand(c, q, q)], dim=-1)
+            # each block sees the cached prefix + itself causally, never another block
+            qb = torch.arange(q * blk, device=dev)
+            same_block = (qb[:, None] // blk) == (qb[None, :] // blk)
+            causal = (qb[None, :] % blk) <= (qb[:, None] % blk)
+            keep = torch.cat([attn[:, :-1].bool()[:, None, :].expand(c, q * blk, T - 1),
+                              (same_block & causal).expand(c, q * blk, q * blk)], dim=-1)
             mask4d = torch.zeros(keep.shape, dtype=dtype, device=dev).masked_fill(~keep, neg)[:, None]
             vecs = torch.zeros((c, q, vectors.shape[1]), dtype=vectors.dtype, device=vectors.device)
             smask = torch.zeros((c, q), dtype=torch.bool, device=dev)
@@ -116,20 +161,22 @@ class SpliceKL:
             if slots:
                 rr, ss, jj = (torch.tensor(x, device=vectors.device) for x in zip(*slots))
                 vecs = vecs.index_put((rr, ss), vectors[jj])
-            self._splice = (vecs, smask)
+            self._splice = (vecs, smask, blk)
             try:
                 logits = self.model(
-                    input_ids=ids[:, -1:].expand(c, q), attention_mask=mask4d,
-                    position_ids=pos[:, -1:].expand(c, q), past_key_values=cache,
+                    input_ids=btok.repeat(1, q), attention_mask=mask4d,
+                    position_ids=bpos.repeat(1, q), past_key_values=cache,
                     use_cache=True,
                 ).logits.float()
             finally:
                 self._splice = None
-            logp = F.log_softmax(logits, dim=-1)              # [c, q, V]
+            logp = F.log_softmax(logits, dim=-1).reshape(c, q, blk, -1)   # [c, q, blk, V]
             lp_orig = logp[:, :1].detach()
-            kl = (lp_orig.exp() * (lp_orig - logp)).sum(-1)  # [c, q]; col 0 ~ 0
+            kl = (lp_orig.exp() * (lp_orig - logp)).sum(-1)  # [c, q, blk]; copy 0 ~ 0
+            if not m:
+                kl = kl[..., 0]
             if return_argmax:
-                am = logp.detach().argmax(-1).tolist()
+                am = logp[:, :, 0].detach().argmax(-1).tolist()
             for r, s, j in slots:
                 out[j] = kl[r, s]
                 if return_argmax:

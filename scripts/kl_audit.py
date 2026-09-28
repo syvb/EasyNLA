@@ -165,6 +165,9 @@ def main():
     ap.add_argument("--ar", action="append", required=True, help="name=DIR[:LORA_DIR]")
     ap.add_argument("--target", default="Qwen/Qwen3-8B")
     ap.add_argument("--micro-batch", type=int, default=8)
+    ap.add_argument("--future", type=int, default=0,
+                    help="also score KL on the target's own next M greedy tokens (splice still "
+                         "only at t); adds the multi-position section and decision (docs/kl_nla.md)")
     ap.add_argument("--n", type=int, default=None, help="first n rows only (smoke)")
     ap.add_argument("--target-dtype", default="bfloat16")
     ap.add_argument("--device", default="cuda")
@@ -225,6 +228,12 @@ def main():
     R = len(rows)
     KL = {c: np.full(R, np.nan) for c in conds}
     TOP = {c: np.full(R, np.nan) for c in conds}
+    M = a.future
+    if M:
+        t_c = time.time()
+        CONT = splice.greedy_continuations(P, M)
+        log(f"greedy {M}-token continuations for {R} prefixes ({time.time() - t_c:.0f}s)")
+        KLP = {c: np.full((R, 1 + M), np.nan) for c in conds}
     top_orig = np.zeros(R, dtype=np.int64)
     t0 = time.time()
     chunk = 256
@@ -237,10 +246,13 @@ def main():
                 if not torch.isnan(v[k, 0]):
                     pref.append(P[i]); vecs.append(v[k]); who.append((c, i))
         with torch.no_grad():
-            kl, to, ts = splice.kl(pref, torch.stack(vecs).to(a.device), return_argmax=True)
+            kl, to, ts = splice.kl(pref, torch.stack(vecs).to(a.device), return_argmax=True,
+                                   conts=[CONT[i] for _, i in who] if M else None)
         kl = kl.float().cpu().numpy()
         for j, (c, i) in enumerate(who):
-            KL[c][i] = kl[j]
+            KL[c][i] = kl[j, 0] if M else kl[j]
+            if M:
+                KLP[c][i] = kl[j]
             TOP[c][i] = float(ts[j] == to[j])
             top_orig[i] = int(to[j])
         log(f"  splice {min(cs + chunk, R)}/{R} rows ({time.time() - t0:.0f}s)")
@@ -298,10 +310,96 @@ def main():
             }
     summ["next_token"] = nt
 
+    # ---- multi-position: does the activation matter beyond the next token? ----
+    fut_lines = []
+    if M:
+        nxt = {c: KLP[c][:, 0] for c in conds}
+        fut = {c: KLP[c][:, 1:].sum(1) for c in conds}
+        tot = {c: KLP[c].sum(1) for c in conds}
+        F = {"m": M, "stored_future_kl": {"median": float(np.nanmedian(fut["stored"])),
+                                          "p90": float(np.nanpercentile(fut["stored"], 90))},
+             "conditions": {}, "per_position_mean_kl": {}, "ranking": {}}
+        for c in conds:
+            F["conditions"][c] = {
+                "future_share": boot_ratio(nxt[c], tot[c], d_rows),    # 1 - next/total
+                "kl_next": boot_docs(nxt[c], d_rows), "kl_future": boot_docs(fut[c], d_rows),
+                "kl_recovered_next": boot_ratio(nxt[c], nxt["mean_dir"], d_rows),
+                "kl_recovered_future": boot_ratio(fut[c], fut["mean_dir"], d_rows),
+                "kl_recovered_total": boot_ratio(tot[c], tot["mean_dir"], d_rows),
+                "spearman_next_future": spearman(nxt[c], fut[c]),
+            }
+            F["per_position_mean_kl"][c] = np.nanmean(KLP[c], axis=0).round(4).tolist()
+        for spec in a.ar:
+            name = spec.split("=", 1)[0]
+            order = {}
+            for part in ("next", "future", "total"):
+                order[part] = sorted(TEXT_CONDS, key=lambda c: -F["conditions"][f"{name}/{c}"][f"kl_recovered_{part}"][0])
+            F["ranking"][name] = order
+        # pre-registered decision (docs/kl_nla.md, written before this ran), on the SFT AR
+        ar0 = a.ar[0].split("=", 1)[0]
+        keyc = [f"{ar0}/gold", f"{ar0}/av_greedy"]
+        share_ok = all(F["conditions"][k]["future_share"][0] >= 0.25 for k in keyc)
+        rho_ok = any(F["conditions"][k]["spearman_next_future"] < 0.7 for k in keyc)
+        # a ranking change counts only if a PAIR of text conditions is ordered one way by next-token
+        # KL recovered and the other way by future KL recovered, both paired doc-bootstrap CIs
+        # excluding 0 (near-ties swapping order is noise)
+        uu, inv_d = np.unique(d_rows, return_inverse=True)
+        rng_p = np.random.default_rng(2)
+        Jp = [rng_p.integers(0, len(uu), len(uu)) for _ in range(2000)]
+
+        def pair_diff(ka, kb, part):
+            A = np.bincount(inv_d, weights=np.nan_to_num(part[ka]), minlength=len(uu))
+            B = np.bincount(inv_d, weights=np.nan_to_num(part[kb]), minlength=len(uu))
+            ok = ~(np.isnan(part[ka]) | np.isnan(part[kb]))
+            D = np.bincount(inv_d, weights=np.where(ok, part["mean_dir"], 0), minlength=len(uu))
+            f = lambda j: (B[j].sum() - A[j].sum()) / D[j].sum()                # rec(a) - rec(b)
+            bs = [f(j) for j in Jp]
+            return f(np.arange(len(uu))), np.percentile(bs, 2.5), np.percentile(bs, 97.5)
+
+        reversals = []
+        for i1 in range(len(TEXT_CONDS)):
+            for i2 in range(i1 + 1, len(TEXT_CONDS)):
+                ka, kb = f"{ar0}/{TEXT_CONDS[i1]}", f"{ar0}/{TEXT_CONDS[i2]}"
+                n_ = pair_diff(ka, kb, nxt)
+                f_ = pair_diff(ka, kb, fut)
+                if (n_[1] > 0 and f_[2] < 0) or (n_[2] < 0 and f_[1] > 0):
+                    reversals.append({"pair": [TEXT_CONDS[i1], TEXT_CONDS[i2]],
+                                      "next_diff": [float(x) for x in n_], "future_diff": [float(x) for x in f_]})
+        F["significant_reversals"] = reversals
+        rank_ok = bool(reversals)
+        F["decision"] = {"future_share_ge_0.25": share_ok, "rho_lt_0.7": rho_ok, "ranking_differs": rank_ok,
+                         "verdict": ("multi-position KL adds signal -> RL pilot worth running"
+                                     if share_ok and (rho_ok or rank_ok) else
+                                     "next token dominates / same signal -> stop")}
+        summ["future"] = F
+        g = lambda v: f"{v[0]:.3f} [{v[1]:.3f}, {v[2]:.3f}]"                   # noqa: E731
+        fut_lines = ["", f"## Multi-position KL (splice at t; KL on the target's own next {M} greedy tokens)", "",
+                     f"Stored activation, future KL: median {F['stored_future_kl']['median']:.2e}, "
+                     f"p90 {F['stored_future_kl']['p90']:.2e} (should be ~0)", "",
+                     f"**Decision (pre-registered): {F['decision']['verdict']}** "
+                     f"(share>=0.25: {share_ok}; rho<0.7: {rho_ok}; significant rank reversals: "
+                     f"{[r['pair'] for r in F['significant_reversals']] or 'none'})", "",
+                     "| condition | future share of KL | KL rec. next | KL rec. future | KL rec. total | rho(next, future) |",
+                     "|---|---|---|---|---|---|"]
+        for c in conds:
+            v = F["conditions"][c]
+            fut_lines.append(f"| {c} | {g(v['future_share'])} | {g(v['kl_recovered_next'])} | "
+                             f"{g(v['kl_recovered_future'])} | {g(v['kl_recovered_total'])} | "
+                             f"{v['spearman_next_future']:.2f} |")
+        fut_lines += ["", "Ranking of text conditions by KL recovered:", ""]
+        for name, o in F["ranking"].items():
+            for part, lst in o.items():
+                fut_lines.append(f"- {name} {part}: {' > '.join(lst)}")
+        fut_lines += ["", "Mean KL by position (0 = next token):", ""]
+        for c in ["mean_dir", "orthogonal", "cos0.9", f"{ar0}/gold", f"{ar0}/av_greedy"]:
+            fut_lines.append(f"- {c}: {' '.join(f'{x:.3f}' for x in F['per_position_mean_kl'][c])}")
+
     json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), indent=1)
     np.savez_compressed(os.path.join(a.out, "rows.npz"), doc_id=d_rows, top_orig=top_orig,
                         **{f"kl/{c}": KL[c] for c in conds}, **{f"mse/{c}": MSE[c] for c in conds},
-                        **{f"top1/{c}": TOP[c] for c in conds})
+                        **{f"top1/{c}": TOP[c] for c in conds},
+                        **({f"klpos/{c}": KLP[c] for c in conds} if M else {}),
+                        **({"continuations": np.array(CONT)} if M else {}))
 
     lines = [f"# KL audit ({R} rows / {summ['n_docs']} docs)", "",
              f"G1 stored-activation KL median {g1['median']:.2e}, p90 {g1['p90']:.2e} -> "
@@ -318,6 +416,7 @@ def main():
     for k, s in nt["per_condition"].items():
         lines.append(f"| {k} | {f3(s['named_rate'])} | {f3(s['kl_recovered_named'])} | "
                      f"{f3(s['kl_recovered_not_named'])} | {s['gain_share_on_named_rows']:.2f} |")
+    lines += fut_lines
     open(os.path.join(a.out, "summary.md"), "w").write("\n".join(lines) + "\n")
     print("\n".join(lines), flush=True)
     sys.exit(0 if (g1_ok and g2 >= 0.99) else 3)

@@ -75,6 +75,58 @@ def test_matches_unpadded_reference():
     torch.testing.assert_close(got, want, rtol=1e-4, atol=1e-6)
 
 
+def _reference_multi(model, ids, cont, vec):
+    """Per-position KL [1+m] over prefix + continuation, splice at the prefix's last token."""
+    layer = resolve_decoder_layers(model)[K]
+    P = len(ids)
+
+    def hook(_m, _a, out):
+        h = out[0] if isinstance(out, tuple) else out
+        v = vec / vec.norm() * h[0, P - 1].norm()
+        h = torch.cat([h[:, :P - 1], v.to(h.dtype)[None, None], h[:, P:]], dim=1)
+        return (h, *out[1:]) if isinstance(out, tuple) else h
+
+    x = torch.tensor([ids + cont])
+    handle = layer.register_forward_hook(hook)
+    try:
+        with torch.no_grad():
+            lp_s = F.log_softmax(model(input_ids=x).logits[0, P - 1:].float(), -1)
+    finally:
+        handle.remove()
+    with torch.no_grad():
+        lp_o = F.log_softmax(model(input_ids=x).logits[0, P - 1:].float(), -1)
+    return (lp_o.exp() * (lp_o - lp_s)).sum(-1), lp_o
+
+
+def test_multi_position_matches_reference():
+    model = _tiny_model()
+    prefs = _prefixes()
+    splice = SpliceKL(model, K, micro_batch=2)
+    conts_u = splice.greedy_continuations(prefs, 4)
+    order = [0, 1, 2, 1, 0, 1]
+    vecs = torch.randn(len(order), 64, generator=torch.Generator().manual_seed(5))
+    got = splice.kl([prefs[i] for i in order], vecs, conts=[conts_u[i] for i in order])
+    assert got.shape == (len(order), 5)
+    want = torch.stack([_reference_multi(model, prefs[i], conts_u[i], vecs[j])[0] for j, i in enumerate(order)])
+    torch.testing.assert_close(got, want, rtol=1e-4, atol=1e-6)
+    # position 0 is exactly the single-token KL
+    torch.testing.assert_close(got[:, 0], splice.kl([prefs[i] for i in order], vecs), rtol=1e-5, atol=1e-7)
+    # greedy continuation = the unspliced model's argmax under teacher forcing
+    for i in range(3):
+        lp_o = _reference_multi(model, prefs[i], conts_u[i], torch.randn(64))[1]
+        assert lp_o[:-1].argmax(-1).tolist() == conts_u[i]
+
+
+def test_multi_position_natural_activation_zero():
+    model = _tiny_model()
+    prefs = _prefixes()
+    splice = SpliceKL(model, K)
+    conts = splice.greedy_continuations(prefs, 3)
+    nat = torch.stack([_reference(model, p, None)[0] for p in prefs])
+    got = splice.kl(prefs, nat * 2.0, conts=conts)
+    assert got.abs().max() < 1e-5, got
+
+
 def test_natural_activation_gives_zero_kl():
     model = _tiny_model()
     prefs = _prefixes()
