@@ -1,5 +1,7 @@
 # KL-NLA Phase 2 plan: does a KL reward make better explanations?
 
+> **Summary of the whole thread:** [`kl_nla_writeup.md`](kl_nla_writeup.md).
+
 Status 2026-09-28: the **slim pilot** below was adopted, replacing Steps A and B further down (kept for the
 record). Follows `docs/kl_nla.md` (Phases 0, 1, and the hedging control).
 

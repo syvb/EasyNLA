@@ -1,5 +1,8 @@
 # KL-NLA: experiment plan (Qwen3-8B, layer 24)
 
+> **Summary of the whole thread:** [`kl_nla_writeup.md`](kl_nla_writeup.md). This file is the working log:
+> plans, pre-registrations and per-phase results.
+
 Branch `sv/kl-nla`. Code: `--recon-loss kl` in `nla/train_sft.py` and `nla/train_rl_vllm.py`,
 helper `nla/utils/kl_splice.py`. Status 2026-09-25: CPU-tested only; nothing launched.
 
