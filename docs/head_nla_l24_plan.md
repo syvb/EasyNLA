@@ -217,3 +217,66 @@ per-head AR-training mean):
 - **More examples per head:** the explanation probe curve is steep.
 - **The AV injection site:** layer 1 vs L24, as an ablation.
 - **The AV's fallback mode:** watch it under RL.
+
+## Faithfulness of the AV's explanations (2026-10-19)
+
+**Question:** are AV explanations that are more faithful to the write also the ones that reconstruct better?
+
+**Method:**
+- `scripts/runpod/heads_l24_regen_remote.sh` reran the checks from the saved checkpoints (0.44 h pod) and saved
+  every generation (`generations.parquet`). The reproduction was exact: same FVEs, same per-row errors.
+- `scripts/heads_faithfulness_judge.py`: a blinded Claude Sonnet 5.5 judge (effort low) scored 823 eval rows (25 per
+  head plus 25 hand-labelled rows), in three conditions, interleaved. The judge saw the row's readouts and one text,
+  and never which condition it came from.
+- Faithfulness to the readouts (1–5), plus flags for unsupported specifics and generic templates.
+- 2,460/2,469 judgments parsed.
+- The judge agrees with a hand rating of 25 examples: Spearman 0.89.
+
+| text | faithful (1–5) | ≥4 | unsupported specifics | generic template | reconstruction gain |
+|---|---|---|---|---|---|
+| gold (Haiku) | 4.06 | 88% | 7% | 3% | +0.060 |
+| AV, true write | 2.69 | 24% | 68% | 50% | +0.053 |
+| AV, another write (control) | 1.80 | 4% | 86% | 55% | −0.074 |
+
+Gain = (baseline error − error) ÷ the head's mean baseline error, per row.
+
+**Yes: faithfulness predicts reconstruction.**
+- Spearman between AV faithfulness and AV gain is +0.41 over 817 rows.
+- **+0.27 controlling for the gold text's gain on the same row,** that is, for how reconstructible the write is at all.
+  So it isn't only the write type.
+- The within-head mean is +0.31 over 32 heads. Across heads, mean AV faithfulness vs AV FVE gives Spearman 0.71.
+
+**AV gain by faithfulness score:**
+
+| score | n | AV gain | gold gain, same rows |
+|---|---|---|---|
+| 1 | 66 | −0.006 | −0.010 |
+| 2 | 323 | +0.003 | +0.020 |
+| 3 | 234 | +0.041 | +0.043 |
+| 4 | 189 | +0.174 | +0.174 |
+
+- When the AV is faithful, it matches the gold explanation's usefulness.
+- At score 2 it loses most of what the gold had.
+- The residual after regressing on gold gain rises from −0.02 (score 2) to +0.04 (score 4).
+
+**Flags:**
+- **Generic template** (50% of AV outputs): mean gain +0.008, against +0.097 without.
+- **Unsupported specifics** (68%): +0.041, against +0.078 without.
+  - The judge flags embellishment heavily. Part of this is the gold style: 7% of the gold is flagged too, and the
+    AV amplifies it.
+
+**By head:**
+- Best: H19 (faithfulness 3.89, FVE 0.22), H16, H26.
+- Worst: H2 (1.96, −0.01), H3, H30, H7, H21.
+- The gold faithfulness is ~4 on every head, so the AV's per-head gap is learning, not data.
+- The worst heads are the grammatical ones, where even gold reconstructs little (gold FVE ≤ 0.03).
+
+**Implications for RL:**
+- Reconstruction reward lines up with faithfulness. Templates and unfaithful text earn ~0, so RL should push away
+  from them where the AR can use better text.
+- Unsupported specifics cost reward only mildly, so RL may not remove them. A judge-based penalty or a cleaner gold
+  style could.
+- On grammatical heads, gold itself barely helps the AR. A stronger AR is needed there before RL can reward
+  faithfulness.
+
+**Cost:** pod $1.76; Sonnet ≤ $8 (1.84M input incl. cache reads + 0.44M output).

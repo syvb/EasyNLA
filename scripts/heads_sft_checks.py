@@ -19,7 +19,8 @@ exactly 0 and never peeks at eval labels:
 Check 1 passes when ar/gold is clearly above 0, ar/empty and ar/gold_shuf; check 2 when
 av/true is clearly above av/shuf (checks.json has 95% bootstrap CIs over rows and over heads). An
 AR-free companion: a per-head ridge from text alone to the write, for the gold, AV-true and AV-shuf
-texts. Writes checks.json, row_errors.npz and examples.md to --out-dir.
+texts. Writes checks.json, row_errors.npz, generations.parquet (every eval row's gold / AV texts,
+row-aligned with row_errors.npz) and examples.md to --out-dir.
 """
 
 import argparse
@@ -200,6 +201,14 @@ def main() -> None:
     # from the per-row squared errors, which are also saved for post-hoc analysis.
     err = {name: ((pr - gold) ** 2).sum(-1) for name, pr in preds.items()}
     base_err = ((baseline - gold) ** 2).sum(-1)
+    import pyarrow as pa
+    pq.write_table(pa.table({
+        "row": np.arange(len(ev)), "example_idx": [r["example_idx"] for r in ev],
+        "layer": [la for la, _ in heads], "head": [hd for _, hd in heads],
+        "pos": [r["pos"] for r in ev], "dev_rel": [r["dev_rel"] for r in ev],
+        "gold": gold_desc, "av_true": av_true, "av_shuf": av_shuf,
+        "shuf_partner_row": perm,   # av_shuf[i] is the AV's text for row perm[i]'s write
+    }), out / "generations.parquet")
     np.savez(out / "row_errors.npz", base=base_err, layer=np.array([la for la, _ in heads]),
              head=np.array([hd for _, hd in heads]), **{k.replace("/", "__"): e for k, e in err.items()})
     boot = np.random.default_rng(args.seed + 1)
