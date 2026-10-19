@@ -18,6 +18,9 @@ The recipe's warm-start targets, per head h with o_proj slice W_h:
                                                    the identity-init value head, so √d-scaled
                                                    targets start it at the right magnitude)
   eval.parquet     the eval split, AV-format prompt + v + the description, for the pre-RL checks
+  rl.parquet       (--rl-only) the rl split: AV-format prompt + v + critic_prefix ("Attention head
+                   L12H7: "), for nla.train_rl_self_contained with --inject-preserve-magnitude
+                   --ar-raw-loss --critic-prefix-column critic_prefix
 
 Descriptions come from warmstart/descriptions.parquet (rows with ok=True; rule-based "little
 or nothing" rows included), or any parquet with example_idx + description columns
@@ -113,19 +116,26 @@ def main() -> None:
     p.add_argument("--cap-quantile", type=float, default=0.999)
     p.add_argument("--max-norm", type=float, default=4.0, help="hard cap on ‖v‖ (units of the head's RMS)")
     p.add_argument("--seed", type=int, default=0, help="row-order shuffle")
+    p.add_argument("--rl-only", action="store_true",
+                   help="write only <sft-dir>/rl.parquet: the selection's rl rows (no descriptions needed)")
     args = p.parse_args()
 
     out_dir, sft_dir = Path(args.output_dir), Path(args.sft_dir)
     meta = read_meta(out_dir)
     sel = {r["example_idx"]: r for r in pq.read_table(out_dir / "warmstart" / "selection.parquet").to_pylist()}
-    desc_tab = pq.read_table(args.descriptions or out_dir / "warmstart" / "descriptions.parquet")
-    keep = desc_tab.column("ok").to_pylist() if "ok" in desc_tab.column_names else [True] * desc_tab.num_rows
-    rows = []
-    for ex, d, ok in zip(desc_tab.column("example_idx").to_pylist(), desc_tab.column(args.description_column).to_pylist(),
-                         keep, strict=True):
-        if ok and d:
-            rows.append({**sel[ex], "description": d})
-    print(f"{len(rows)}/{desc_tab.num_rows} described examples usable")
+    if args.rl_only:
+        rows = [r for r in sel.values() if r["split"] == "rl"]
+        assert rows, "the selection has no rl rows: rerun the select stage with per_head_rl"
+        print(f"{len(rows)} rl prompts")
+    else:
+        desc_tab = pq.read_table(args.descriptions or out_dir / "warmstart" / "descriptions.parquet")
+        keep = desc_tab.column("ok").to_pylist() if "ok" in desc_tab.column_names else [True] * desc_tab.num_rows
+        rows = []
+        for ex, d, ok in zip(desc_tab.column("example_idx").to_pylist(),
+                             desc_tab.column(args.description_column).to_pylist(), keep, strict=True):
+            if ok and d:
+                rows.append({**sel[ex], "description": d})
+        print(f"{len(rows)}/{desc_tab.num_rows} described examples usable")
 
     tok = load_tokenizer(meta.base_model)
     tokens = build_token_meta(tok, ACTOR_TEMPLATE, critic_template=CRITIC_TEMPLATE)
@@ -157,6 +167,25 @@ def main() -> None:
             "response": pa.array([wrap_explanation(rows[i]["description"]) for i in ix], type=pa.string()),
             "activation_vector": vec(ix),
         }
+
+    if args.rl_only:
+        ix = list(range(len(rows)))
+        cols = {
+            "prompt": pa.array([[{"role": "user", "content": actor_content()}] for _ in ix], type=_PROMPT_STRUCT),
+            "activation_vector": vec(ix),
+            # the AR's text is "Attention head L24H7: <explanation>"; the RL trainer prepends this
+            # per row (--critic-prefix-column critic_prefix) before the critic template
+            "critic_prefix": pa.array([critic_explanation(rows[i]["layer"], rows[i]["head"], "") for i in ix],
+                                      type=pa.string()),
+            **{k: f(ix) for k, f in common.items()},
+        }
+        path = sft_dir / "rl.parquet"
+        atomic_write_table(pa.table(cols), path)
+        sidecar_path_for(path).write_text(serialize_sidecar(_sidecar_meta(meta, "rl", len(ix), tokens, layer_index)))
+        norms = np.linalg.norm(v, axis=1)
+        print(f"wrote {len(ix)} rl prompts → {path}; ‖v‖ median {np.median(norms):.2f} max {norms.max():.2f} "
+              f"(the RL trainer's AR targets are √d = {root_d:.0f} × v: --ar-raw-loss)")
+        return
 
     written = {}
     for stage, split in (("av_sft", "av_sft"), ("ar_sft", "ar_sft"), ("eval", "eval")):

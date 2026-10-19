@@ -43,7 +43,6 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 import torch
-import torch.nn.functional as F
 from peft import (LoraConfig, PeftModel, get_peft_model,
                   inject_adapter_in_model, prepare_model_for_kbit_training)
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -70,7 +69,7 @@ from nla.train_sft import _resolve_device_map, init_critic_from_base
 
 
 
-def load_rl_dataset(parquet_path, n_max=None, exclude_doc_pred=None):
+def load_rl_dataset(parquet_path, n_max=None, exclude_doc_pred=None, extra_cols=()):
     """Streaming + vectorized load — reads only the columns/rows we need, and keeps
     activations as numpy float32 (zero-copy from arrow), NEVER python floats.
 
@@ -82,10 +81,13 @@ def load_rl_dataset(parquet_path, n_max=None, exclude_doc_pred=None):
     exclude_doc_pred: optional doc_id -> bool; rows whose doc matches are DROPPED
     (the auto-split's held-out val docs — see nla/val_split.py). n_max counts
     kept rows.
+
+    extra_cols: further string columns copied into each row dict under their own names
+    (e.g. the per-row critic prefix of head-contribution data, --critic-prefix-column).
     """
     import pyarrow.parquet as pq_inner
     pf = pq_inner.ParquetFile(parquet_path)
-    cols = ["prompt", "activation_vector"] + (["doc_id"] if exclude_doc_pred else [])
+    cols = ["prompt", "activation_vector"] + (["doc_id"] if exclude_doc_pred else []) + list(extra_cols)
     rows = []
     for rg_idx in range(pf.num_row_groups):
         if n_max is not None and len(rows) >= n_max:
@@ -100,16 +102,17 @@ def load_rl_dataset(parquet_path, n_max=None, exclude_doc_pred=None):
         # .flatten() respects the slice offsets; np.asarray is zero-copy.
         col = rg.column("activation_vector").combine_chunks()
         acts = np.asarray(col.flatten(), dtype=np.float32).reshape(len(prompts), -1)
+        extra = {c: rg.column(c).to_pylist() for c in extra_cols}
         if exclude_doc_pred is not None:
             dids = rg.column("doc_id").to_pylist()
             for i, p in enumerate(prompts):
                 if n_max is not None and len(rows) >= n_max:
                     break
                 if not exclude_doc_pred(dids[i]):
-                    rows.append({"prompt": p, "activation": acts[i]})
+                    rows.append({"prompt": p, "activation": acts[i], **{c: v[i] for c, v in extra.items()}})
         else:
             for i, p in enumerate(prompts):
-                rows.append({"prompt": p, "activation": acts[i]})
+                rows.append({"prompt": p, "activation": acts[i], **{c: v[i] for c, v in extra.items()}})
     return rows
 
 
@@ -177,9 +180,70 @@ def rollout_one_prompt(
 
 
 
+@torch.no_grad()
+def rollout_batched(
+    actor, tokenizer, prompt_texts, activations, vectors_ref,
+    group_size, max_new_tokens, temperature, device, eos_ids, chunk_rows,
+):
+    """`group_size` samples for EVERY prompt, `chunk_rows` rollouts per generate() call
+    (left-padded; the injection hook finds each row's marker itself, as in the batched
+    eval). Same sampler settings and the same per-sample dict as rollout_one_prompt, plus
+    `prompt_idx`; `full_ids` is the unpadded prompt + the EOS-trimmed response. One call per
+    prompt (rollout_one_prompt) leaves the GPU mostly idle when explanations are short."""
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    ids = [tokenizer.encode(t, add_special_tokens=False) for t in prompt_texts]
+    flat = [pi for pi in range(len(ids)) for _ in range(group_size)]
+    out = []
+    for s in range(0, len(flat), chunk_rows):
+        part = flat[s:s + chunk_rows]
+        width = max(len(ids[pi]) for pi in part)
+        inp = torch.full((len(part), width), tokenizer.pad_token_id, dtype=torch.long, device=device)
+        attn = torch.zeros((len(part), width), dtype=torch.long, device=device)
+        for r, pi in enumerate(part):
+            inp[r, width - len(ids[pi]):] = torch.tensor(ids[pi], dtype=torch.long, device=device)
+            attn[r, width - len(ids[pi]):] = 1
+        vectors_ref[0] = torch.stack([activations[pi] for pi in part]).to(device).float()
+        try:
+            gen = actor.generate(
+                input_ids=inp, attention_mask=attn, max_new_tokens=max_new_tokens,
+                do_sample=True, temperature=temperature, top_p=1.0, top_k=0,
+                repetition_penalty=1.0, pad_token_id=tokenizer.eos_token_id,
+                return_dict_in_generate=True,
+            )
+        finally:
+            vectors_ref[0] = None
+        for r, pi in enumerate(part):
+            resp_ids = gen.sequences[r, width:].tolist()
+            n_real = next((i + 1 for i, t in enumerate(resp_ids) if t in eos_ids), len(resp_ids))
+            resp_ids = resp_ids[:n_real]
+            out.append({
+                "text": tokenizer.decode(resp_ids, skip_special_tokens=True),
+                "full_ids": torch.tensor(ids[pi] + resp_ids, dtype=torch.long),
+                "prompt_len": len(ids[pi]),
+                "n_resp": n_real,
+                "prompt_idx": pi,
+            })
+    return out
+
+
+def recon_mse_rows(pred, gold, mse_scale_f, raw=False):
+    """Per-row reconstruction MSE: on the mse_scale-normalized vectors (direction only, the
+    default) or raw (--ar-raw-loss: the AR was trained to get magnitudes right too)."""
+    if raw:
+        return ((pred - gold) ** 2).mean(dim=-1)
+    return ((normalize_activation(pred, mse_scale_f) - normalize_activation(gold, mse_scale_f)) ** 2).mean(dim=-1)
+
+
+def critic_text(template, explanation, prefix=None):
+    """The AR's input text. `prefix` is a per-row lead-in (head-contribution data names the
+    head: "Attention head L24H7: "), placed where the AR-SFT data put it."""
+    return template.format(explanation=(prefix or "") + explanation)
+
+
 def score_with_critic(
     critic, tokenizer, explanations, activations, template, mse_scale_f, device,
-    batch_size=32,
+    batch_size=32, prefixes=None, raw=False, target_scale=1.0,
 ):
     """Returns list of rewards (None for failed extractions), reward = -recon_MSE.
 
@@ -194,7 +258,8 @@ def score_with_critic(
     for i, expl in enumerate(explanations):
         if expl is None:
             continue
-        ids = tokenizer.encode(template.format(explanation=expl), add_special_tokens=False)
+        ids = tokenizer.encode(critic_text(template, expl, prefixes[i] if prefixes else None),
+                               add_special_tokens=False)
         if 0 < len(ids) <= 1024:
             ids_list[i] = ids
     valid = [i for i in range(n) if ids_list[i] is not None]
@@ -209,10 +274,8 @@ def score_with_critic(
             attn[r, :L] = 1
         with torch.no_grad():
             preds = critic_predict(critic, bx, attn, mse_scale_f)            # [B, d]
-        gold = torch.stack([activations[i].to(device).float() for i in chunk], dim=0)
-        pred_n = normalize_activation(preds, mse_scale_f)
-        gold_n = normalize_activation(gold, mse_scale_f)
-        mse = ((pred_n - gold_n) ** 2).mean(dim=1)                           # [B] per-row MSE
+        gold = torch.stack([activations[i].to(device).float() for i in chunk], dim=0) * target_scale
+        mse = recon_mse_rows(preds.float(), gold, mse_scale_f, raw)          # [B] per-row MSE
         for r, i in enumerate(chunk):
             m = mse[r].item()
             rewards[i] = (-m) if math.isfinite(m) else None
@@ -395,6 +458,26 @@ def main():
     p.add_argument("--base-ckpt", default="Qwen/Qwen3-8B",
                    help="Base the AV/AR LoRA adapters sit on (4-bit if --quant 4bit).")
     p.add_argument("--quant", choices=["none", "4bit"], default="4bit")
+    p.add_argument("--device", default="cuda", help="torch device; 'cpu' for smoke tests on tiny models")
+    p.add_argument("--inject-preserve-magnitude", action="store_true", default=False,
+                   help="inject h + ||h||*v instead of h + ||h||*v/||v|| (must match how the AV-SFT was "
+                        "trained; head-contribution data)")
+    p.add_argument("--ar-raw-loss", action="store_true", default=False,
+                   help="reward, AR co-training and FVE on raw (pred, target) instead of mse_scale-normalized "
+                        "ones (must match an AR-SFT trained with --ar-raw-loss); targets = activation × "
+                        "--ar-target-scale. The failed-extraction reward becomes -2 × the row's predict-zero "
+                        "MSE, the raw counterpart of the normalized -2 floor.")
+    p.add_argument("--ar-target-scale", type=float, default=None,
+                   help="AR target = activation × this (default √d_model under --ar-raw-loss, as export_sft "
+                        "scales ar_sft targets; 1 otherwise)")
+    p.add_argument("--critic-prefix-column", default=None,
+                   help="rl-parquet column whose per-row text is prepended to the explanation in the AR's "
+                        "input (head-contribution data: critic_prefix = 'Attention head L24H7: ')")
+    p.add_argument("--max-hours", type=float, default=0,
+                   help="stop after the step that passes this many hours of training (0 = no limit), "
+                        "saving a checkpoint there, so a run slower than planned ends cleanly")
+    p.add_argument("--rollout-batch", type=int, default=0,
+                   help="rollouts per batched generate() call across prompts (0 = one call per prompt)")
     p.add_argument("--device-map", choices=["single", "auto"], default="single")
     p.add_argument("--max-gpu-mem", type=int, default=0)
     p.add_argument("--rl-parquet", required=True)
@@ -567,7 +650,9 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    device = "cuda"
+    device = args.device
+    assert not (args.log_reward and args.ar_raw_loss), (
+        "--log-reward clamps -mse to [1e-3, 2] for the normalized scale; it is not defined for --ar-raw-loss")
 
     # On-policy consistency: rollouts are sampled at `temperature`, but the
     # update's forward scores tokens under the untempered policy (T=1). At T=1
@@ -758,6 +843,8 @@ def main():
                 p_.requires_grad_(True)
         critic_trainable = [p for p in critic.parameters() if p.requires_grad]
         try:
+            if not str(device).startswith("cuda"):
+                raise ImportError("bitsandbytes 8-bit Adam is CUDA-only")
             import bitsandbytes as _bnb
             critic_optim = _bnb.optim.AdamW8bit(
                 critic_trainable, lr=args.critic_lr, betas=(0.9, 0.95),
@@ -778,7 +865,14 @@ def main():
 
     # ---- karvonen hook on actor ----
     vectors_ref = [None]
-    register_karvonen_hook(actor, vectors_ref, inj_id, left_id, right_id, layer_idx=1)
+    register_karvonen_hook(actor, vectors_ref, inj_id, left_id, right_id, layer_idx=1,
+                           preserve_magnitude=args.inject_preserve_magnitude)
+    raw = args.ar_raw_loss
+    target_scale = args.ar_target_scale or (math.sqrt(cfg.d_model) if raw else 1.0)
+    loss_scale_f = None if raw else mse_scale_f      # FVE baselines on the scale the reward uses
+    prefix_col = args.critic_prefix_column
+    print(f"[head] preserve_magnitude={args.inject_preserve_magnitude} raw_loss={raw} "
+          f"target_scale={target_scale:.3f} critic_prefix_column={prefix_col}", flush=True)
 
     # All stop ids for rollout EOS-trimming (Qwen3 lists two in its
     # generation_config; trimming on tokenizer.eos_token_id alone would leave
@@ -796,7 +890,8 @@ def main():
     from nla.val_split import is_val_doc
     _val_pred = (lambda d: is_val_doc(d, val_permille)) if val_permille else None
     rows = load_rl_dataset(args.rl_parquet, n_max=args.max_rows,
-                           exclude_doc_pred=_val_pred)
+                           exclude_doc_pred=_val_pred,
+                           extra_cols=[prefix_col] if prefix_col else ())
     print(f"[data] {len(rows)} rows", flush=True)
 
     # ---- FVE baseline: predict-the-mean MSE on this dataset ----
@@ -807,11 +902,11 @@ def main():
     # FVE vs the paper's definition — old wandb curves are not comparable.
     # Both are logged; `fve` uses the paper definition.
     _act_stack = torch.tensor(
-        [r["activation"] for r in rows[: min(len(rows), 4000)]],
+        np.stack([r["activation"] for r in rows[: min(len(rows), 4000)]]),
         dtype=torch.float32,
-    )
+    ) * target_scale
     fve_baseline_meannorm, fve_baseline = compute_predict_mean_baselines(
-        _act_stack, mse_scale_f,
+        _act_stack, loss_scale_f,
     )
     del _act_stack
     print(f"[fve] predict-the-mean baseline mse_nrm = {fve_baseline:.4f} "
@@ -825,6 +920,8 @@ def main():
     # memory-constrained LLM fine-tuning; numerically equivalent to fp32 Adam
     # within bf16 noise for our use case.
     try:
+        if not str(device).startswith("cuda"):
+            raise ImportError("bitsandbytes 8-bit Adam is CUDA-only")
         import bitsandbytes as bnb
         _adam_cls = bnb.optim.AdamW8bit
         print(f"[optim] using bitsandbytes AdamW8bit (bnb {bnb.__version__})")
@@ -910,7 +1007,8 @@ def main():
             _tj_cols = (["detokenized_text_truncated"]
                         if "detokenized_text_truncated" in _pf.schema_arrow.names else [])
             _rg = _pf.read_row_group(
-                _rg_idx, columns=["prompt", "activation_vector", "doc_id"] + _tj_cols)
+                _rg_idx, columns=["prompt", "activation_vector", "doc_id"] + _tj_cols
+                + ([prefix_col] if prefix_col else []))
             _prompts = _rg.column("prompt").to_pylist()
             _acts = np.asarray(
                 _rg.column("activation_vector").combine_chunks().flatten(),
@@ -921,7 +1019,9 @@ def main():
             for _i, _d in enumerate(_dids):
                 if is_val_doc(_d, val_permille):
                     eval_rows.append({"prompt": _prompts[_i], "activation": _acts[_i],
-                                      "source": _srcs[_i] or ""})
+                                      "source": _srcs[_i] or "",
+                                      **({prefix_col: _rg.column(prefix_col)[_i].as_py()}
+                                         if prefix_col else {})})
                     if len(eval_rows) >= args.eval_n_prompts:
                         break
         print(f"[eval] {len(eval_rows)} held-out-doc prompts loaded "
@@ -949,7 +1049,8 @@ def main():
             _rg = _pf.read_row_group(
                 _rg_idx, columns=["prompt", "activation_vector", "doc_id"]
                 + (["detokenized_text_truncated"]
-                   if "detokenized_text_truncated" in _pf.schema_arrow.names else []),
+                   if "detokenized_text_truncated" in _pf.schema_arrow.names else [])
+                + ([prefix_col] if prefix_col else []),
             )
             _n = _rg.num_rows
             if _seen + _n <= args.eval_skip_rows:
@@ -965,7 +1066,9 @@ def main():
                 if _dids[_i] in _train_doc_ids:
                     continue
                 eval_rows.append({"prompt": _prompts[_i], "activation": _acts[_i],
-                                  "source": _srcs[_i] or ""})
+                                  "source": _srcs[_i] or "",
+                                  **({prefix_col: _rg.column(prefix_col)[_i].as_py()}
+                                     if prefix_col else {})})
                 if len(eval_rows) >= args.eval_n_prompts:
                     break
             _seen += _n
@@ -978,8 +1081,8 @@ def main():
     if eval_rows:
         _e_acts = torch.stack([
             torch.as_tensor(r["activation"], dtype=torch.float32) for r in eval_rows
-        ])
-        _, eval_fve_baseline = compute_predict_mean_baselines(_e_acts, mse_scale_f)
+        ]) * target_scale
+        _, eval_fve_baseline = compute_predict_mean_baselines(_e_acts, loss_scale_f)
         del _e_acts
         print(f"[fve] eval-set baseline = {eval_fve_baseline:.4f} "
               f"(train-set baseline = {fve_baseline:.4f})", flush=True)
@@ -999,6 +1102,7 @@ def main():
         print(f"[data] fast-forwarded cursor through {args.start_step} steps "
               f"(cursor={cursor})", flush=True)
 
+    t_train_start = time.time()
     for step in range(args.start_step, args.num_steps):
         t0 = time.time()
         # ---- batch select ----
@@ -1017,24 +1121,36 @@ def main():
         all_response_text = []
         all_prompt_group = []
         all_resp_lens = []  # response token count per sample (for length/throughput logging)
-        for gi, row_idx in enumerate(batch_idxs):
-            row = rows[row_idx]
-            prompt_text = build_prompt_text(row["prompt"], inject_char, tokenizer)
-            activation = torch.tensor(row["activation"], dtype=torch.float32)
-            responses = rollout_one_prompt(
-                actor, tokenizer, prompt_text, activation, vectors_ref,
-                inj_id, args.group_size, args.max_new_tokens, args.temperature, device,
-                eos_ids=eos_ids,
+        all_prefixes = []   # per-sample AR prefix (--critic-prefix-column), else None
+        _acts_b = [torch.tensor(rows[ri]["activation"], dtype=torch.float32) for ri in batch_idxs]
+        if args.rollout_batch > 0:
+            _responses = rollout_batched(
+                actor, tokenizer,
+                [build_prompt_text(rows[ri]["prompt"], inject_char, tokenizer) for ri in batch_idxs],
+                _acts_b, vectors_ref, args.group_size, args.max_new_tokens, args.temperature,
+                device, eos_ids, args.rollout_batch,
             )
-            for r in responses:
-                expl = extract_explanation(r["text"])
-                all_full_ids.append(r["full_ids"])
-                all_prompt_lens.append(r["prompt_len"])
-                all_activations.append(activation)
-                all_explanations.append(expl)
-                all_response_text.append(r["text"])
-                all_prompt_group.append(gi)
-                all_resp_lens.append(int(r["n_resp"]))
+        else:
+            _responses = []
+            for gi, row_idx in enumerate(batch_idxs):
+                prompt_text = build_prompt_text(rows[row_idx]["prompt"], inject_char, tokenizer)
+                for r in rollout_one_prompt(
+                    actor, tokenizer, prompt_text, _acts_b[gi], vectors_ref,
+                    inj_id, args.group_size, args.max_new_tokens, args.temperature, device,
+                    eos_ids=eos_ids,
+                ):
+                    _responses.append({**r, "prompt_idx": gi})
+        for r in _responses:
+            gi = r["prompt_idx"]
+            expl = extract_explanation(r["text"])
+            all_full_ids.append(r["full_ids"])
+            all_prompt_lens.append(r["prompt_len"])
+            all_activations.append(_acts_b[gi])
+            all_explanations.append(expl)
+            all_response_text.append(r["text"])
+            all_prompt_group.append(gi)
+            all_resp_lens.append(int(r["n_resp"]))
+            all_prefixes.append(rows[batch_idxs[gi]][prefix_col] if prefix_col else None)
         t_gen_end = time.time()  # pure HF generation time (the rollout loop above)
 
         # ---- per-rollout injection-success checks -> training mask ----
@@ -1078,6 +1194,7 @@ def main():
         rewards = score_with_critic(
             critic, tokenizer, all_explanations, all_activations,
             template, mse_scale_f, device,
+            prefixes=all_prefixes, raw=raw, target_scale=target_scale,
         )
         # TRUNCATED -> FAILED: a cap-truncated rollout must not be scored as if
         # its explanation were complete — it gets the -2 failure reward, which IS
@@ -1096,6 +1213,12 @@ def main():
                 _floor if r is None else -math.log(min(max(-r, 1e-3), 2.0))
                 for r in rewards
             ]
+        elif raw:
+            # -2 × the row's predict-zero MSE: the raw counterpart of the normalized -2 floor
+            # (twice what an AR outputting zeros would score), so a failed extraction stays
+            # worse than any explanation of the same write.
+            _floors = [-2.0 * float(((a * target_scale) ** 2).mean()) for a in all_activations]
+            rewards_filled = [f if r is None else r for r, f in zip(rewards, _floors)]
         else:
             rewards_filled = [-2.0 if r is None else r for r in rewards]
         rewards_t = torch.tensor(rewards_filled, dtype=torch.float32, device=device)
@@ -1182,7 +1305,7 @@ def main():
                 act = all_activations[i]
                 if expl is None:
                     continue
-                text = template.format(explanation=expl)
+                text = critic_text(template, expl, all_prefixes[i])
                 ids = tokenizer.encode(text, add_special_tokens=False)
                 if len(ids) > 1024 or len(ids) == 0:
                     continue
@@ -1212,11 +1335,9 @@ def main():
                         batch_ids[row, :L] = crit_inputs[i].to(device)
                         attn[row, :L] = 1
                     pred = critic_predict(critic, batch_ids, attn, mse_scale_f)
-                    gold = torch.stack([crit_golds[i] for i in chunk]).to(device).float()
-                    pred_n = normalize_activation(pred, mse_scale_f)
-                    gold_n = normalize_activation(gold, mse_scale_f)
+                    gold = torch.stack([crit_golds[i] for i in chunk]).to(device).float() * target_scale
                     # Scale so the sum across micro-batches = MSE over full batch.
-                    chunk_loss = F.mse_loss(pred_n, gold_n) * (bs / bs_total)
+                    chunk_loss = recon_mse_rows(pred.float(), gold, mse_scale_f, raw).mean() * (bs / bs_total)
                     if not torch.isfinite(chunk_loss):
                         print(f"step {step}: critic loss non-finite (chunk {cs}), skipping", flush=True)
                         finite = False
@@ -1297,6 +1418,7 @@ def main():
             actor.eval()
             _t_eval_fve = time.time()   # [timing] base_fve = HF gen + critic scoring
             eval_rewards_s = []
+            eval_valid_s = []
             eval_records = []
             # --- Phase 1: BATCHED HF generation. Was sequential (one prompt at
             # a time, ~8 min for n=128); batching cuts it to ~1 min. The marker
@@ -1347,29 +1469,32 @@ def main():
                 activation = _eval_acts[ei]
                 resp = _all_resp[ei]
                 expl = extract_explanation(resp)
-                e_reward = -2.0
+                # failed extraction: the training floor (-2, or -2 × predict-zero MSE under --ar-raw-loss)
+                e_reward = (-2.0 * float(((activation * target_scale) ** 2).mean())) if raw else -2.0
+                e_valid = False   # a raw-loss reward can sit below -2, so validity is tracked, not inferred
                 if expl is not None:
-                    ctext = template.format(explanation=expl)
+                    ctext = critic_text(template, expl, row.get(prefix_col) if prefix_col else None)
                     cids = tokenizer.encode(ctext, add_special_tokens=False)
                     if 0 < len(cids) <= 1024:
                         x = torch.tensor([cids], dtype=torch.long, device=device)
                         with torch.no_grad():
                             pred = critic_predict(critic, x, None, mse_scale_f)[0]
-                        gold = activation.to(device).float()
-                        pn = normalize_activation(pred.unsqueeze(0), mse_scale_f)[0]
-                        gn = normalize_activation(gold.unsqueeze(0), mse_scale_f)[0]
-                        mse = F.mse_loss(pn, gn).item()
+                        gold = activation.to(device).float() * target_scale
+                        mse = recon_mse_rows(pred.float().unsqueeze(0), gold.unsqueeze(0),
+                                             mse_scale_f, raw)[0].item()
                         if math.isfinite(mse):
                             e_reward = -mse
+                            e_valid = True
                 eval_rewards_s.append(e_reward)
+                eval_valid_s.append(e_valid)
                 eval_records.append({
                     "step": step, "idx": ei, "reward": e_reward,
-                    "fve": (1.0 - (-e_reward) / eval_fve_baseline) if e_reward > -2.0 else float("nan"),
+                    "fve": (1.0 - (-e_reward) / eval_fve_baseline) if e_valid else float("nan"),
                     "extracted": expl is not None,
                     "explanation": expl if expl is not None else "<extraction failed>",
                 })
             # Aggregate eval scalars
-            valid_e = [r for r in eval_rewards_s if r > -2.0]
+            valid_e = [r for r, ok in zip(eval_rewards_s, eval_valid_s) if ok]
             log["eval/reward_mean"] = (
                 float(np.mean(eval_rewards_s)) if eval_rewards_s else float("nan")
             )
@@ -1439,8 +1564,9 @@ def main():
         if not args.no_wandb:
             wandb.log(log, step=step)
 
-        # ---- save LoRA periodically ----
-        if (step + 1) % args.save_every == 0:
+        # ---- save LoRA periodically (and at the last step, or when --max-hours runs out) ----
+        time_up = args.max_hours > 0 and time.time() - t_train_start > args.max_hours * 3600
+        if (step + 1) % args.save_every == 0 or step + 1 == args.num_steps or time_up:
             out_dir = save_dir / f"iter_{step + 1:06d}"
             out_dir.mkdir(parents=True, exist_ok=True)
             # Critic FIRST: resume keys off the actor's adapter_config.json,
@@ -1469,6 +1595,9 @@ def main():
             os.replace(str(_opt_tmp), str(_opt_dst))
             print(f"[save] LoRA → {out_dir} (+ optim_latest)"
                   + (" (+ co-trained critic)" if args.train_critic else ""))
+        if time_up:
+            print(f"[time] --max-hours {args.max_hours} reached after step {step}: stopping", flush=True)
+            break
 
     print("done.")
     if not args.no_wandb:
