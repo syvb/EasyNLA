@@ -1,0 +1,69 @@
+# Head-contribution NLA datagen — Qwen3-8B, all 36 layers × 32 heads, 100k docs.
+#   python -m nla.datagen.heads.run_pipeline --config configs/datagen/heads_qwen3_8b_finefineweb_100k.yaml
+# runs corpus → extract → stats → select → prepare (nothing paid). Then:
+#   --stages submit --confirm-spend   (PAID, Haiku 5.5 Batch API)   and   --stages wait
+# See docs/head_nla_data.md.
+#
+# Sizes at these settings: 100k docs × 10 positions × 4 layers ≈ 4M records
+# (~20 KiB raw each, ~0.75× after zstd) ≈ 65–85 GB under output_dir, ~110k
+# records per head; 1,152 heads × 400 = ~460k warm-start descriptions.
+
+model: qwen3_8b                      # preset → base_model Qwen/Qwen3-8B
+output_dir: /data/nla/heads_qwen3_8b_ffw_100k
+
+corpus:
+  # Domain-mixed sample of FineFineWeb: 200 random shard files × first 500
+  # docs ≥ 1000 chars each (only the head of each file is downloaded).
+  build:
+    dataset: m-a-p/FineFineWeb
+    file_glob: "*.jsonl"
+    num_files: 200
+    docs_per_file: 500
+    min_chars: 1000
+    text_column: text
+    id_column: global_id
+    keep_columns: [domain, url]
+    seed: 42
+  path: /data/nla/heads_qwen3_8b_ffw_100k/corpus.parquet
+  text_column: text
+  id_column: doc_id
+  meta_columns: [domain, url]
+  start: 0
+  length: 100000
+
+extract:
+  layers: all
+  layers_per_position: 4
+  positions_per_doc: 10
+  top_k: 16
+  chunk_size: 256
+  chunks_per_part: 8                 # 2048 docs per durable part
+  seed: 42
+  num_gpus: 1                        # >1: one process per GPU on interleaved parts
+  extractor_kwargs: {batch_size: 12, max_length: 4096, device_map: cuda:0, dtype: bfloat16}
+
+split: {av_sft: 0.20, ar_sft: 0.20, rl: 0.55, eval: 0.05, seed: 42}
+
+select:
+  per_head_av: 200
+  per_head_ar: 200
+  size_weight: 0.75                  # 0 = uniform; 1 = ∝ min(dev/rms, cap)
+  size_cap: 4.0
+  seed: 42
+
+warmstart:
+  model: claude-haiku-5-5
+  max_tokens: 1024                   # adaptive thinking at low effort + a one-clause answer
+  effort: low
+  thinking: adaptive
+  cache_system: true
+  context_tokens: 1024
+  window_tokens: 12
+  max_sources: 6
+  min_source_weight: 0.02
+  little_threshold: 0.95
+  max_requests_per_batch: 25000
+  est_output_tokens: 150
+  max_words: 40
+  poll_seconds: 300
+  price_per_mtok: {input: 0.05, output: 0.25}   # Haiku 5.5 at Batch API (50%) prices

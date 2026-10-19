@@ -1,0 +1,36 @@
+# Head writes for the soft-token readout sweep (scripts/heads_soft_token_sweep.py,
+# scripts/runpod/heads_soft_token_remote.sh). Qwen3-8B, 5 layers across depth, all heads,
+# 3k docs × 10 positions → 30k records per layer. Only corpus/extract/stats are run: the
+# sweep picks its own heads and examples (by write size, never by attention).
+
+model: qwen3_8b
+output_dir: /workspace/heads_st
+
+corpus:
+  build:
+    dataset: m-a-p/FineFineWeb
+    file_glob: "*.jsonl"
+    num_files: 60
+    docs_per_file: 50
+    min_chars: 1000
+    text_column: text
+    id_column: global_id
+    keep_columns: [domain, url]
+    seed: 42
+  path: /workspace/heads_st/corpus.parquet
+  text_column: text
+  id_column: doc_id
+  meta_columns: [domain, url]
+  start: 0
+  length: 3000
+
+extract:
+  layers: "6,12,18,24,30"
+  layers_per_position: 5           # every layer at every sampled token
+  positions_per_doc: 10
+  top_k: 16
+  chunk_size: 256
+  chunks_per_part: 4
+  seed: 42
+  num_gpus: 1
+  extractor_kwargs: {batch_size: 16, max_length: 2048, device_map: cuda:0, dtype: bfloat16}

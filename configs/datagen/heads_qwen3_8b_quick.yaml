@@ -1,0 +1,62 @@
+# Head-contribution NLA — QUICK viability run (scripts/runpod/heads_quick_sft_remote.sh).
+# Qwen3-8B, 64 heads (all 32 heads of layers 12 and 24), 5k docs, 200 AV + 200 AR + 50 eval
+# descriptions per head (~29k, ~8% answered "little or nothing" by rule).
+
+model: qwen3_8b
+output_dir: /workspace/heads_q
+
+corpus:
+  build:
+    dataset: m-a-p/FineFineWeb
+    file_glob: "*.jsonl"
+    num_files: 100
+    docs_per_file: 50
+    min_chars: 1000
+    text_column: text
+    id_column: global_id
+    keep_columns: [domain, url]
+    seed: 42
+  path: /workspace/heads_q/corpus.parquet
+  text_column: text
+  id_column: doc_id
+  meta_columns: [domain, url]
+  start: 0
+  length: 5000
+
+extract:
+  layers: "12,24"
+  layers_per_position: 2           # both layers at every sampled token
+  positions_per_doc: 10
+  top_k: 16
+  chunk_size: 256
+  chunks_per_part: 4
+  seed: 42
+  num_gpus: 1
+  extractor_kwargs: {batch_size: 16, max_length: 2048, device_map: cuda:0, dtype: bfloat16}
+
+split: {av_sft: 0.20, ar_sft: 0.20, rl: 0.55, eval: 0.05, seed: 42}
+
+select:
+  per_head_av: 200
+  per_head_ar: 200
+  per_head_eval: 50
+  size_weight: 0.75
+  size_cap: 4.0
+  seed: 42
+
+warmstart:
+  model: claude-haiku-5-5
+  max_tokens: 1024
+  effort: low
+  thinking: adaptive
+  cache_system: true
+  context_tokens: 1024
+  window_tokens: 12
+  max_sources: 6
+  min_source_weight: 0.02
+  little_threshold: 0.95
+  max_requests_per_batch: 25000
+  est_output_tokens: 150
+  max_words: 40
+  poll_seconds: 300
+  price_per_mtok: {input: 0.05, output: 0.25}

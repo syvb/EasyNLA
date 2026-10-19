@@ -11,7 +11,8 @@ present. Device-aligned so it also works under device_map="auto".
 from nla.injection import karvonen_inject_in_residual
 
 
-def register_karvonen_hook(model, vectors_ref, inj_id, left_id, right_id, layer_idx=1):
+def register_karvonen_hook(model, vectors_ref, inj_id, left_id, right_id, layer_idx=1,
+                           preserve_magnitude=False):
     state = {"input_ids": None}
 
     def embed_hook(module, args, kwargs, output):
@@ -41,6 +42,7 @@ def register_karvonen_hook(model, vectors_ref, inj_id, left_id, right_id, layer_
         # count-mismatch check fail LOUD instead of silently skipping injection.
         injected = karvonen_inject_in_residual(
             ids, resid, v.to(resid.device), inj_id, left_id, right_id,
+            preserve_magnitude=preserve_magnitude,
         )
         if rest is None:
             return injected

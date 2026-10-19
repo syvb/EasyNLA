@@ -129,6 +129,7 @@ def karvonen_inject_in_residual(
     inj_id: int,
     left_id: int,
     right_id: int,
+    preserve_magnitude: bool = False,
 ) -> torch.Tensor:
     """ADD-norm-matched injection per Karvonen et al. 2025 (Activation Oracles, eq. 1).
 
@@ -139,6 +140,11 @@ def karvonen_inject_in_residual(
     so the residual entering layer 2 is the modified one. Vectors should be
     RAW (no injection_scale normalization) — this function does its own norm
     match against the current residual.
+
+    preserve_magnitude=True drops the 1/||v|| so the vector's own size survives:
+    h'_p = h_p + ||h_p|| * v. Vectors must then be pre-scaled so a typical one
+    has norm ~1 (head-contribution data: write deviation / the head's RMS
+    deviation); a near-zero vector injects almost nothing.
     """
     seq_len = input_ids.shape[-1]
     assert input_ids.shape == resid.shape[:-1], (
@@ -167,7 +173,8 @@ def karvonen_inject_in_residual(
             vec_idx += 1
             continue
         h_p = out[b, p].clone()
-        v_unit = vectors[vec_idx] / (vectors[vec_idx].norm() + 1e-9)
+        v = vectors[vec_idx]
+        v_unit = v if preserve_magnitude else v / (v.norm() + 1e-9)
         out[b, p] = h_p + h_p.norm() * v_unit
         vec_idx += 1
     expected = vectors.shape[0]

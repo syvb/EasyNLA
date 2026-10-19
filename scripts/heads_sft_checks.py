@@ -1,0 +1,225 @@
+"""Pre-RL checks for a head-contribution NLA warm-start (the recipe's go/no-go gates).
+
+    python scripts/heads_sft_checks.py --sft-dir <export dir> --base-ckpt Qwen/Qwen3-8B \\
+        --av-ckpt <av save-dir>/iter_XXXXXXX --ar-ckpt <ar save-dir>/iter_XXXXXXX --out-dir <dir>
+
+On the held-out eval split (documents neither model trained on), FVE of the AR's prediction of
+the √d-scaled normalized write. The baseline is each head's mean target over the AR's TRAINING
+split — what an AR that ignores the description can learn from the head name — so it scores
+exactly 0 and never peeks at eval labels:
+
+  ar/claude          AR given the warm-start (Claude) descriptions
+  ar/empty           AR given an empty description (out of distribution, for reference)
+  ar/claude_shuf     Claude descriptions permuted within each head
+  ar/head_mean       predicting that per-head training mean — the 0 line, no model at all
+  av/true            AR given the AV's descriptions of the TRUE write        } check 2:
+  av/shuf            AR given the AV's descriptions of ANOTHER example's     } true ≫ shuf
+                     write (same head) — scored against the true write
+
+Check 1 passes when ar/claude is clearly above 0, ar/empty and ar/claude_shuf; check 2 when
+av/true is clearly above av/shuf. Writes checks.json and examples.md to --out-dir.
+"""
+
+import argparse
+import json
+import math
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import pyarrow.parquet as pq
+import torch
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "scripts"))
+
+from nla.config import load_nla_config  # noqa: E402
+from nla.datagen.heads.export_sft import CRITIC_TEMPLATE, critic_explanation  # noqa: E402
+from nla.schema import extract_explanation, resolve_target_scale  # noqa: E402
+from nla.utils import build_prompt_text, critic_predict, register_karvonen_hook  # noqa: E402
+
+
+def fve(pred: np.ndarray, gold: np.ndarray, base: np.ndarray) -> float:
+    """1 − SSE(pred) / SSE(base); base = per-row baseline prediction (the head's training mean).
+    Pooled over rows, so large-norm rows weigh most — see fve_heads for the per-head average."""
+    return 1.0 - float(((pred - gold) ** 2).sum()) / max(float(((base - gold) ** 2).sum()), 1e-12)
+
+
+def fve_heads(pred: np.ndarray, gold: np.ndarray, base: np.ndarray, by_head: dict) -> float:
+    """FVE computed within each head, then averaged over heads (every head counts equally)."""
+    return float(np.mean([fve(pred[ix], gold[ix], base[ix]) for ix in by_head.values()]))
+
+
+@torch.no_grad()
+def ar_predict(critic, tok, texts: list[str], mse_scale_f, device, batch_size: int) -> np.ndarray:
+    out = []
+    for s in range(0, len(texts), batch_size):
+        ids_list = [tok.encode(CRITIC_TEMPLATE.format(explanation=t), add_special_tokens=False)
+                    for t in texts[s : s + batch_size]]
+        T = max(len(x) for x in ids_list)
+        ids = torch.full((len(ids_list), T), tok.eos_token_id, dtype=torch.long, device=device)
+        attn = torch.zeros_like(ids)
+        for i, x in enumerate(ids_list):
+            ids[i, : len(x)] = torch.tensor(x, device=device)
+            attn[i, : len(x)] = 1
+        with torch.autocast(device_type=device.split(":")[0], dtype=torch.bfloat16, enabled=device != "cpu"):
+            out.append(critic_predict(critic, ids, attn, mse_scale_f).float().cpu().numpy())
+    return np.concatenate(out)
+
+
+@torch.no_grad()
+def av_generate(actor, vref, tok, cfg, rows: list[dict], vecs: np.ndarray, device, batch_size: int,
+                max_new_tokens: int) -> list[str]:
+    tok.padding_side = "left"   # batched generation; the injection hook finds the marker by id + neighbors
+    out: list[str] = []
+    n_fallback = 0
+    for s in range(0, len(rows), batch_size):
+        chunk = rows[s : s + batch_size]
+        texts = [build_prompt_text(r["prompt"], cfg.injection_char, tok) for r in chunk]
+        enc = tok(texts, return_tensors="pt", padding=True, add_special_tokens=False).to(device)
+        vref[0] = torch.tensor(vecs[s : s + batch_size], dtype=torch.float32, device=device)
+        try:
+            gen = actor.generate(**enc, max_new_tokens=max_new_tokens, do_sample=False, temperature=None,
+                                 top_p=None, top_k=None, pad_token_id=tok.pad_token_id or tok.eos_token_id)
+        finally:
+            vref[0] = None
+        for g in tok.batch_decode(gen[:, enc["input_ids"].shape[1]:], skip_special_tokens=True):
+            expl = extract_explanation(g)
+            if expl is None:   # cut off before </explanation>: keep what was said, minus the tag
+                n_fallback += 1
+                expl = g.replace("<explanation>", "").strip()[:300]
+            out.append(expl)
+    print(f"  AV generations without a closing tag: {n_fallback}/{len(rows)}", flush=True)
+    return out
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--sft-dir", required=True)
+    p.add_argument("--base-ckpt", required=True)
+    p.add_argument("--av-ckpt", required=True, help="AV LoRA adapter dir (train_sft --mode av iter_*)")
+    p.add_argument("--ar-ckpt", required=True, help="AR iter_* dir (ar_meta.json + ar_lora_value_head)")
+    p.add_argument("--out-dir", required=True)
+    p.add_argument("--inject-preserve-magnitude", action=argparse.BooleanOptionalAction, default=True,
+                   help="must match how the AV was trained")
+    p.add_argument("--device", default="cuda")
+    p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--max-new-tokens", type=int, default=96)
+    p.add_argument("--max-rows", type=int, default=None)
+    p.add_argument("--seed", type=int, default=0)
+    args = p.parse_args()
+
+    from peft import PeftModel
+    from show_nla_generations import load_ar_critic
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    sft, out = Path(args.sft_dir), Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    tok = AutoTokenizer.from_pretrained(args.base_ckpt)
+    cfg = load_nla_config(str(sft / "av_sft.parquet"), tok)
+    mse_scale_f = resolve_target_scale(cfg.mse_scale, cfg.d_model)
+    root_d = math.sqrt(cfg.d_model)
+
+    ev = pq.read_table(sft / "eval.parquet").to_pylist()
+    if args.max_rows:
+        ev = ev[: args.max_rows]
+    heads = [(r["activation_layer"], r["head"]) for r in ev]
+    v = np.stack([np.asarray(r["activation_vector"], dtype=np.float32) for r in ev])
+    gold = root_d * v
+    by_head: dict[tuple, list[int]] = defaultdict(list)
+    for i, h in enumerate(heads):
+        by_head[h].append(i)
+    rng = np.random.default_rng(args.seed)
+    perm = np.arange(len(ev))
+    for idxs in by_head.values():   # a derangement within each head: every row gets ANOTHER example
+        if len(idxs) > 1:
+            rot = rng.permutation(idxs)
+            perm[rot] = np.roll(rot, 1)
+    print(f"{len(ev)} eval examples over {len(by_head)} heads")
+    ar_train = pq.read_table(sft / "ar_sft.parquet", columns=["activation_vector", "activation_layer", "head"])
+    tr_v = np.asarray(ar_train.column("activation_vector").combine_chunks().flatten()).reshape(ar_train.num_rows, -1)
+    tr_heads = list(zip(ar_train.column("activation_layer").to_pylist(), ar_train.column("head").to_pylist(),
+                        strict=True))
+    head_mean = {h: tr_v[[i for i, x in enumerate(tr_heads) if x == h]].mean(0) for h in set(tr_heads)}
+    missing = sorted(set(heads) - set(head_mean))
+    assert not missing, f"eval heads {missing[:3]} have no AR training rows"
+    baseline = np.stack([head_mean[h] for h in heads]).astype(np.float32)
+
+    def ar_texts(descs: list[str]) -> list[str]:
+        return [critic_explanation(lay, hd, d) for (lay, hd), d in zip(heads, descs, strict=True)]
+
+    # --- AV generations (true vs another example's write) ---
+    base = AutoModelForCausalLM.from_pretrained(args.base_ckpt, dtype=torch.bfloat16).to(args.device)
+    actor = PeftModel.from_pretrained(base, args.av_ckpt).eval()
+    vref: list = [None]
+    register_karvonen_hook(actor, vref, cfg.injection_token_id, cfg.injection_left_neighbor_id,
+                           cfg.injection_right_neighbor_id, layer_idx=1,
+                           preserve_magnitude=args.inject_preserve_magnitude)
+    av_true = av_generate(actor, vref, tok, cfg, ev, v, args.device, args.batch_size, args.max_new_tokens)
+    av_shuf = av_generate(actor, vref, tok, cfg, ev, v[perm], args.device, args.batch_size, args.max_new_tokens)
+    del actor, base
+    if args.device.startswith("cuda"):
+        torch.cuda.empty_cache()
+
+    # --- AR scoring ---
+    critic = load_ar_critic(args.ar_ckpt, args.base_ckpt, args.device)
+    claude = [r["description"] for r in ev]
+    conds = {
+        "ar/claude": ar_texts(claude),
+        "ar/empty": ar_texts([""] * len(ev)),
+        "ar/claude_shuf": ar_texts([claude[j] for j in perm]),
+        "av/true": ar_texts(av_true),
+        "av/shuf": ar_texts(av_shuf),
+    }
+    results: dict = {"n_eval": len(ev), "n_heads": len(by_head), "fve": {}, "fve_head_avg": {}, "fve_by_layer": {}}
+    preds = {}
+    for name, texts in conds.items():
+        preds[name] = ar_predict(critic, tok, texts, mse_scale_f, args.device, args.batch_size)
+    preds["ar/head_mean"] = baseline
+    layers = sorted({lay for lay, _ in heads})
+    for name, pr in preds.items():
+        results["fve"][name] = fve(pr, gold, baseline)
+        results["fve_head_avg"][name] = fve_heads(pr, gold, baseline, by_head)
+        results["fve_by_layer"][name] = {}
+        for lay in layers:
+            idx = [i for i, (la, _) in enumerate(heads) if la == lay]
+            results["fve_by_layer"][name][f"L{lay}"] = fve(pr[idx], gold[idx], baseline[idx])
+    f = results["fve"]
+    results["check1_ar_beats_empty"] = f["ar/claude"] - max(0.0, f["ar/empty"], f["ar/claude_shuf"])
+    results["check2_av_true_minus_shuf"] = f["av/true"] - f["av/shuf"]
+    h = results["fve_head_avg"]
+    results["check1_per_head"] = h["ar/claude"] - max(0.0, h["ar/empty"], h["ar/claude_shuf"])
+    results["check2_per_head"] = h["av/true"] - h["av/shuf"]
+    results["av_distinct_fraction"] = len(set(av_true)) / len(av_true)
+    (out / "checks.json").write_text(json.dumps(results, indent=1))
+
+    print("\nheld-out FVE (√d-scaled normalized write; baseline = per-head AR-training mean)")
+    print(f"{'condition':<16}{'pooled':>8}{'per-head':>9}" + "".join(f"{f'L{lay}':>8}" for lay in layers))
+    for name in preds:
+        print(f"{name:<16}{f[name]:>8.3f}{results['fve_head_avg'][name]:>9.3f}"
+              + "".join(f"{results['fve_by_layer'][name][f'L{lay}']:>8.3f}" for lay in layers))
+    print(f"\ncheck 1 (AR: claude − best of head-mean/empty/shuffled): {results['check1_ar_beats_empty']:+.3f} pooled, "
+          f"{results['check1_per_head']:+.3f} per-head")
+    print(f"check 2 (AV: true − another example's write):     {results['check2_av_true_minus_shuf']:+.3f} pooled, "
+          f"{results['check2_per_head']:+.3f} per-head")
+    print("(the head-mean 0 line carries sampling noise: treat a check as passing only by a margin of a few points)")
+    print(f"AV distinct descriptions: {results['av_distinct_fraction']:.0%}")
+
+    lines = ["# Head NLA warm-start: held-out examples\n",
+             "| condition | FVE |", "|---|---|", *[f"| {k} | {f[k]:.3f} |" for k in preds], ""]
+    show = rng.choice(len(ev), size=min(25, len(ev)), replace=False)
+    for i in show:
+        r = ev[i]
+        lines += [f"## L{r['activation_layer']}H{r['head']} · pos {r['pos']} · dev/rms {r['dev_rel']:.2f} · "
+                  f"‖v‖ {np.linalg.norm(v[i]):.2f}",
+                  f"- **Claude (training-style target):** {claude[i]}",
+                  f"- **AV, true write:** {av_true[i]}",
+                  f"- **AV, another example's write:** {av_shuf[i]}", ""]
+    (out / "examples.md").write_text("\n".join(lines))
+    print(f"wrote {out / 'checks.json'} and {out / 'examples.md'}")
+
+
+if __name__ == "__main__":
+    main()

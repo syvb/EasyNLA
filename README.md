@@ -132,6 +132,9 @@ python -m nla.train_sft --mode ar --base-ckpt <model> --parquet <data>/ar_sft_sh
 # 3. RL — the fast distributed command above (or the single-GPU fallback below)
 ```
 
+> 🧩 **Head-contribution NLA data** (per-attention-head writes + Haiku warm-start
+> descriptions): see [`docs/head_nla_data.md`](docs/head_nla_data.md).
+
 ### Single-GPU fallback
 
 No spare GPUs or don't want the vLLM setup? `configs/rl_sgpu.yaml` runs the whole

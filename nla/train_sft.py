@@ -122,8 +122,9 @@ def load_heldout_explanation_pairs(parquet_path, n_rows):
 
 @torch.no_grad()
 def heldout_fve_mse(critic, tokenizer, pairs, template, mse_scale_f, device,
-                    micro_batch=16, max_len=1024):
-    """Mean per-sample MSE on normalized (pred, gold) over held-out pairs.
+                    micro_batch=16, max_len=1024, raw_loss=False):
+    """Mean per-sample MSE on normalized (pred, gold) over held-out pairs
+    (raw pred/gold under raw_loss — the --ar-raw-loss objective).
 
     Returns (mean_mse, n_scored). Caller divides by a predict-the-mean
     baseline for FVE. Skips pairs whose critic prompt exceeds max_len
@@ -152,8 +153,8 @@ def heldout_fve_mse(critic, tokenizer, pairs, template, mse_scale_f, device,
             attn[i, : t.numel()] = 1
         pred = critic_predict(critic, batch_ids, attn, mse_scale_f)
         gold = torch.tensor(np.stack(golds), dtype=torch.float32, device=device)
-        pred_n = normalize_activation(pred, mse_scale_f)
-        gold_n = normalize_activation(gold, mse_scale_f)
+        pred_n = normalize_activation(pred, None if raw_loss else mse_scale_f)
+        gold_n = normalize_activation(gold, None if raw_loss else mse_scale_f)
         mses.extend(((pred_n - gold_n) ** 2).mean(dim=-1).tolist())
     return float(np.mean(mses)) if mses else float("nan"), len(mses)
 
@@ -535,6 +536,24 @@ def main():
                         "from_pretrained). --no-strip-final-norm reproduces "
                         "pre-2026-06 checkpoints. Recorded in ar_meta.json.")
     p.add_argument("--max-len", type=int, default=1024)
+    p.add_argument("--device", default="cuda",
+                   help="torch device; 'cpu' for smoke tests on tiny models")
+    p.add_argument("--inject-preserve-magnitude", action="store_true", default=False,
+                   help="AV: inject h + ||h||*v instead of h + ||h||*v/||v|| so the vector's size "
+                        "reaches the model. Vectors must be pre-scaled to norm ~1 (head-contribution "
+                        "data does this); a near-zero vector then injects almost nothing.")
+    p.add_argument("--ar-raw-loss", action="store_true", default=False,
+                   help="AR: MSE on raw (pred, gold) instead of mse_scale-normalized ones, so the "
+                        "critic must get magnitudes right. The backbone output is still normalized "
+                        "to mse_scale before the identity-init value_head, so targets should be "
+                        "pre-scaled to norm ~mse_scale (head-contribution data: sqrt(d_model) * "
+                        "normalized write). A fresh critic's value_head is ZERO-initialized in this "
+                        "mode: identity-init pins every prediction at norm mse_scale, which raw MSE "
+                        "punishes and Adam needs ~1/lr steps to undo; zero-init starts at the "
+                        "predict-the-mean baseline instead.")
+    p.add_argument("--value-head-lr-mult", type=float, default=1.0,
+                   help="AR: value_head LR = --lr × this (a linear head trained from zero wants a "
+                        "larger LR than the LoRA backbone)")
     p.add_argument("--lr", type=float, default=None,
                    help="If omitted: AV-mode default 1e-4 (best for a 1-epoch warm-start "
                         "in our sweeps), AR-mode default 2e-5.")
@@ -589,7 +608,7 @@ def main():
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    device = "cuda"
+    device = args.device
     dtype = torch.bfloat16
     if args.lr is None:
         # Mode-aware default: non-comp AV warmstart is 1e-4 (2x-data 1-epoch best, held-out
@@ -618,7 +637,11 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.base_ckpt)
     cfg = load_nla_config(args.sidecar, tokenizer)
     mse_scale_f = resolve_target_scale(cfg.mse_scale, cfg.d_model)
-    print(f"[cfg] mode={args.mode} d_model={cfg.d_model} mse_scale={mse_scale_f}")
+    # Scale the AR loss compares at: mse_scale (direction-only) by default, raw under --ar-raw-loss.
+    loss_scale_f = None if args.ar_raw_loss else mse_scale_f
+    assert not (args.ar_raw_loss and args.mode != "ar"), "--ar-raw-loss is an AR-mode flag"
+    assert not (args.inject_preserve_magnitude and args.mode != "av"), "--inject-preserve-magnitude is AV-mode"
+    print(f"[cfg] mode={args.mode} d_model={cfg.d_model} mse_scale={mse_scale_f} loss_scale={loss_scale_f}")
     # AR depth comes from the DATA, not a magic number: activations extracted at
     # layer K must be reconstructed by a K+1-block critic. 25 was a Qwen3-8B
     # (layer-24) constant that silently mistrained on any other extraction layer.
@@ -675,6 +698,7 @@ def main():
             cfg.injection_token_id,
             cfg.injection_left_neighbor_id,
             cfg.injection_right_neighbor_id,
+            preserve_magnitude=args.inject_preserve_magnitude,
         )
         model._nla_vectors_ref = vectors_ref  # av_generate_samples reaches it here
         if args.gradient_checkpointing:
@@ -720,6 +744,10 @@ def main():
             )
             if dmap is None:
                 model = model.to(device)
+            if args.ar_raw_loss:
+                with torch.no_grad():
+                    model.value_head.weight.zero_()
+                print("[ar] --ar-raw-loss: value_head zero-initialized (predictions start at the mean)")
         if args.use_lora:
             # Inject LoRA IN-PLACE into the backbone's attn projections. Unlike
             # get_peft_model this does NOT wrap the backbone in a PeftModel, so
@@ -794,7 +822,14 @@ def main():
         "no trainable parameters — --freeze-backbone freezes the whole AR, so "
         "there is nothing to optimize in AR-SFT. Drop --freeze-backbone."
     )
-    optim = optim_cls(trainable, lr=args.lr, betas=(0.9, 0.95), weight_decay=0.0)
+    head_params = ({id(p_) for p_ in model.value_head.parameters()}
+                   if args.mode == "ar" and args.value_head_lr_mult != 1.0 else set())
+    groups = [{"params": [p_ for p_ in trainable if id(p_) not in head_params], "lr": args.lr}]
+    if head_params:
+        groups.append({"params": [p_ for p_ in trainable if id(p_) in head_params],
+                       "lr": args.lr * args.value_head_lr_mult})
+        print(f"[optim] value_head lr = {args.lr * args.value_head_lr_mult:.2e}")
+    optim = optim_cls(groups, lr=args.lr, betas=(0.9, 0.95), weight_decay=0.0)
     sched = torch.optim.lr_scheduler.LambdaLR(
         optim,
         build_lr_lambda(args.lr_warmup_steps, args.num_steps,
@@ -814,7 +849,7 @@ def main():
             np.stack([r["activation_vector"] for r in rows[: min(len(rows), 4000)]]),
             dtype=torch.float32,
         )
-        _bl_meannorm, fve_baseline = compute_predict_mean_baselines(_act, mse_scale_f)
+        _bl_meannorm, fve_baseline = compute_predict_mean_baselines(_act, loss_scale_f)
         print(f"[ar] predict-the-mean MSE baseline = {fve_baseline:.4f} "
               f"(paper def; meannorm baseline = {_bl_meannorm:.4f})")
 
@@ -837,7 +872,7 @@ def main():
         _h_acts = torch.tensor(
             np.stack([a for _, a in heldout_pairs]), dtype=torch.float32,
         )
-        _, heldout_baseline = compute_predict_mean_baselines(_h_acts, mse_scale_f)
+        _, heldout_baseline = compute_predict_mean_baselines(_h_acts, loss_scale_f)
         del _h_acts
         print(f"[ar] {len(heldout_pairs)} held-out pairs from "
               f"{args.heldout_parquet}; baseline (paper def) = {heldout_baseline:.4f}")
@@ -928,8 +963,8 @@ def main():
                 )
                 with amp():
                     pred = critic_predict(model, ids, attn, mse_scale_f)
-                pred_n = normalize_activation(pred, mse_scale_f)
-                gold_n = normalize_activation(gold, mse_scale_f)
+                pred_n = normalize_activation(pred, loss_scale_f)
+                gold_n = normalize_activation(gold, loss_scale_f)
                 loss = F.mse_loss(pred_n, gold_n)
                 ar_dbg = ar_debug_stats(pred, gold, mse_scale_f)
 
@@ -1006,8 +1041,8 @@ def main():
                     )
                     with torch.no_grad(), amp():
                         pred = critic_predict(model, ids, attn, mse_scale_f)
-                    pn = normalize_activation(pred, mse_scale_f)
-                    gn = normalize_activation(gold, mse_scale_f)
+                    pn = normalize_activation(pred, loss_scale_f)
+                    gn = normalize_activation(gold, loss_scale_f)
                     rmse = F.mse_loss(pn, gn).item()
                     sample_table_data.append([
                         step, i, round(rmse, 4), row["prompt"][:400],
@@ -1043,7 +1078,7 @@ def main():
             with amp():
                 h_mse, h_n = heldout_fve_mse(
                     model, tokenizer, heldout_pairs, cfg.critic_prompt_template,
-                    mse_scale_f, device, max_len=args.max_len,
+                    mse_scale_f, device, max_len=args.max_len, raw_loss=args.ar_raw_loss,
                 )
             model.train()
             h_fve = (1.0 - h_mse / heldout_baseline) * 100.0
