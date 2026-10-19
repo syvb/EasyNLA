@@ -7,8 +7,8 @@ The recipe's warm-start targets, per head h with o_proj slice W_h:
                                                the cap is the smaller of the head's
                                                q`cap_quantile` deviation and --max-norm)
 
-  av_sft.parquet   prompt   actor template naming the head ("attention head L12H7"), marker
-                            between <concept> tags (per row — only the head name varies)
+  av_sft.parquet   prompt   the fixed actor template, marker between <concept> tags (the same
+                            for every row: the write is the only input that varies)
                    response <explanation>\\n{description}\\n</explanation>
                    activation_vector  v            (train with --inject-preserve-magnitude:
                                                    norm ~1 typical, ~0 for an idle head)
@@ -21,8 +21,8 @@ The recipe's warm-start targets, per head h with o_proj slice W_h:
 
 Descriptions come from warmstart/descriptions.parquet (rows with ok=True; rule-based "little
 or nothing" rows included), or any parquet with example_idx + description columns
-(--descriptions, e.g. a self_describe output). Every distinct head prompt is tokenized and
-checked to keep the canonical marker neighbors, so the trainer's injection can't silently miss.
+(--descriptions, e.g. a self_describe output). The actor prompt names no head, so the
+verbalizer sees only the write (the critic's text still names the head).
 """
 
 import argparse
@@ -38,19 +38,16 @@ from nla.datagen.heads.self_describe import head_write_deviations
 from nla.datagen.heads.store import atomic_write_table, load_stats, read_meta
 from nla.datagen.injection_tokens import build_token_meta
 from nla.datagen.sidecar import NLADatasetMeta, NLAExtractionMeta, serialize_sidecar
-from nla.schema import INJECT_PLACEHOLDER, compute_canonical_neighbors, sidecar_path_for, wrap_explanation
+from nla.schema import INJECT_PLACEHOLDER, sidecar_path_for, wrap_explanation
 
 ACTOR_TEMPLATE = """You are a meticulous AI researcher conducting an important investigation into activation vectors from a language model. Your overall task is to describe the information that one attention head added to one token.
 
 We will pass the head's contribution, as a vector enclosed in <concept> tags, into your context. You must then describe it in one or two short clauses, enclosed within <explanation> tags.
 
-The vector was written by attention head {head}:
-
 <concept>{injection_char}</concept>
 
 Please provide an explanation."""
 CRITIC_TEMPLATE = "Summary of the following text: <text>{explanation}</text> <summary>"
-CANONICAL_HEAD = "L0H0"
 _PROMPT_STRUCT = pa.list_(pa.struct([("role", pa.string()), ("content", pa.string())]))
 
 
@@ -58,8 +55,8 @@ def head_name(layer: int, head: int) -> str:
     return f"L{layer}H{head}"
 
 
-def actor_content(layer: int, head: int) -> str:
-    return ACTOR_TEMPLATE.replace("{head}", head_name(layer, head)).replace("{injection_char}", INJECT_PLACEHOLDER)
+def actor_content() -> str:
+    return ACTOR_TEMPLATE.replace("{injection_char}", INJECT_PLACEHOLDER)
 
 
 def critic_explanation(layer: int, head: int, description: str) -> str:
@@ -101,7 +98,7 @@ def _sidecar_meta(meta, stage: str, n_rows: int, tokens, layer_index: int) -> NL
             corpus_slice=meta.corpus_slice, positions_per_doc=meta.positions_per_doc,
         ),
         tokens=tokens,
-        prompt_templates={"actor": ACTOR_TEMPLATE.replace("{head}", CANONICAL_HEAD), "critic": CRITIC_TEMPLATE},
+        prompt_templates={"actor": ACTOR_TEMPLATE, "critic": CRITIC_TEMPLATE},
         created_by="nla.datagen.heads.export_sft",
     )
 
@@ -129,15 +126,7 @@ def main() -> None:
     print(f"{len(rows)}/{desc_tab.num_rows} described examples usable")
 
     tok = load_tokenizer(meta.base_model)
-    canonical = ACTOR_TEMPLATE.replace("{head}", CANONICAL_HEAD)
-    tokens = build_token_meta(tok, canonical, critic_template=CRITIC_TEMPLATE)
-    for layer, head in sorted({(r["layer"], r["head"]) for r in rows}):
-        got = compute_canonical_neighbors(tok, ACTOR_TEMPLATE.replace("{head}", head_name(layer, head)),
-                                          tokens.injection_char, tokens.injection_token_id)
-        assert got == (tokens.injection_left_neighbor_id, tokens.injection_right_neighbor_id), (
-            f"{head_name(layer, head)}: marker neighbors {got} differ from the canonical "
-            f"{(tokens.injection_left_neighbor_id, tokens.injection_right_neighbor_id)}"
-        )
+    tokens = build_token_meta(tok, ACTOR_TEMPLATE, critic_template=CRITIC_TEMPLATE)
 
     # Shuffled row order: train_sft takes its logged FVE baseline and --heldout-rows from the
     # FIRST rows, which in selection order would all be the first heads of the first layer.
@@ -161,7 +150,7 @@ def main() -> None:
 
     def av_cols(ix):
         return {
-            "prompt": pa.array([[{"role": "user", "content": actor_content(rows[i]["layer"], rows[i]["head"])}]
+            "prompt": pa.array([[{"role": "user", "content": actor_content()}]
                                 for i in ix], type=_PROMPT_STRUCT),
             "response": pa.array([wrap_explanation(rows[i]["description"]) for i in ix], type=pa.string()),
             "activation_vector": vec(ix),
