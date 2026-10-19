@@ -227,6 +227,9 @@ def rollout_batched(
     return out
 
 
+_QUOTE_CHARS = re.compile(r"[\"“”]")
+
+
 def recon_mse_rows(pred, gold, mse_scale_f, raw=False):
     """Per-row reconstruction MSE: on the mse_scale-normalized vectors (direction only, the
     default) or raw (--ar-raw-loss: the AR was trained to get magnitudes right too)."""
@@ -868,7 +871,8 @@ def main():
     register_karvonen_hook(actor, vectors_ref, inj_id, left_id, right_id, layer_idx=1,
                            preserve_magnitude=args.inject_preserve_magnitude)
     raw = args.ar_raw_loss
-    target_scale = args.ar_target_scale or (math.sqrt(cfg.d_model) if raw else 1.0)
+    target_scale = (args.ar_target_scale if args.ar_target_scale is not None
+                    else (math.sqrt(cfg.d_model) if raw else 1.0))
     loss_scale_f = None if raw else mse_scale_f      # FVE baselines on the scale the reward uses
     prefix_col = args.critic_prefix_column
     print(f"[head] preserve_magnitude={args.inject_preserve_magnitude} raw_loss={raw} "
@@ -1104,6 +1108,10 @@ def main():
 
     t_train_start = time.time()
     for step in range(args.start_step, args.num_steps):
+        # also checked here: steps that bail out early (`continue`) never reach the save-time check
+        if args.max_hours > 0 and time.time() - t_train_start > args.max_hours * 3600:
+            print(f"[time] --max-hours {args.max_hours} reached before step {step}: stopping", flush=True)
+            break
         t0 = time.time()
         # ---- batch select ----
         if cursor + args.batch_prompts > len(pending_idxs):
@@ -1409,6 +1417,10 @@ def main():
         log["rollout/gen_tokens"] = float(_gen_tokens)
         log["rollout/n_rollouts"] = float(len(all_resp_lens))
         log["rollout/gen_s"] = _gen_s
+        # share of extracted explanations that quote something: a cheap live signal of drift
+        # toward listing tokens (reconstruction reward favours it; KL to the SFT adapter resists)
+        _ext = [e for e in all_explanations if e is not None]
+        log["av/quote_rate"] = (sum(bool(_QUOTE_CHARS.search(e)) for e in _ext) / len(_ext)) if _ext else 0.0
         print(rl_logging.format_console_line(step, log, train_ar=args.train_critic), flush=True)
 
         # ---- per-step eval: every N steps, run actor (current weights) on a
@@ -1505,6 +1517,9 @@ def main():
                 (1.0 - (-float(np.mean(valid_e))) / eval_fve_baseline) * 100.0
                 if valid_e else float("nan")
             )
+            _eval_ext = [r["explanation"] for r in eval_records if r["extracted"]]
+            log["eval/quote_rate"] = (sum(bool(_QUOTE_CHARS.search(e)) for e in _eval_ext) / len(_eval_ext)
+                                      if _eval_ext else 0.0)
             log["eval/extraction_rate"] = (
                 sum(1 for r in eval_records if r["extracted"]) / len(eval_records)
                 if eval_records else 0.0
