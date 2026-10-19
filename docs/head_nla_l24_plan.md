@@ -131,3 +131,89 @@ than a real rewrite.
   never fire. It now uses a `[h]eads_…` pattern, and the remote script uses `set -E` so a failure inside
   a function still writes FAILED.
 - **Launcher killed mid-run:** it now does a best-effort fetch before the delete.
+
+## Results (2026-10-19)
+
+**Both pre-RL checks pass, by wide margins.** The probe lands between the pass and fail lines.
+
+### Probe test
+
+Held-out FVE, mean over the 32 heads, about 1,490 usable examples per head (47,752/48,000 explanations
+have `ok=True`):
+
+| features | 200 | 400 | 800 | all (~1,490) |
+|---|---|---|---|---|
+| avg16 | 0.060 | 0.085 | 0.121 | 0.159 |
+| lens | 0.063 | 0.096 | 0.137 | 0.172 |
+| explain (TF-IDF) | 0.004 | 0.025 | 0.049 | 0.067 |
+| explain_embed (Qwen3-8B) | 0.009 | 0.033 | 0.055 | 0.075 |
+| hidden (ceiling) | 0.383 | 0.538 | 0.663 | 0.737 |
+| explain_shuf / empty | −0.015 | −0.008 | −0.004 | −0.002 |
+
+- **Ratio:** explain / avg16 = 0.42 (TF-IDF), 0.47 (embedding). That is between the plan's fail line (0.3) and pass line
+  (0.5).
+  - The per-head gap is −0.091 ± 0.009 (TF-IDF) and −0.084 ± 0.012 (embedding).
+  - The explanations beat avg16 on 0 heads (TF-IDF) and 4 heads (embedding).
+- **Copying:** a median of 10% of an explanation's content words are its own readout tokens (p90 25%), so these
+  are real rewrites, not near-lists.
+- **The explanation curve is still steep:** ×17 from 200 to 1,490 per head, against ×2.7 for avg16.
+- **Heads vary a lot:**
+  - L24H25: avg16 0.39, explain 0.29, hidden 0.85.
+  - L24H1: avg16 0.02, explain 0.01.
+- **lens beats avg16 at L24.** The 5-layer diagnostics had them about equal.
+
+### SFT checks
+
+Eval split, 6,360 rows, 32 heads. FVE of the AR's reconstruction (√d-scaled normalized write; baseline = the
+per-head AR-training mean):
+
+| condition | pooled | per-head |
+|---|---|---|
+| ar/gold | 0.063 | 0.068 |
+| ar/empty | −0.065 | −0.064 |
+| ar/gold_shuf | −0.082 | −0.086 |
+| **av/true** | **0.049** | **0.056** |
+| av/shuf | −0.067 | −0.071 |
+
+- **Check 1 (AR):** +0.063, 95% CI [+0.058, +0.068] pooled; [+0.039, +0.097] per-head.
+  - The quick test on attention-based Claude descriptions got 0.019 here.
+- **Check 2 (AV):** +0.116, 95% CI [+0.109, +0.123] pooled; [+0.077, +0.182] per-head.
+  - The quick test's AV did not beat its shuffled control.
+  - Here AV text scores about 80% of what the gold explanations score through the same AR.
+- **Text-only probe** (per head, 200 rows, low power): gold 0.003, AV-true 0.022, AV-shuf −0.015.
+- **AV distinct outputs:** 80%. There is a visible fallback mode ("Hedged, tentative phrasing …") for writes
+  it can't place.
+- **Examples** (`checks/examples.md` on HF), gold → AV:
+  - "immunization and the control of infectious disease, especially vaccination campaigns" → "Pandemic and
+    infectious-disease subject matter, especially the COVID-19 outbreak"
+  - "Time and timing as a concept …" → "Time as a concept, especially the passing of moments …"
+
+### What happened operationally
+
+- **Run 1** (2.66 h) did datagen, readouts, explanations and most of the probe.
+- **The probe took ~2.5 h on the pod, against under 1 s per fit locally.** BLAS threads oversubscribed on the
+  shared 64-core host. The remote script now caps them at 8.
+- **Host maintenance:** RunPod announced a driver-upgrade window with host reboots (16:00–17:30 UTC) during the
+  probe. The artifacts were pulled to the VM and the pod stopped.
+- **The probe was finished locally** in a few minutes from the saved data.
+- **Run 2** (`heads_l24_sft_remote.sh`, 1.22 h) regenerated the seeded data. Its selection was identical
+  (48,000/48,000). It then trained and checked on the saved explanations.
+  - No secure H100 was free at first. The launcher gained `--gpu-id` and a retry wrapper (H100 → A100 SXM → A100 PCIe,
+    secure only), and the first retry got an H100.
+- **Launcher PID gotcha:** `setsid nohup … & echo $!` records a wrapper PID, not the launcher's. Find the launcher with
+  `pgrep -f`. The launcher's signal path (best-effort fetch, then delete) worked when sent to the right PID.
+- **wandb:**
+  - AR and AV losses were streamed live by `scripts/wandb_tail_log.py`, a sidecar tailing run.log, because the run
+    had started with `--no-wandb`.
+  - Future runs pass `--secrets …,wandb` and log natively.
+  - Results summary: `scripts/wandb_log_results.py`.
+- **Cost:**
+  - Pods: 3.88 h × $3.99 = $15.50.
+  - Haiku: 86.3M input (most cached) + 17.2M output tokens, at most $17 at list price.
+
+### Next
+
+- **RL is the obvious next step:** the AV already produces text the AR can use.
+- **More examples per head:** the explanation probe curve is steep.
+- **The AV injection site:** layer 1 vs L24, as an ablation.
+- **The AV's fallback mode:** watch it under RL.

@@ -2,7 +2,7 @@
 # L24 probe test + SFT on soft-token explanations (docs/head_nla_l24_plan.md) — executes ON the
 # RunPod pod. Launch with:
 #   python scripts/runpod/launch_heads_quick_sft.py --remote-script scripts/runpod/heads_l24_remote.sh \
-#       --secrets hf,anthropic --fetch results,heads_l24/sft --max-hours 6 --out <local dir>
+#       --secrets hf,anthropic,wandb --fetch results,heads_l24/sft --max-hours 6 --out <local dir>
 # (no --hold: the launcher fetches and deletes the pod as soon as DONE or FAILED appears)
 # Markers: /workspace/results/DONE | FAILED (first failing stage); log /workspace/results/run.log.
 #
@@ -31,6 +31,9 @@ stage() { STAGE=$1; echo; echo "=== [$(date -u +%H:%M:%S)] $1 ==="; }
 set -a; source /workspace/.secrets; set +a      # HF_TOKEN, ANTHROPIC_API_KEY
 export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
 unset PYTORCH_CUDA_ALLOC_CONF
+# wandb when the launcher was given --secrets ...,wandb (WANDB_API_KEY); otherwise local logs only
+WANDB_FLAGS=(--no-wandb)
+if [ -n "${WANDB_API_KEY:-}" ]; then WANDB_FLAGS=(--wandb-project head-nla-qwen3-8b --wandb-group l24-explain-sft); fi
 
 stage install
 nvidia-smi --query-gpu=name,memory.total --format=csv
@@ -71,7 +74,9 @@ assert got >= 0.95 * n, "under 95% of examples explained"
 PY
 
 stage probe
-python scripts/heads_explain_probe.py --work-dir "$WORK" --embed-model "$BASE" --device-map cuda:0 \
+# Capped BLAS threads: on the shared 64-core pod host the default thread count oversubscribed and
+# each ridge fit took ~9 s (vs <1 s locally); the first run's probe took ~2.5 h this way.
+OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 MKL_NUM_THREADS=8 python scripts/heads_explain_probe.py --work-dir "$WORK" --embed-model "$BASE" --device-map cuda:0 \
     2>&1 | tee "$RES/probe.log"
 
 stage export
@@ -85,13 +90,13 @@ stage ar_sft
 python -m nla.train_sft --mode ar --base-ckpt "$BASE" --parquet "$SFT/ar_sft.parquet" --save-dir "$CK/ar" \
     --use-lora --ar-raw-loss --value-head-lr-mult 10 --ar-num-layers 25 \
     --batch-size 64 --num-steps "$(steps "$SFT/ar_sft.parquet" 2 64)" --lr 1e-4 --min-lr 1e-5 \
-    --lr-warmup-steps 20 --save-every 100000 --no-wandb --seed 0
+    --lr-warmup-steps 20 --save-every 100000 "${WANDB_FLAGS[@]}" --seed 0
 
 stage av_sft
 python -m nla.train_sft --mode av --base-ckpt "$BASE" --parquet "$SFT/av_sft.parquet" --save-dir "$CK/av" \
     --use-lora --inject-preserve-magnitude \
     --batch-size 32 --num-steps "$(steps "$SFT/av_sft.parquet" 2 32)" --lr 1e-4 --min-lr 1e-5 \
-    --lr-warmup-steps 20 --save-every 100000 --no-wandb --seed 0 \
+    --lr-warmup-steps 20 --save-every 100000 "${WANDB_FLAGS[@]}" --seed 0 \
     --heldout-parquet "$SFT/eval.parquet" --heldout-rows 2000 --heldout-every 200 \
     --sample-every 200 --n-samples 4 --sample-max-new-tokens 128
 

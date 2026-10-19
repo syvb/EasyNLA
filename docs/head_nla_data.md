@@ -194,6 +194,18 @@ What helped:
 
 A per-request reminder, label-style notes and a third readout did not help.
 
+## L24 run: probe test + SFT on soft-token explanations (current)
+
+- **Setup:** all 32 heads of L24, 1,500 examples per head.
+- **Probe:** the explanations keep 42–47% of the word lists' FVE (0.067–0.075 vs 0.159), and only about 10% of
+  their content words are copied from the readouts.
+- **SFT:**
+  - The AR reaches 0.063 FVE on gold explanations (shuffled: −0.082).
+  - The AR reaches 0.049 on the **AV's own** explanations (AV given another write: −0.067).
+  - Both pre-RL checks pass, with CIs far from 0.
+- Details, costs and incidents: `docs/head_nla_l24_plan.md`.
+- Artifacts: dataset `l24/`, models `syvb/head-nla-qwen3-8b-l24-av` / `-ar`.
+
 ## Quick SFT test (attention-based Claude descriptions; superseded)
 
 64 heads (L12, L24) × 200 examples. The AV and AR were trained on the attention-based Haiku
@@ -204,6 +216,7 @@ Checks: `scripts/heads_sft_checks.py`. Description comparison: `scripts/heads_co
 ## Artifacts on Hugging Face (private)
 
 - Dataset `syvb/head-nla-qwen3-8b`. See its README for which parts matter:
+  - `l24/`: the L24 probe test + SFT run (highest)
   - `soft_token/`: sweep and diagnostic readouts, curves, logs
   - `explanations/`: the prompt-lab outputs and the final pilot
   - `quick_sft_run1/`: SFT data, Claude descriptions, checks

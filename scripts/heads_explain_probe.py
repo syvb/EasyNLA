@@ -10,7 +10,8 @@ would lift a feature.
 
   avg16, lens      the readouts the explanation was written from (TF-IDF)
   explain          the explanation (TF-IDF)
-  explain_embed    the explanation, mean-pooled hidden states of --embed-model (skipped without it)
+  explain_embed    the explanation, mean-pooled hidden states of --embed-model (without it, read from
+                   <work-dir>/explain_embed.npz if an earlier run saved one; else skipped)
   hidden           the injected prompt's final hidden state (dense ceiling)
   explain_shuf     explanations permuted within the head (control; ~0 or below)
   empty            no features (control: the predict-the-mean baseline, ≈ 0 by construction)
@@ -72,6 +73,14 @@ def main() -> None:
         "explain": [explain[t["example_idx"][i]] for i in rows],
         "hidden": hidden[rows],
     }
+    cached = work / "explain_embed.npz"
+    if not args.embed_model and cached.exists():    # embeddings saved by an earlier run (same rows)
+        z = np.load(cached)
+        at_row = {e: j for j, e in enumerate(z["example_idx"].tolist())}
+        missing = [t["example_idx"][i] for i in rows if t["example_idx"][i] not in at_row]
+        assert not missing, f"{len(missing)} explained examples have no cached embedding"
+        feats["explain_embed"] = z["x"][[at_row[t["example_idx"][i]] for i in rows]].astype(np.float32)
+        print(f"explain_embed from {cached}", flush=True)
     if args.embed_model:
         emb = lm_embedder(args.embed_model, args.device_map)
         feats["explain_embed"] = emb(feats["explain"])
@@ -114,6 +123,8 @@ def main() -> None:
     print(f"\nmean held-out FVE over {len(res)} heads, by examples per head (2-fold: trained on half; "
           f"'all' = every example of the head)")
     cols = [*[str(n) for n in sizes], "all"]
+    n_heads = {n: sum(at(res[h]["avg16"], n) is not None for h in res) for n in cols}
+    cols = [n for n in cols if n == "all" or n_heads[n] == len(res)]   # a size only some heads reach is biased
     print(f"{'features':<14}" + "".join(f"{n:>8}" for n in cols))
     mean = {}
     for name in names:

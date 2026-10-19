@@ -127,7 +127,7 @@ class Pod:
         return subprocess.run(self.ssh_cmd(remote), check=check, **kw)
 
     def create(self) -> None:
-        cmd = ["pod", "create", "--name", self.args.name, "--cloud-type", "SECURE", "--gpu-id", GPU_ID,
+        cmd = ["pod", "create", "--name", self.args.name, "--cloud-type", "SECURE", "--gpu-id", self.args.gpu_id,
                "--gpu-count", "1", "--image", IMAGE, "--container-disk-in-gb", "200",
                "--ports", "22/tcp", "--ssh", "--wait", "--wait-timeout", "20m"]
         print("$ runpodctl " + " ".join(shlex.quote(c) for c in cmd), flush=True)
@@ -182,7 +182,8 @@ class Pod:
         self.id = None
 
 
-SECRET_FILES = {"hf": ("HF_TOKEN", ".hf_token"), "anthropic": ("ANTHROPIC_API_KEY", ".anthropic_key")}
+SECRET_FILES = {"hf": ("HF_TOKEN", ".hf_token"), "anthropic": ("ANTHROPIC_API_KEY", ".anthropic_key"),
+                "wandb": ("WANDB_API_KEY", ".wandb_key")}
 
 
 def upload(pod: Pod, secrets_wanted: list[str]) -> None:
@@ -234,6 +235,8 @@ def main() -> None:
     p.add_argument("--max-hours", type=float, default=3.0, help="local wall-clock limit (then delete)")
     p.add_argument("--allow-no-watchdog", action="store_true",
                    help="run even if the pod cannot delete itself (only this process would)")
+    p.add_argument("--gpu-id", default=GPU_ID, help="RunPod GPU type id (secure cloud either way); set the "
+                                                    "--min/--max-cost-per-hr band to its secure price")
     p.add_argument("--max-cost-per-hr", type=float, default=4.5)
     p.add_argument("--min-cost-per-hr", type=float, default=3.5,
                    help="a secure H100 SXM is $3.99/hr, community $2.69 — below this means not secure")
@@ -263,7 +266,7 @@ def main() -> None:
     free_gb = shutil.disk_usage(out_dir).free / 1e9
     assert free_gb >= 10, f"--out {out_dir} has only {free_gb:.1f} GB free; need ≥ 10 GB (not a tmpfs scratch dir)"
     if args.dry_run:
-        print(f"would create: secure cloud, 1× {GPU_ID}, image {IMAGE}, ≤ ${args.max_cost_per_hr}/hr, "
+        print(f"would create: secure cloud, 1× {args.gpu_id}, image {IMAGE}, ≤ ${args.max_cost_per_hr}/hr, "
               f"≤ {args.max_hours} h → ≤ ${args.max_cost_per_hr * (args.max_hours + 0.5):.0f} worst case")
         return
 
