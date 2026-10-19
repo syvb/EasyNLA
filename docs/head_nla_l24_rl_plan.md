@@ -7,6 +7,7 @@
 - `440bd5c`: the review fixes.
 - The commit adding this write-up: launch, monitoring and post-run sections, plus
   `scripts/runpod/launch_with_retry.sh`.
+- A follow-up: monitoring changed to report-only (no early stopping).
 
 ## Goal
 
@@ -133,20 +134,26 @@ pgrep -f launch_with_retry.sh > /home/syvb/l24_rl/retry.pid     # the real PID, 
   - `checks_rl/`, `checks_rl_best/`, `checks_rlav_sftar/`, `checks_sftav_rlar/`
   - `rl.parquet`, `selection.parquet`
 
-## Monitoring and early-stop rules
+## Monitoring (no early stopping)
 
-I watch the launcher log (stage changes and failures) and wandb `l24-rl` (live). Stopping early means
-sending the launcher SIGTERM: it fetches `results/` (with any kept or partial checkpoint) and deletes the
-pod. I stop early only for:
-- **Format collapse:** `eval/extraction_rate` < 80% for two consecutive evals (20 steps).
-- **Token-listing drift:** `eval/quote_rate` > 5% for two consecutive evals. That is the threshold set in
-  advance under criterion 5. Training on past it would only produce a constraint-violating model.
-- **Divergence:** non-finite loss, or KL > 1 nat/token sustained over 20 steps.
-- **Stall:** step time > 90 s after step 10. 400 steps can't then fit, so I report it and ask whether to
-  let the cap end it.
+**The run is never stopped by me.** The user watches it and decides. I watch the launcher log (stage
+changes, failures) and wandb `l24-rl` (live), and I report what I see. That includes these warning
+signs, which are reported only and never acted on:
+- **Format collapse:** `eval/extraction_rate` below 80% for two consecutive evals.
+- **Token-listing drift:** `eval/quote_rate` above 5% for two consecutive evals. That is the threshold set
+  in advance under criterion 5.
+- **Divergence:** a non-finite loss, or KL above 1 nat/token sustained over 20 steps.
+- **Stall:** step time above 90 s after step 10, which means 400 steps won't fit in the 5 h cap.
 
-A falling train FVE alone is not a reason to stop: the co-trained AR moves the reward scale. The checks
-decide.
+A falling train FVE on its own is not a warning sign: the co-trained AR moves the reward scale.
+
+**Only the built-in limits end the run on their own.** All were part of the reviewed plan:
+- The trainer's `--max-hours 5.0` stops cleanly at a step boundary with a saved checkpoint.
+- The launcher's `--max-hours 8` makes the launcher fetch and delete the pod.
+- The on-pod watchdog self-deletes at 8.5 h.
+
+Each is a cost cap, not a judgment call. The user can ask for any of them to be raised or removed
+before launch.
 
 ## Post-run analysis (local; exact commands)
 
