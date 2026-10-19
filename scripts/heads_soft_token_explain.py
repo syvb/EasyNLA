@@ -17,7 +17,10 @@ against stock openings each helped.
 An answer that quotes words, lists the evidence's words, mentions readouts or tokens, or opens
 with a stock phrase is sent back for a rewrite (up to --retries times).
 
-Results are cached per example_idx in <out>.jsonl, so reruns only send what is missing.
+Results are cached per example_idx in <out>.jsonl, so reruns only send what is missing. An example
+whose call fails (API error after the SDK's retries, refusal, truncation) is skipped and left for a
+rerun; <out> holds only the explained examples, with ok=False on any that still break the rules
+after the rewrites (export_sft and the probe drop those).
 """
 
 import argparse
@@ -99,12 +102,21 @@ _STOCK = re.compile(r"^(this|the|a) (vector|representation)\b|^(it )?(pushes|pro
                     r"^it carries\b", re.IGNORECASE)
 
 
+_SCAFFOLD = re.compile(r"Readout [AB](, distinctive|, common filler)?:|\(none\)")
+
+
+def _stem(w: str) -> str:
+    w = w.lower()
+    return w[:-1] if len(w) > 3 and w.endswith("s") else w
+
+
 def leaks(text: str, evidence: str) -> bool:
-    """Quotes, meta talk, or a "such as"/"like" run of two or more of the evidence's own words."""
+    """Quotes, meta talk, or a "such as"/"like" run of two or more of the evidence's own words
+    (the token lists only, not the prompt's labels; plurals match singulars)."""
     if _META.search(text):
         return True
-    words = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", evidence)}
-    return any(sum(w.lower() in words for w in re.findall(r"[A-Za-z]{3,}", m)) >= 2
+    words = {_stem(w) for w in re.findall(r"[A-Za-z]{3,}", _SCAFFOLD.sub(" ", evidence))}
+    return any(sum(_stem(w) in words for w in re.findall(r"[A-Za-z]{3,}", m)) >= 2
                for m in re.findall(r"(?:such as|like|as in|e\.g\.|including|namely)\s([^.;:]{0,60})", text,
                                    re.IGNORECASE))
 
@@ -132,32 +144,62 @@ def user_text(avg16: str, lens: str, df: dict[str, float], threshold: float) -> 
 async def run(rows: list[tuple[int, str]], cache: Path, args: argparse.Namespace, key: str) -> None:
     client = anthropic.AsyncAnthropic(api_key=key, max_retries=8)
     sem = asyncio.Semaphore(args.concurrency)
-    usage = {"input": 0, "output": 0, "broken": 0}
+    usage = {"input": 0, "output": 0, "broken": 0, "failed": 0, "done": 0}
 
     async def one(idx: int, text: str) -> None:
         messages = [{"role": "user", "content": text}]
-        for attempt in range(1 + args.retries):
-            async with sem:
-                msg = await client.messages.create(
-                    model=args.model, max_tokens=4000, thinking={"type": "adaptive"},
-                    output_config={"effort": args.effort},
-                    system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                    messages=messages)
-            out = " ".join("".join(b.text for b in msg.content if b.type == "text").split())
-            usage["input"] += msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0)
-            usage["output"] += msg.usage.output_tokens
-            if not breaks_rules(out, text):
-                break
-            messages += [{"role": "assistant", "content": out}, {"role": "user", "content": FIX}]
+        out = ""
+        try:
+            for attempt in range(1 + args.retries):
+                async with sem:
+                    msg = await client.messages.create(
+                        model=args.model, max_tokens=4000, thinking={"type": "adaptive"},
+                        output_config={"effort": args.effort},
+                        system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                        messages=messages)
+                new = " ".join("".join(b.text for b in msg.content if b.type == "text").split())
+                usage["input"] += msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0)
+                usage["output"] += msg.usage.output_tokens
+                if msg.stop_reason != "end_turn" or not new:   # refusal, max_tokens: no usable answer
+                    if not out:
+                        usage["failed"] += 1
+                        return
+                    break    # keep the earlier (rule-breaking) answer; it is saved with ok=False
+                out = new
+                if not breaks_rules(out, text):
+                    break
+                messages += [{"role": "assistant", "content": out}, {"role": "user", "content": FIX}]
+        except anthropic.APIError as e:   # after the SDK's own retries; a rerun picks it up
+            usage["failed"] += 1
+            if usage["failed"] <= 5:
+                print(f"example {idx}: {type(e).__name__}: {str(e)[:200]}", flush=True)
+            return
         bad = breaks_rules(out, text)
         usage["broken"] += bad
+        usage["done"] += 1
         with cache.open("a") as f:   # no await inside: the event loop keeps writes whole
             f.write(json.dumps({"example_idx": idx, "explain": out, "stop": msg.stop_reason,
                                 "attempts": attempt + 1, "breaks_rules": bad}) + "\n")
+        if usage["done"] % 2000 == 0:
+            print(f"  {usage['done']}/{len(rows)} explained ({usage['failed']} failed so far)", flush=True)
 
     await asyncio.gather(*(one(i, t) for i, t in rows))
-    print(f"sent {len(rows)}: {usage['input']} input + {usage['output']} output tokens; "
-          f"{usage['broken']} still break the rules after {args.retries} rewrites")
+    print(f"sent {len(rows)}: {usage['done']} explained, {usage['failed']} failed (rerun to retry them); "
+          f"{usage['input']} input + {usage['output']} output tokens; "
+          f"{usage['broken']} still break the rules after {args.retries} rewrites", flush=True)
+
+
+def load_cache(cache: Path) -> dict[int, dict]:
+    """example_idx → cached record; a line cut off by a killed pass is skipped (that example reruns)."""
+    done = {}
+    if cache.exists():
+        for line in cache.read_text().splitlines():
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            done[r["example_idx"]] = r
+    return done
 
 
 def main() -> None:
@@ -179,21 +221,22 @@ def main() -> None:
     want = [int(x) for x in args.rows.split(",")] if args.rows else t["example_idx"]
     pos = {e: i for i, e in enumerate(t["example_idx"])}
     out, cache = Path(args.out), Path(args.out).with_suffix(".jsonl")
-    done = {}
-    if cache.exists():
-        for line in cache.read_text().splitlines():
-            r = json.loads(line)
-            done[r["example_idx"]] = r["explain"]
+    done = load_cache(cache)
     todo = [(e, user_text(t["avg16"][pos[e]], t["lens"][pos[e]], df, args.common_threshold))
             for e in want if e not in done]
     if todo:
         key = os.environ.get("ANTHROPIC_API_KEY") or Path(args.key_file).expanduser().read_text().strip()
+        if cache.exists() and not cache.read_bytes().endswith(b"\n"):
+            with cache.open("a") as f:   # a pass killed mid-write: don't glue the next record onto it
+                f.write("\n")
         asyncio.run(run(todo, cache, args, key))
-        for line in cache.read_text().splitlines():
-            r = json.loads(line)
-            done[r["example_idx"]] = r["explain"]
-    pq.write_table(pa.table({"example_idx": want, "explain": [done[e] for e in want]}), out)
-    print(f"wrote {len(want)} explanations to {out}")
+        done = load_cache(cache)
+    got = [e for e in want if e in done]
+    pq.write_table(pa.table({"example_idx": got, "explain": [done[e]["explain"] for e in got],
+                             "ok": [not done[e]["breaks_rules"] for e in got],
+                             "attempts": [done[e]["attempts"] for e in got]}), out)
+    print(f"wrote {len(got)} explanations to {out} ({len(want) - len(got)} missing, "
+          f"{sum(done[e]['breaks_rules'] for e in got)} with ok=False)")
 
 
 if __name__ == "__main__":

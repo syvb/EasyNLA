@@ -42,7 +42,7 @@ from nla.schema import INJECT_PLACEHOLDER, sidecar_path_for, wrap_explanation
 
 ACTOR_TEMPLATE = """You are a meticulous AI researcher conducting an important investigation into activation vectors from a language model. Your overall task is to describe the information that one attention head added to one token.
 
-We will pass the head's contribution, as a vector enclosed in <concept> tags, into your context. You must then describe it in one or two short clauses, enclosed within <explanation> tags.
+We will pass the head's contribution, as a vector enclosed in <concept> tags, into your context. You must then describe it in one or two sentences, enclosed within <explanation> tags.
 
 <concept>{injection_char}</concept>
 
@@ -107,6 +107,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--output-dir", required=True, help="head dataset")
     p.add_argument("--descriptions", default=None, help="default warmstart/descriptions.parquet")
+    p.add_argument("--description-column", default="description",
+                   help="column of --descriptions holding the text (heads_soft_token_explain.py: explain)")
     p.add_argument("--sft-dir", required=True, help="where av_sft / ar_sft / eval parquets go")
     p.add_argument("--cap-quantile", type=float, default=0.999)
     p.add_argument("--max-norm", type=float, default=4.0, help="hard cap on ‖v‖ (units of the head's RMS)")
@@ -119,7 +121,7 @@ def main() -> None:
     desc_tab = pq.read_table(args.descriptions or out_dir / "warmstart" / "descriptions.parquet")
     keep = desc_tab.column("ok").to_pylist() if "ok" in desc_tab.column_names else [True] * desc_tab.num_rows
     rows = []
-    for ex, d, ok in zip(desc_tab.column("example_idx").to_pylist(), desc_tab.column("description").to_pylist(),
+    for ex, d, ok in zip(desc_tab.column("example_idx").to_pylist(), desc_tab.column(args.description_column).to_pylist(),
                          keep, strict=True):
         if ok and d:
             rows.append({**sel[ex], "description": d})

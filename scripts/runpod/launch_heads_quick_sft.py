@@ -274,8 +274,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, on_term)
     signal.signal(signal.SIGHUP, on_term)
     t0 = time.time()
+    fetched = created = False
     try:
         pod.create()
+        created = True
         for attempt in range(10):                       # sshd can lag the --wait banner check
             if pod.ssh("true", check=False).returncode == 0:
                 break
@@ -313,12 +315,16 @@ def main() -> None:
                 f"nohup bash {shlex.quote(args.remote_script)} >/workspace/results/nohup.log 2>&1 </dev/null &")
         print("remote run started", flush=True)
         status = "timeout"
+        # "[h]eads_x.sh" matches the running script but not this ssh command's own shell, whose
+        # command line contains the bracketed pattern rather than the name (a bare name always
+        # matched itself, so __DEAD__ could never fire)
+        alive_pattern = f"[{script_name[0]}]{script_name[1:]}"
         while time.time() - t0 < args.max_hours * 3600:
             time.sleep(args.poll_seconds)
             # __DEAD__: the script is gone without writing a marker (OOM-kill, SIGKILL) — no point waiting
             r = pod.ssh("cd /workspace/results && (cat DONE 2>/dev/null && echo __DONE__); "
                         "(cat FAILED 2>/dev/null && echo __FAILED__); "
-                        f"(pgrep -f {shlex.quote(script_name)} >/dev/null || echo __DEAD__); "
+                        f"(pgrep -f {shlex.quote(alive_pattern)} >/dev/null || echo __DEAD__); "
                         "grep '^=== \\[' run.log | tail -1; tail -2 run.log",
                         check=False, capture_output=True, text=True)
             mins = (time.time() - t0) / 60
@@ -337,15 +343,24 @@ def main() -> None:
                 break
         print(f"run status: {status}", flush=True)
         if args.hold and status == "done":
+            fetch(pod, Path(args.out), fetch_paths)   # results are safe locally before any holding
+            fetched = True
             print(f"holding the pod for interactive work: {out_dir / 'pod_ssh.txt'}; touch {release} to finish",
                   flush=True)
             while time.time() - t0 < args.max_hours * 3600 and not release.exists():
                 time.sleep(20)
             print("released" if release.exists() else "max hours reached — fetching and deleting", flush=True)
         fetch(pod, Path(args.out), fetch_paths)
+        fetched = True
         if status != "done":
             sys.exit(1)
     finally:
+        if not fetched and created:
+            # killed or crashed mid-run (signal, Ctrl-C, ssh error): pull what exists before deleting
+            try:
+                fetch(pod, Path(args.out), fetch_paths)
+            except Exception as e:   # noqa: BLE001 — best effort; the delete below must still run
+                print(f"best-effort fetch failed: {e}", flush=True)
         pod.delete()
         print(f"wall clock {(time.time() - t0) / 3600:.2f} h", flush=True)
 

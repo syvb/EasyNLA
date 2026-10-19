@@ -8,7 +8,7 @@
 # Stages: install → corpus/extract/stats/select/prepare → Haiku descriptions (standard
 # API, PAID) alongside the 8B self-description comparison → export → AR SFT → AV SFT →
 # pre-RL checks. Logs go to /workspace/results/run.log.
-set -euo pipefail
+set -eEuo pipefail   # -E: the ERR trap also fires inside functions (pip_install)
 
 REPO=/workspace/EasyNLA
 OUT=/workspace/heads_q

@@ -3,7 +3,7 @@
 # scripts/runpod/launch_heads_quick_sft.py --remote-script <this> --hold --secrets hf).
 # Extracts head writes, then runs the first sweep; later sweeps run over SSH while held.
 #   /workspace/results/DONE | FAILED   markers;  /workspace/results/run.log   log
-set -euo pipefail
+set -eEuo pipefail   # -E: the ERR trap also fires inside functions (pip_install)
 
 REPO=/workspace/EasyNLA
 OUT=/workspace/heads_st

@@ -1,0 +1,47 @@
+# Head-contribution NLA — L24 probe test + SFT on soft-token explanations
+# (scripts/runpod/heads_l24_remote.sh, docs/head_nla_l24_plan.md). Qwen3-8B, all 32 heads of layer 24,
+# 10k docs × 10 positions → 100k records; 650 AV + 650 AR + 200 eval examples per head (48k).
+# Only corpus/extract/stats/select run: descriptions come from the write alone
+# (scripts/heads_soft_token_readouts.py → scripts/heads_soft_token_explain.py), never from attention.
+
+model: qwen3_8b
+output_dir: /workspace/heads_l24
+
+corpus:
+  build:
+    dataset: m-a-p/FineFineWeb
+    file_glob: "*.jsonl"
+    num_files: 200
+    docs_per_file: 50
+    min_chars: 1000
+    text_column: text
+    id_column: global_id
+    keep_columns: [domain, url]
+    seed: 42
+  path: /workspace/heads_l24/corpus.parquet
+  text_column: text
+  id_column: doc_id
+  meta_columns: [domain, url]
+  start: 0
+  length: 10000
+
+extract:
+  layers: "24"
+  layers_per_position: 1
+  positions_per_doc: 10
+  top_k: 16
+  chunk_size: 256
+  chunks_per_part: 4
+  seed: 42
+  num_gpus: 1
+  extractor_kwargs: {batch_size: 16, max_length: 2048, device_map: cuda:0, dtype: bfloat16}
+
+split: {av_sft: 0.35, ar_sft: 0.35, rl: 0.15, eval: 0.15, seed: 42}
+
+select:
+  per_head_av: 650
+  per_head_ar: 650
+  per_head_eval: 200
+  size_weight: 0.75
+  size_cap: 4.0
+  seed: 42

@@ -8,16 +8,18 @@ the √d-scaled normalized write. The baseline is each head's mean target over t
 split — what an AR that ignores the description can learn from the head name — so it scores
 exactly 0 and never peeks at eval labels:
 
-  ar/claude          AR given the warm-start (Claude) descriptions
+  ar/gold            AR given the warm-start (gold) descriptions
   ar/empty           AR given an empty description (out of distribution, for reference)
-  ar/claude_shuf     Claude descriptions permuted within each head
+  ar/gold_shuf       gold descriptions permuted within each head
   ar/head_mean       predicting that per-head training mean — the 0 line, no model at all
   av/true            AR given the AV's descriptions of the TRUE write        } check 2:
   av/shuf            AR given the AV's descriptions of ANOTHER example's     } true ≫ shuf
                      write (same head) — scored against the true write
 
-Check 1 passes when ar/claude is clearly above 0, ar/empty and ar/claude_shuf; check 2 when
-av/true is clearly above av/shuf. Writes checks.json and examples.md to --out-dir.
+Check 1 passes when ar/gold is clearly above 0, ar/empty and ar/gold_shuf; check 2 when
+av/true is clearly above av/shuf (checks.json has 95% bootstrap CIs over rows and over heads). An
+AR-free companion: a per-head ridge from text alone to the write, for the gold, AV-true and AV-shuf
+texts. Writes checks.json, row_errors.npz and examples.md to --out-dir.
 """
 
 import argparse
@@ -165,11 +167,11 @@ def main() -> None:
 
     # --- AR scoring ---
     critic = load_ar_critic(args.ar_ckpt, args.base_ckpt, args.device)
-    claude = [r["description"] for r in ev]
+    gold_desc = [r["description"] for r in ev]
     conds = {
-        "ar/claude": ar_texts(claude),
+        "ar/gold": ar_texts(gold_desc),
         "ar/empty": ar_texts([""] * len(ev)),
-        "ar/claude_shuf": ar_texts([claude[j] for j in perm]),
+        "ar/gold_shuf": ar_texts([gold_desc[j] for j in perm]),
         "av/true": ar_texts(av_true),
         "av/shuf": ar_texts(av_shuf),
     }
@@ -187,12 +189,43 @@ def main() -> None:
             idx = [i for i, (la, _) in enumerate(heads) if la == lay]
             results["fve_by_layer"][name][f"L{lay}"] = fve(pr[idx], gold[idx], baseline[idx])
     f = results["fve"]
-    results["check1_ar_beats_empty"] = f["ar/claude"] - max(0.0, f["ar/empty"], f["ar/claude_shuf"])
+    results["check1_ar_beats_empty"] = f["ar/gold"] - max(0.0, f["ar/empty"], f["ar/gold_shuf"])
     results["check2_av_true_minus_shuf"] = f["av/true"] - f["av/shuf"]
     h = results["fve_head_avg"]
-    results["check1_per_head"] = h["ar/claude"] - max(0.0, h["ar/empty"], h["ar/claude_shuf"])
+    results["check1_per_head"] = h["ar/gold"] - max(0.0, h["ar/empty"], h["ar/gold_shuf"])
     results["check2_per_head"] = h["av/true"] - h["av/shuf"]
     results["av_distinct_fraction"] = len(set(av_true)) / len(av_true)
+
+    # Uncertainty: paired bootstrap over eval rows (pooled FVE) and over heads (per-head average),
+    # from the per-row squared errors, which are also saved for post-hoc analysis.
+    err = {name: ((pr - gold) ** 2).sum(-1) for name, pr in preds.items()}
+    base_err = ((baseline - gold) ** 2).sum(-1)
+    np.savez(out / "row_errors.npz", base=base_err, layer=np.array([la for la, _ in heads]),
+             head=np.array([hd for _, hd in heads]), **{k.replace("/", "__"): e for k, e in err.items()})
+    boot = np.random.default_rng(args.seed + 1)
+    idx = boot.integers(0, len(ev), size=(1000, len(ev)))
+    bf = {k: 1.0 - e[idx].sum(1) / base_err[idx].sum(1) for k, e in err.items()}
+    head_ix = list(by_head.values())
+    ph = {k: np.array([fve(preds[k][ix], gold[ix], baseline[ix]) for ix in head_ix]) for k in preds}
+    hidx = boot.integers(0, len(head_ix), size=(1000, len(head_ix)))
+    bh = {k: v_[hidx].mean(1) for k, v_ in ph.items()}
+
+    def ci(x: np.ndarray) -> list[float]:
+        return [float(np.quantile(x, 0.025)), float(np.quantile(x, 0.975))]
+    results["ci95"] = {
+        "check1_pooled": ci(bf["ar/gold"] - np.maximum.reduce([np.zeros(1000), bf["ar/empty"], bf["ar/gold_shuf"]])),
+        "check2_pooled": ci(bf["av/true"] - bf["av/shuf"]),
+        "check1_per_head": ci(bh["ar/gold"] - np.maximum.reduce([np.zeros(1000), bh["ar/empty"], bh["ar/gold_shuf"]])),
+        "check2_per_head": ci(bh["av/true"] - bh["av/shuf"]),
+    }
+
+    # AR-free companion to check 2: per-head cross-fitted ridge from the text alone to the write
+    # (nla.datagen.heads.probe.crossfit), so a weak AR can't hide a good AV or vice versa.
+    from nla.datagen.heads.probe import crossfit
+    text_conds = {"gold": gold_desc, "av_true": av_true, "av_shuf": av_shuf}
+    results["text_probe_head_avg"] = {
+        k: float(np.mean([crossfit([txt[i] for i in ix], v[ix], seed=args.seed)[0] for ix in head_ix]))
+        for k, txt in text_conds.items()}
     (out / "checks.json").write_text(json.dumps(results, indent=1))
 
     print("\nheld-out FVE (√d-scaled normalized write; baseline = per-head AR-training mean)")
@@ -200,11 +233,18 @@ def main() -> None:
     for name in preds:
         print(f"{name:<16}{f[name]:>8.3f}{results['fve_head_avg'][name]:>9.3f}"
               + "".join(f"{results['fve_by_layer'][name][f'L{lay}']:>8.3f}" for lay in layers))
-    print(f"\ncheck 1 (AR: claude − best of head-mean/empty/shuffled): {results['check1_ar_beats_empty']:+.3f} pooled, "
+    print(f"\ncheck 1 (AR: gold − best of head-mean/empty/shuffled): {results['check1_ar_beats_empty']:+.3f} pooled, "
           f"{results['check1_per_head']:+.3f} per-head")
     print(f"check 2 (AV: true − another example's write):     {results['check2_av_true_minus_shuf']:+.3f} pooled, "
           f"{results['check2_per_head']:+.3f} per-head")
-    print("(the head-mean 0 line carries sampling noise: treat a check as passing only by a margin of a few points)")
+    c95 = results["ci95"]
+    def fmt(c: list[float]) -> str:
+        return f"[{c[0]:+.3f}, {c[1]:+.3f}]"
+    print(f"95% bootstrap CIs: check 1 pooled {fmt(c95['check1_pooled'])}, per-head {fmt(c95['check1_per_head'])}; "
+          f"check 2 pooled {fmt(c95['check2_pooled'])}, per-head {fmt(c95['check2_per_head'])}")
+    tp = results["text_probe_head_avg"]
+    print(f"text-only probe (per-head ridge, text → write, mean over heads): gold {tp['gold']:.3f}, "
+          f"AV on true write {tp['av_true']:.3f}, AV on another write {tp['av_shuf']:.3f}")
     print(f"AV distinct descriptions: {results['av_distinct_fraction']:.0%}")
 
     lines = ["# Head NLA warm-start: held-out examples\n",
@@ -214,7 +254,7 @@ def main() -> None:
         r = ev[i]
         lines += [f"## L{r['activation_layer']}H{r['head']} · pos {r['pos']} · dev/rms {r['dev_rel']:.2f} · "
                   f"‖v‖ {np.linalg.norm(v[i]):.2f}",
-                  f"- **Claude (training-style target):** {claude[i]}",
+                  f"- **Gold (training-style target):** {gold_desc[i]}",
                   f"- **AV, true write:** {av_true[i]}",
                   f"- **AV, another example's write:** {av_shuf[i]}", ""]
     (out / "examples.md").write_text("\n".join(lines))
