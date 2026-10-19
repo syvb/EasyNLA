@@ -1,6 +1,12 @@
 # Plan: L24 head-NLA RL from the SFT warm-starts
 
-**Status:** implemented and CPU-tested. **The real run waits for approval.**
+**Status:** implemented, CPU-tested and reviewed. **The real run waits for approval.**
+
+**Commits on `sv/head-nla`:**
+- `5abf823`: trainer and data support, tests, and this plan.
+- `440bd5c`: the review fixes.
+- The commit adding this write-up: launch, monitoring and post-run sections, plus
+  `scripts/runpod/launch_with_retry.sh`.
 
 ## Goal
 
@@ -40,8 +46,20 @@ recipe. Hyperparameters are unchanged from that file except where this table say
 | checkpoints | every 100 steps | every 50 | so the best checkpoint by held-out FVE can be checked, not only the last |
 
 **Not used: the faster `train_rl_vllm` path.** It needs merged checkpoints, the patched vllm-lens venv and
-several GPUs (README: 4×H200). That is over the RunPod budget ($43), and it can't be tested on CPU. Its
+several GPUs (README: 4×H200). That is over the RunPod budget ($41), and it can't be tested on CPU. Its
 injection would need `scale=‖v‖` on the SteeringVector for magnitude preservation.
+
+### Code changes (all flag-gated; defaults unchanged)
+
+| file | change |
+|---|---|
+| `nla/train_rl_self_contained.py` | `--inject-preserve-magnitude`, `--ar-raw-loss` / `--ar-target-scale`, `--critic-prefix-column`, `--rollout-batch` (`rollout_batched`), `--device`, `--max-hours` (checked each step; saves at the stop and at the last step), raw failure floor, `av/quote_rate` and `eval/quote_rate` logging |
+| `nla/datagen/heads/split_select.py` | `--per-head-rl`: RL prompts appended after all warm-start rows |
+| `nla/datagen/heads/export_sft.py` | `--rl-only` → `rl.parquet` (AV prompt, v, `critic_prefix`, sidecar stage `rl`) |
+| `scripts/runpod/heads_l24_rl_remote.sh` | the pod pipeline (below) |
+| `scripts/runpod/launch_with_retry.sh` | the launcher, retried while secure GPU stock is thin |
+| `scripts/heads_compare_checks.py` | paired same-row comparison of two checks runs, plus the AV's quote / copying measures |
+| `tests/test_heads_rl.py` | 4 CPU tests (below) |
 
 Every change is behind a flag with the old default, so the residual-stream recipe is untouched. The
 full test suite passes: 35 passed, 1 skipped.
@@ -75,8 +93,9 @@ full test suite passes: 35 passed, 1 skipped.
 **Time and cost:**
 - About 6.5–7 h end to end, at most about 7.3 h (the RL stage is capped).
 - At $3.99/hr that is about $27, at most about $29.
-- The launcher's limit is `--max-hours 8`, and the watchdog self-deletes at 8.5 h (≤ $34). The RunPod
-  balance is $43.
+- The launcher's limit is `--max-hours 8`, and the watchdog self-deletes at 8.5 h. That is ≤ $34 at
+  $3.99/hr, or ≤ $38 at the launcher's $4.50/hr price ceiling.
+- The RunPod balance is $41.41.
 - No `--hold`: the pod is fetched and deleted as soon as DONE or FAILED appears.
 - **Checkpoint safety:**
   - Checkpoints live outside `results/`. The last and the best are copied into `results/` right after
@@ -91,6 +110,76 @@ full test suite passes: 35 passed, 1 skipped.
 
 **Logging:** wandb, live, in project `head-nla-qwen3-8b`, group `l24-rl`. The plots cover reward, FVE,
 extraction rate, KL, entropy, length, AR loss, and the held-out FVE every 10 steps with a sample table.
+
+## Launch (after approval)
+
+```bash
+cd ~/EasyNLA && mkdir -p /home/syvb/l24_rl
+GPUS="NVIDIA H100 80GB HBM3|3.5|4.5" setsid nohup scripts/runpod/launch_with_retry.sh /home/syvb/l24_rl heads-l24-rl \
+    --remote-script scripts/runpod/heads_l24_rl_remote.sh --secrets hf,wandb \
+    --fetch results --no-checkpoints --max-hours 8 > /home/syvb/l24_rl/retry.log 2>&1 < /dev/null &
+pgrep -f launch_with_retry.sh > /home/syvb/l24_rl/retry.pid     # the real PID, not $!
+```
+
+- **H100 only:** an A100 would reach about half the 400 steps in the 5 h cap, so the A100 fallback is
+  off for this run.
+- **If no H100 frees up in 15 rounds (about 45 min):** the wrapper gives up, and I ask before trying
+  anything else.
+- **Secrets:** `hf` (private checkpoints and data) and `wandb`, over SSH stdin into a mode-600 file.
+  No Anthropic key goes to the pod.
+- **Results:** `/home/syvb/l24_rl/results/`:
+  - `run.log`, `rl_train.log`
+  - `rl_ckpt/iter_*` (last and best, without the reference adapter), or `rl_ckpt_partial/` after a failure
+  - `checks_rl/`, `checks_rl_best/`, `checks_rlav_sftar/`, `checks_sftav_rlar/`
+  - `rl.parquet`, `selection.parquet`
+
+## Monitoring and early-stop rules
+
+I watch the launcher log (stage changes and failures) and wandb `l24-rl` (live). Stopping early means
+sending the launcher SIGTERM: it fetches `results/` (with any kept or partial checkpoint) and deletes the
+pod. I stop early only for:
+- **Format collapse:** `eval/extraction_rate` < 80% for two consecutive evals (20 steps).
+- **Token-listing drift:** `eval/quote_rate` > 5% for two consecutive evals. That is the threshold set in
+  advance under criterion 5. Training on past it would only produce a constraint-violating model.
+- **Divergence:** non-finite loss, or KL > 1 nat/token sustained over 20 steps.
+- **Stall:** step time > 90 s after step 10. 400 steps can't then fit, so I report it and ask whether to
+  let the cap end it.
+
+A falling train FVE alone is not a reason to stop: the co-trained AR moves the reward scale. The checks
+decide.
+
+## Post-run analysis (local; exact commands)
+
+```bash
+S=/home/syvb/l24_regen/results/checks          # SFT AV + SFT AR, with per-row errors and generations
+R=/home/syvb/l24_rl/results
+T=/home/syvb/l24_run/probe_local/texts.parquet  # the readouts, for the quote / copying measures
+# criterion 1 (and the best checkpoint), 5: RL AV + RL AR vs SFT on the same 6,360 rows
+python scripts/heads_compare_checks.py --a $S --b $R/checks_rl --label-a SFT --label-b RL --texts $T --out $R/cmp_rl.json
+python scripts/heads_compare_checks.py --a $S --b $R/checks_rl_best --label-a SFT --label-b RL-best --texts $T
+# criterion 2: the RL AV scored by the SFT AR, on the same 3,200 rows
+python scripts/heads_compare_checks.py --a $S --b $R/checks_rlav_sftar --label-a SFT --label-b RL-AV --out $R/cmp_rlav.json
+# criterion 3: the RL AR reading the SFT AV's text and gold text
+python scripts/heads_compare_checks.py --a $S --b $R/checks_sftav_rlar --label-a SFT --label-b RL-AR --out $R/cmp_rlar.json
+# criterion 4: the blinded judge on the same 823 rows as the SFT judgment (Sonnet 5.5, ~$8)
+ROWS=$(python -c "import json; print(','.join(sorted(json.load(open('/home/syvb/l24_regen/judge/my_labels.json')), key=int)))")
+python scripts/heads_faithfulness_judge.py --checks-dir $R/checks_rl --texts $T --out-dir $R/judge \
+    --per-head 25 --include-rows "$ROWS"
+# wandb summary run + HF uploads (private): models syvb/head-nla-qwen3-8b-l24-rl-av / -rl-ar, dataset l24/rl/
+```
+
+The judge samples rows with the same seed over the same eval order, so its 823 rows are the SFT
+judgment's rows, and the comparison is paired.
+
+## Budget
+
+| item | expected | at most |
+|---|---|---|
+| RunPod (one secure H100) | ~$27 | $34 at $3.99/hr; $38 at the $4.50 price ceiling |
+| Anthropic (faithfulness judge, Sonnet 5.5) | ~$8 | ~$10 |
+| **total** | **~$35** | ~$48 |
+
+RunPod balance: $41.41.
 
 ## What would count as success
 
@@ -190,3 +279,9 @@ extraction rate, KL, entropy, length, AR loss, and the held-out FVE every 10 ste
   - 3 steps of `train_rl_self_contained` with every head flag, then the checks on the RL checkpoints.
   - The exact `--config configs/rl_sgpu.yaml` command line with every override.
   - The `--max-hours` stop and save.
+- **Shell logic of the pod script, on fake checkpoints and logs:**
+  - best-checkpoint selection, including the fallback to the last when no eval FVE parses
+  - `keep_ckpt` dropping the reference adapter
+  - the ERR trap saving the newest checkpoint before FAILED
+- **`heads_compare_checks.py`:** a 3,200-row subset against its full run gives exactly 0 differences.
+- **Full suite:** 35 passed, 1 skipped.
