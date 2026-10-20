@@ -232,6 +232,12 @@ def main() -> None:
     base_dir = np.stack([head_mean_dir[h] for h in heads]).astype(np.float32)
     preds_dir = {k: (base_dir if k == "ar/head_mean" else unit(pr)) for k, pr in preds.items()}
     results["direction"], err_dir, base_err_dir = score(unit(gold), preds_dir, base_dir, 2)
+    # With both sides at norm √d, MSE = 2 − 2·cos: the direction-only reward is the cosine, and a
+    # normalized prediction beats the (≈ predict-zero) baseline only above cos 0.5, so the FVE above
+    # mostly measures that handicap. Mean cosine is the readable number; compare conditions on it.
+    g_u = unit(gold)
+    results["direction"]["cos"] = {
+        k: float(((unit(pr) * g_u).sum(-1) / mse_scale_f ** 2).mean()) for k, pr in preds_dir.items()}
     results["av_distinct_fraction"] = len(set(av_true)) / len(av_true)
 
     import pyarrow as pa
@@ -283,6 +289,7 @@ def main() -> None:
     print(f"{'condition':<16}{'pooled':>8}{'per-head':>9}")
     for name in preds:
         print(f"{name:<16}{d_['fve'][name]:>8.3f}{d_['fve_head_avg'][name]:>9.3f}")
+    print("mean cosine(pred, write): " + ", ".join(f"{k} {c:.3f}" for k, c in d_["cos"].items()))
     print(f"check 1: {d_['check1_ar_beats_empty']:+.3f} pooled {fmt(d_['ci95']['check1_pooled'])}, "
           f"{d_['check1_per_head']:+.3f} per-head {fmt(d_['ci95']['check1_per_head'])}")
     print(f"check 2: {d_['check2_av_true_minus_shuf']:+.3f} pooled {fmt(d_['ci95']['check2_pooled'])}, "
