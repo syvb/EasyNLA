@@ -44,9 +44,9 @@ def text_stats(d: Path, texts: Path) -> dict[str, float]:
             "copying_mean": float(np.mean(ov)), "words_mean": float(np.mean([len(x.split()) for x in g["av_true"]]))}
 
 
-def load(d: Path) -> tuple[list[int], dict[str, np.ndarray]]:
+def load(d: Path, metric: str = "raw") -> tuple[list[int], dict[str, np.ndarray]]:
     ex = pq.read_table(d / "generations.parquet", columns=["example_idx"]).column("example_idx").to_pylist()
-    z = np.load(d / "row_errors.npz")
+    z = np.load(d / ("row_errors.npz" if metric == "raw" else "row_errors_direction.npz"))
     return ex, {k: z[k] for k in z.files}
 
 
@@ -60,10 +60,12 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--texts", default=None, help="readouts (texts.parquet) for the quote / copying measures")
     p.add_argument("--out", default=None, help="write the table as JSON here")
+    p.add_argument("--metric", choices=["raw", "direction"], default="direction",
+                   help="direction: both vectors normalized (the standard NLA space); raw: magnitude included")
     args = p.parse_args()
 
-    ex_a, za = load(Path(args.a))
-    ex_b, zb = load(Path(args.b))
+    ex_a, za = load(Path(args.a), args.metric)
+    ex_b, zb = load(Path(args.b), args.metric)
     common = sorted(set(ex_a) & set(ex_b))
     ia = np.array([{e: i for i, e in enumerate(ex_a)}[e] for e in common])
     ib = np.array([{e: i for i, e in enumerate(ex_b)}[e] for e in common])
@@ -72,7 +74,7 @@ def main() -> None:
     conds = [k for k in za if k not in ("base", "layer", "head") and k in zb]
     rng = np.random.default_rng(args.seed)
     idx = rng.integers(0, len(common), size=(args.boot, len(common)))
-    print(f"{len(common)} shared eval rows ({len(ex_a)} in {args.label_a}, {len(ex_b)} in {args.label_b})")
+    print(f"[{args.metric} FVE] {len(common)} shared eval rows ({len(ex_a)} in {args.label_a}, {len(ex_b)} in {args.label_b})")
     print(f"{'condition':<16}{args.label_a:>9}{args.label_b:>9}{'b − a':>9}  95% CI")
     table = {}
     for k in conds:

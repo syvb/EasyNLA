@@ -182,25 +182,58 @@ def main() -> None:
         preds[name] = ar_predict(critic, tok, texts, mse_scale_f, args.device, args.batch_size)
     preds["ar/head_mean"] = baseline
     layers = sorted({lay for lay, _ in heads})
-    for name, pr in preds.items():
-        results["fve"][name] = fve(pr, gold, baseline)
-        results["fve_head_avg"][name] = fve_heads(pr, gold, baseline, by_head)
-        results["fve_by_layer"][name] = {}
-        for lay in layers:
-            idx = [i for i, (la, _) in enumerate(heads) if la == lay]
-            results["fve_by_layer"][name][f"L{lay}"] = fve(pr[idx], gold[idx], baseline[idx])
-    f = results["fve"]
-    results["check1_ar_beats_empty"] = f["ar/gold"] - max(0.0, f["ar/empty"], f["ar/gold_shuf"])
-    results["check2_av_true_minus_shuf"] = f["av/true"] - f["av/shuf"]
-    h = results["fve_head_avg"]
-    results["check1_per_head"] = h["ar/gold"] - max(0.0, h["ar/empty"], h["ar/gold_shuf"])
-    results["check2_per_head"] = h["av/true"] - h["av/shuf"]
+
+    def score(gold_m: np.ndarray, preds_m: dict, base_m: np.ndarray, seed_off: int) -> tuple[dict, dict, np.ndarray]:
+        """FVE per condition (pooled, per-head average, per layer), checks 1 and 2 with paired bootstrap
+        CIs over rows and over heads, and the per-row squared errors, all in one metric space."""
+        res: dict = {"fve": {}, "fve_head_avg": {}, "fve_by_layer": {}}
+        for name, pr in preds_m.items():
+            res["fve"][name] = fve(pr, gold_m, base_m)
+            res["fve_head_avg"][name] = fve_heads(pr, gold_m, base_m, by_head)
+            res["fve_by_layer"][name] = {}
+            for lay in layers:
+                idx = [i for i, (la, _) in enumerate(heads) if la == lay]
+                res["fve_by_layer"][name][f"L{lay}"] = fve(pr[idx], gold_m[idx], base_m[idx])
+        f_, h_ = res["fve"], res["fve_head_avg"]
+        res["check1_ar_beats_empty"] = f_["ar/gold"] - max(0.0, f_["ar/empty"], f_["ar/gold_shuf"])
+        res["check2_av_true_minus_shuf"] = f_["av/true"] - f_["av/shuf"]
+        res["check1_per_head"] = h_["ar/gold"] - max(0.0, h_["ar/empty"], h_["ar/gold_shuf"])
+        res["check2_per_head"] = h_["av/true"] - h_["av/shuf"]
+        err_m = {name: ((pr - gold_m) ** 2).sum(-1) for name, pr in preds_m.items()}
+        base_err_m = ((base_m - gold_m) ** 2).sum(-1)
+        boot = np.random.default_rng(args.seed + seed_off)
+        idx = boot.integers(0, len(ev), size=(1000, len(ev)))
+        bf = {k: 1.0 - e[idx].sum(1) / base_err_m[idx].sum(1) for k, e in err_m.items()}
+        head_ix = list(by_head.values())
+        ph = {k: np.array([fve(preds_m[k][ix], gold_m[ix], base_m[ix]) for ix in head_ix]) for k in preds_m}
+        hidx = boot.integers(0, len(head_ix), size=(1000, len(head_ix)))
+        bh = {k: v_[hidx].mean(1) for k, v_ in ph.items()}
+
+        def ci(x: np.ndarray) -> list[float]:
+            return [float(np.quantile(x, 0.025)), float(np.quantile(x, 0.975))]
+        z = np.zeros(1000)
+        res["ci95"] = {
+            "check1_pooled": ci(bf["ar/gold"] - np.maximum.reduce([z, bf["ar/empty"], bf["ar/gold_shuf"]])),
+            "check2_pooled": ci(bf["av/true"] - bf["av/shuf"]),
+            "check1_per_head": ci(bh["ar/gold"] - np.maximum.reduce([z, bh["ar/empty"], bh["ar/gold_shuf"]])),
+            "check2_per_head": ci(bh["av/true"] - bh["av/shuf"]),
+        }
+        return res, err_m, base_err_m
+
+    # Raw: the √d-scaled write, magnitude included. Direction: both sides rescaled to norm mse_scale
+    # (the standard NLA reward/loss space), baseline = the head's mean normalized training write.
+    raw_res, err, base_err = score(gold, preds, baseline, 1)
+    results.update(raw_res)
+
+    def unit(x: np.ndarray) -> np.ndarray:
+        return x / np.maximum(np.linalg.norm(x, axis=-1, keepdims=True), 1e-12) * mse_scale_f
+    tr_u = unit(tr_v.astype(np.float32))
+    head_mean_dir = {h: tr_u[[i for i, x in enumerate(tr_heads) if x == h]].mean(0) for h in set(tr_heads)}
+    base_dir = np.stack([head_mean_dir[h] for h in heads]).astype(np.float32)
+    preds_dir = {k: (base_dir if k == "ar/head_mean" else unit(pr)) for k, pr in preds.items()}
+    results["direction"], err_dir, base_err_dir = score(unit(gold), preds_dir, base_dir, 2)
     results["av_distinct_fraction"] = len(set(av_true)) / len(av_true)
 
-    # Uncertainty: paired bootstrap over eval rows (pooled FVE) and over heads (per-head average),
-    # from the per-row squared errors, which are also saved for post-hoc analysis.
-    err = {name: ((pr - gold) ** 2).sum(-1) for name, pr in preds.items()}
-    base_err = ((baseline - gold) ** 2).sum(-1)
     import pyarrow as pa
     pq.write_table(pa.table({
         "row": np.arange(len(ev)), "example_idx": [r["example_idx"] for r in ev],
@@ -209,24 +242,10 @@ def main() -> None:
         "gold": gold_desc, "av_true": av_true, "av_shuf": av_shuf,
         "shuf_partner_row": perm,   # av_shuf[i] is the AV's text for row perm[i]'s write
     }), out / "generations.parquet")
-    np.savez(out / "row_errors.npz", base=base_err, layer=np.array([la for la, _ in heads]),
-             head=np.array([hd for _, hd in heads]), **{k.replace("/", "__"): e for k, e in err.items()})
-    boot = np.random.default_rng(args.seed + 1)
-    idx = boot.integers(0, len(ev), size=(1000, len(ev)))
-    bf = {k: 1.0 - e[idx].sum(1) / base_err[idx].sum(1) for k, e in err.items()}
+    for fname, e_, b_ in (("row_errors.npz", err, base_err), ("row_errors_direction.npz", err_dir, base_err_dir)):
+        np.savez(out / fname, base=b_, layer=np.array([la for la, _ in heads]),
+                 head=np.array([hd for _, hd in heads]), **{k.replace("/", "__"): e for k, e in e_.items()})
     head_ix = list(by_head.values())
-    ph = {k: np.array([fve(preds[k][ix], gold[ix], baseline[ix]) for ix in head_ix]) for k in preds}
-    hidx = boot.integers(0, len(head_ix), size=(1000, len(head_ix)))
-    bh = {k: v_[hidx].mean(1) for k, v_ in ph.items()}
-
-    def ci(x: np.ndarray) -> list[float]:
-        return [float(np.quantile(x, 0.025)), float(np.quantile(x, 0.975))]
-    results["ci95"] = {
-        "check1_pooled": ci(bf["ar/gold"] - np.maximum.reduce([np.zeros(1000), bf["ar/empty"], bf["ar/gold_shuf"]])),
-        "check2_pooled": ci(bf["av/true"] - bf["av/shuf"]),
-        "check1_per_head": ci(bh["ar/gold"] - np.maximum.reduce([np.zeros(1000), bh["ar/empty"], bh["ar/gold_shuf"]])),
-        "check2_per_head": ci(bh["av/true"] - bh["av/shuf"]),
-    }
 
     # AR-free companion to check 2: per-head cross-fitted ridge from the text alone to the write
     # (nla.datagen.heads.probe.crossfit), so a weak AR can't hide a good AV or vice versa.
@@ -235,7 +254,12 @@ def main() -> None:
     results["text_probe_head_avg"] = {
         k: float(np.mean([crossfit([txt[i] for i in ix], v[ix], seed=args.seed)[0] for ix in head_ix]))
         for k, txt in text_conds.items()}
+    v_dir = unit(v)
+    results["direction"]["text_probe_head_avg"] = {
+        k: float(np.mean([crossfit([txt[i] for i in ix], v_dir[ix], seed=args.seed)[0] for ix in head_ix]))
+        for k, txt in text_conds.items()}
     (out / "checks.json").write_text(json.dumps(results, indent=1))
+    f = results["fve"]
 
     print("\nheld-out FVE (√d-scaled normalized write; baseline = per-head AR-training mean)")
     print(f"{'condition':<16}{'pooled':>8}{'per-head':>9}" + "".join(f"{f'L{lay}':>8}" for lay in layers))
@@ -254,6 +278,18 @@ def main() -> None:
     tp = results["text_probe_head_avg"]
     print(f"text-only probe (per-head ridge, text → write, mean over heads): gold {tp['gold']:.3f}, "
           f"AV on true write {tp['av_true']:.3f}, AV on another write {tp['av_shuf']:.3f}")
+    d_ = results["direction"]
+    print("\nheld-out FVE, DIRECTION ONLY (both sides normalized; baseline = per-head mean normalized write)")
+    print(f"{'condition':<16}{'pooled':>8}{'per-head':>9}")
+    for name in preds:
+        print(f"{name:<16}{d_['fve'][name]:>8.3f}{d_['fve_head_avg'][name]:>9.3f}")
+    print(f"check 1: {d_['check1_ar_beats_empty']:+.3f} pooled {fmt(d_['ci95']['check1_pooled'])}, "
+          f"{d_['check1_per_head']:+.3f} per-head {fmt(d_['ci95']['check1_per_head'])}")
+    print(f"check 2: {d_['check2_av_true_minus_shuf']:+.3f} pooled {fmt(d_['ci95']['check2_pooled'])}, "
+          f"{d_['check2_per_head']:+.3f} per-head {fmt(d_['ci95']['check2_per_head'])}")
+    tpd = d_["text_probe_head_avg"]
+    print(f"text-only probe (direction): gold {tpd['gold']:.3f}, AV true {tpd['av_true']:.3f}, "
+          f"AV other {tpd['av_shuf']:.3f}")
     print(f"AV distinct descriptions: {results['av_distinct_fraction']:.0%}")
 
     lines = ["# Head NLA warm-start: held-out examples\n",

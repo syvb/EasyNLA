@@ -14,7 +14,8 @@ SFT=/workspace/sft
 CK=/workspace/ckpt
 RES=/workspace/results
 BASE=Qwen/Qwen3-8B
-CKPT_REPO=${CKPT_REPO:-syvb/head-nla-qwen3-8b-l24-rl-ckpts}
+HF_PREFIX=${HF_PREFIX:-syvb/head-nla-qwen3-8b-l24-std}
+CKPT_REPO=${CKPT_REPO:-$HF_PREFIX-rl-ckpts}
 MAX_ROWS=${MAX_ROWS:-960}
 mkdir -p "$RES"
 exec > >(tee -a "$RES/run.log") 2>&1
@@ -26,7 +27,7 @@ stage() { STAGE=$1; echo; echo "=== [$(date -u +%H:%M:%S)] $1 ==="; }
 
 # shellcheck disable=SC1091
 set -a; source /workspace/.secrets; set +a      # HF_TOKEN
-export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false CKPT_REPO
+export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false CKPT_REPO HF_PREFIX
 unset PYTORCH_CUDA_ALLOC_CONF
 
 stage install
@@ -43,7 +44,7 @@ iters = sorted({f.split("/")[0] for f in HfApi().list_repo_files(repo, token=tok
 it = os.environ.get("CKPT_ITER") or iters[-1]
 snapshot_download(repo, allow_patterns=[f"{it}/*"], local_dir="/workspace/ckpt/rl", token=tok)
 for name in ("av", "ar"):
-    snapshot_download(f"syvb/head-nla-qwen3-8b-l24-{name}", local_dir=f"/workspace/ckpt/sft_{name}", token=tok)
+    snapshot_download(f"{os.environ['HF_PREFIX']}-{name}", local_dir=f"/workspace/ckpt/sft_{name}", token=tok)
 snapshot_download("syvb/head-nla-qwen3-8b", repo_type="dataset", allow_patterns=["l24/sft_data/*"], local_dir="/workspace/hfdata", token=tok)
 print(it)
 PY
@@ -97,7 +98,8 @@ PY
 
 stage checks
 python scripts/heads_sft_checks.py --sft-dir "$SFT" --base-ckpt "$BASE" --av-ckpt "$CK/rl/$CKPT_ITER" \
-    --ar-ckpt "$CK/rl/$CKPT_ITER/critic" --out-dir "$RES/checks" --batch-size 64 --max-new-tokens 128 \
+    --ar-ckpt "$CK/rl/$CKPT_ITER/critic" --out-dir "$RES/checks" --batch-size 64 --max-new-tokens 256 \
+    --no-inject-preserve-magnitude \
     --max-rows "$MAX_ROWS"
 
 date -u > "$RES/DONE"
