@@ -3,7 +3,7 @@
 # AV + AR SFT exactly as docs/train_new_model.md (direction-only injection and reconstruction loss,
 # one epoch), pre-RL checks, then RL with configs/rl_sgpu.yaml's defaults. Launch with:
 #   python scripts/runpod/launch_heads_quick_sft.py --remote-script scripts/runpod/heads_l24_std_remote.sh \
-#       --secrets hf,wandb --fetch results --no-checkpoints --max-hours 9 --out <local dir>
+#       --secrets hf,wandb --fetch results --no-checkpoints --max-hours 8 --out <local dir>
 # Markers: /workspace/results/DONE | FAILED (first failing stage); log /workspace/results/run.log.
 #
 # Head-data deviations that remain (each needed): the AR's input names the head ("Attention head
