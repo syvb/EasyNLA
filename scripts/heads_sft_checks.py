@@ -74,7 +74,7 @@ def ar_predict(critic, tok, texts: list[str], mse_scale_f, device, batch_size: i
 
 @torch.no_grad()
 def av_generate(actor, vref, tok, cfg, rows: list[dict], vecs: np.ndarray, device, batch_size: int,
-                max_new_tokens: int) -> list[str]:
+                max_new_tokens: int, temperature: float = 0.0) -> list[str]:
     tok.padding_side = "left"   # batched generation; the injection hook finds the marker by id + neighbors
     out: list[str] = []
     n_fallback = 0
@@ -84,8 +84,10 @@ def av_generate(actor, vref, tok, cfg, rows: list[dict], vecs: np.ndarray, devic
         enc = tok(texts, return_tensors="pt", padding=True, add_special_tokens=False).to(device)
         vref[0] = torch.tensor(vecs[s : s + batch_size], dtype=torch.float32, device=device)
         try:
-            gen = actor.generate(**enc, max_new_tokens=max_new_tokens, do_sample=False, temperature=None,
-                                 top_p=None, top_k=None, pad_token_id=tok.pad_token_id or tok.eos_token_id)
+            sample = temperature > 0   # T=1, top_p=1, top_k=0 is the RL rollout distribution
+            gen = actor.generate(**enc, max_new_tokens=max_new_tokens, do_sample=sample,
+                                 temperature=temperature if sample else None, top_p=1.0 if sample else None,
+                                 top_k=0 if sample else None, pad_token_id=tok.pad_token_id or tok.eos_token_id)
         finally:
             vref[0] = None
         for g in tok.batch_decode(gen[:, enc["input_ids"].shape[1]:], skip_special_tokens=True):
@@ -112,6 +114,8 @@ def main() -> None:
     p.add_argument("--max-new-tokens", type=int, default=96)
     p.add_argument("--max-rows", type=int, default=None)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--temperature", type=float, default=0.0,
+                   help="AV decoding: 0 = greedy (default); 1 = sampled like the RL rollouts (seeded)")
     args = p.parse_args()
 
     from peft import PeftModel
@@ -160,8 +164,11 @@ def main() -> None:
     register_karvonen_hook(actor, vref, cfg.injection_token_id, cfg.injection_left_neighbor_id,
                            cfg.injection_right_neighbor_id, layer_idx=1,
                            preserve_magnitude=args.inject_preserve_magnitude)
-    av_true = av_generate(actor, vref, tok, cfg, ev, v, args.device, args.batch_size, args.max_new_tokens)
-    av_shuf = av_generate(actor, vref, tok, cfg, ev, v[perm], args.device, args.batch_size, args.max_new_tokens)
+    torch.manual_seed(args.seed)
+    av_true = av_generate(actor, vref, tok, cfg, ev, v, args.device, args.batch_size, args.max_new_tokens,
+                          args.temperature)
+    av_shuf = av_generate(actor, vref, tok, cfg, ev, v[perm], args.device, args.batch_size, args.max_new_tokens,
+                          args.temperature)
     del actor, base
     if args.device.startswith("cuda"):
         torch.cuda.empty_cache()
