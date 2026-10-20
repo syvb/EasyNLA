@@ -35,6 +35,8 @@ import subprocess
 import sys
 import tarfile
 import time
+import tomllib
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -182,6 +184,23 @@ class Pod:
         self.id = None
 
 
+def machine_id(pod_id: str) -> str | None:
+    """The physical machine a pod landed on (RunPod GraphQL; runpodctl doesn't expose it)."""
+    cfg = tomllib.loads((Path.home() / ".runpod/config.toml").read_text())
+    key = {k.lower(): v for k, v in cfg.items()}.get("apikey")
+    q = "query($id:String!){ pod(input:{podId:$id}){ machineId } }"
+    req = urllib.request.Request("https://api.runpod.io/graphql",
+                                 data=json.dumps({"query": q, "variables": {"id": pod_id}}).encode(),
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
+                                          "User-Agent": "easynla-launcher"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return ((json.load(r).get("data") or {}).get("pod") or {}).get("machineId")
+    except Exception as e:   # noqa: BLE001 — unknown machine is handled by the caller
+        print(f"  machineId lookup failed: {e}", flush=True)
+        return None
+
+
 SECRET_FILES = {"hf": ("HF_TOKEN", ".hf_token"), "anthropic": ("ANTHROPIC_API_KEY", ".anthropic_key"),
                 "wandb": ("WANDB_API_KEY", ".wandb_key")}
 
@@ -247,6 +266,8 @@ def main() -> None:
                                                                     "unless --no-checkpoints)")
     p.add_argument("--secrets", default="hf,anthropic", help=f"comma list of {sorted(SECRET_FILES)}")
     p.add_argument("--hold", action="store_true", help="keep the pod after the script until <out>/RELEASE")
+    p.add_argument("--avoid-machine", action="append", default=[],
+                   help="RunPod machineId to refuse (repeatable): a pod landing there is deleted and recreated")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
@@ -279,7 +300,17 @@ def main() -> None:
     t0 = time.time()
     fetched = created = False
     try:
-        pod.create()
+        for attempt in range(6):
+            pod.create()
+            mid = machine_id(pod.id)
+            print(f"pod {pod.id} on machine {mid}", flush=True)
+            if not args.avoid_machine or (mid and mid not in args.avoid_machine):
+                break
+            print(f"  machine {mid} is on the avoid list (or unknown) — deleting and recreating", flush=True)
+            pod.delete()
+            time.sleep(30)
+        else:
+            raise SystemExit(f"no pod off the avoided machines {args.avoid_machine} in 6 tries")
         created = True
         for attempt in range(10):                       # sshd can lag the --wait banner check
             if pod.ssh("true", check=False).returncode == 0:
