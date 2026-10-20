@@ -38,7 +38,7 @@ def init_wandb(args, *, rollout_tag, fve_baseline, fve_baseline_meannorm):
         #                    denominator, kept only to map old wandb curves.
         "fve_baseline_mse_paper": fve_baseline,
         "fve_baseline_mse_meannorm_legacy": fve_baseline_meannorm,
-    })
+    }, allow_val_change=True)   # a resumed run (WANDB_RESUME) re-logs these; float repr can differ
 
 
 def build_step_log(
