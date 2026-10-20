@@ -93,27 +93,36 @@ def load_sft_dataset(parquet_path, n_max=None, *, mode):
     return rows
 
 
-def load_heldout_explanation_pairs(parquet_path, n_rows):
+def load_heldout_explanation_pairs(parquet_path, n_rows, head_prefix=False):
     """(explanation, activation) pairs from an AV-split parquet (has `response`).
 
     The AV split is DOC-DISJOINT from the AR training data by stage-1
     construction, so FVE on these pairs is a genuine held-out number —
     training-batch FVE overstates quality once the data is multi-epoch.
+    head_prefix: prepend the head-contribution AR's "Attention head L<l>H<h>: " lead-in
+    (from the row's activation_layer / head), as in its training text.
     """
     pf = pq.ParquetFile(parquet_path)
     pairs = []
+    cols = ["response", "activation_vector"] + (["activation_layer", "head"] if head_prefix else [])
+    if head_prefix:
+        from nla.datagen.heads.export_sft import critic_explanation
     for rg_idx in range(pf.num_row_groups):
         if len(pairs) >= n_rows:
             break
-        rg = pf.read_row_group(rg_idx, columns=["response", "activation_vector"])
+        rg = pf.read_row_group(rg_idx, columns=cols)
         responses = rg.column("response").to_pylist()
         acts_col = rg.column("activation_vector").combine_chunks()
         acts = (acts_col.flatten().to_numpy(zero_copy_only=False)
                 .astype(np.float32).reshape(len(acts_col), -1))
-        for resp, act in zip(responses, acts):
+        sites = (list(zip(rg.column("activation_layer").to_pylist(), rg.column("head").to_pylist()))
+                 if head_prefix else [None] * len(responses))
+        for resp, act, site in zip(responses, acts, sites):
             expl = extract_explanation(resp)
             if expl is None:
                 continue
+            if site is not None:
+                expl = critic_explanation(site[0], site[1], expl)
             pairs.append((expl, act))
             if len(pairs) >= n_rows:
                 break
@@ -527,6 +536,9 @@ def main():
                         "vs the memorization-proxy train loss). "
                         "Evaluated every --heldout-every steps.")
     p.add_argument("--heldout-rows", type=int, default=1000)
+    p.add_argument("--heldout-head-prefix", action="store_true",
+                   help="AR held-out text gets the head-contribution 'Attention head L<l>H<h>: ' "
+                        "lead-in from each row's activation_layer/head (as in the AR training text)")
     p.add_argument("--heldout-every", type=int, default=100)
     p.add_argument("--strip-final-norm", action=argparse.BooleanOptionalAction,
                    default=True,
@@ -867,7 +879,7 @@ def main():
             "--heldout-parquet needs critic_prompt_template in the sidecar"
         )
         heldout_pairs = load_heldout_explanation_pairs(
-            args.heldout_parquet, args.heldout_rows,
+            args.heldout_parquet, args.heldout_rows, head_prefix=args.heldout_head_prefix,
         )
         _h_acts = torch.tensor(
             np.stack([a for _, a in heldout_pairs]), dtype=torch.float32,
@@ -1084,7 +1096,11 @@ def main():
             h_fve = (1.0 - h_mse / heldout_baseline) * 100.0
             log["heldout_fve_pct"] = h_fve
             log["heldout_mse"] = h_mse
-            print(f"  [heldout@{step}] mse {h_mse:.4f} | FVE {h_fve:.1f}% "
+            # normalized MSE (both sides at norm mse_scale = √d) is 2 − 2·cos
+            h_cos = (1.0 - h_mse / 2.0) if (not args.ar_raw_loss and mse_scale_f is not None
+                                           and abs(mse_scale_f ** 2 - cfg.d_model) < 1e-3) else float("nan")
+            log["heldout_cos"] = h_cos
+            print(f"  [heldout@{step}] mse {h_mse:.4f} | FVE {h_fve:.1f}% | cos {h_cos:.4f} "
                   f"(n={h_n})", flush=True)
 
         if not args.no_wandb:

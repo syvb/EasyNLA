@@ -92,3 +92,26 @@ small pod (structure on CPU here first).
 3. Check 2 (true − shuffled write) still holds for the RL pair.
 4. No token-listing drift: quote rate ≤ 5% and copying ≤ 0.23 (same pre-registered lines as before).
 5. The faithfulness judge on the same rows: RL AV not less faithful than the SFT AV.
+
+## AR retrain (2026-10-20, during the first std run)
+
+The standard AR recipe's "one epoch" means ~3,900 updates on its 250k-row split; here one epoch is
+324 steps (20.7k rows). The 1-epoch AR ended still improving: training-batch cosine
+0.01 → 0.08 → 0.11 → 0.117 at steps 0/100/200/300, the same trajectory as the old raw-loss AR
+(0.14 at 300), which kept climbing to 0.19 over its second epoch. So the AR is retrained on the
+standard recipe (same lr / schedule / LoRA) for up to 12 epochs (3,888 steps ≈ the standard update
+count), saving each epoch and keeping the checkpoint with the best **held-out** cosine on 2,000 rows
+of the AV split (doc-disjoint from the AR's data; the 6,360 eval rows stay untouched for the checks).
+`train_sft.py --heldout-head-prefix` gives the held-out text the AR's head prefix, and the held-out
+log now includes the cosine (normalized MSE = 2 − 2·cos).
+
+`scripts/runpod/heads_l24_std_ar2_remote.sh` reuses the standard AV (`syvb/head-nla-qwen3-8b-l24-std-av`)
+and the RL prompts (`l24/rl_data/` in the dataset repo, from the first std pod), so no datagen:
+AR SFT (≈ 35 min) → upload `-std-ar2` → checks_sft → RL (`-std-ar2-rl-ckpts`, wandb
+`l24-std-ar2-rl`) → checks → collect. ≈ 7 h, ≈ $28.
+
+Note on reading direction metrics: with both vectors at norm √d the normalized MSE is 2 − 2·cos and
+every baseline (zero, global mean, per-head mean: cos 0.016 / 0.06) scores ≈ 1.0, so a normalized
+prediction only beats the baseline above cos 0.5 — far above what text-to-head-write reaches. The
+FVE in this space is mostly that handicap; mean cosine (and comparisons between conditions) is the
+readable number. The RL reward is exactly 2·cos − 2.
