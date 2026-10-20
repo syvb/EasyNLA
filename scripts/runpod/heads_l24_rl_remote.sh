@@ -110,6 +110,9 @@ python -m nla.datagen.heads.export_sft --output-dir "$OUT" --sft-dir "$SFT" --rl
 # batched rollouts, larger micro-batches for an 80 GB GPU, base_fve only (text_judges scores against
 # document text, which this data doesn't carry), and a wall-clock stop.
 stage rl
+# Mirror each checkpoint to HF as it is written (a separate, low-priority process; see the script).
+setsid nohup nice -n 19 python scripts/runpod/hf_ckpt_uploader.py --log "$RES/run.log" --ckpt-dir "$CK/rl" \
+  --repo "${CKPT_REPO:-syvb/head-nla-qwen3-8b-l24-rl-ckpts}" > "$RES/hf_upload.log" 2>&1 < /dev/null &
 rl_train() {   # rl_train <rollout batch> <logp micro-batch> <AR micro-batch> <eval gen batch>
   python -m nla.train_rl_self_contained --config configs/rl_sgpu.yaml \
     --base-ckpt "$BASE" --quant none --device cuda \
