@@ -479,6 +479,9 @@ def main():
     p.add_argument("--max-hours", type=float, default=0,
                    help="stop after the step that passes this many hours of training (0 = no limit), "
                         "saving a checkpoint there, so a run slower than planned ends cleanly")
+    p.add_argument("--stop-file", default=None,
+                   help="if this path exists at the end of a step, save a checkpoint there and stop "
+                        "(a clean, operator-requested stop; resume with --resume-from-lora)")
     p.add_argument("--rollout-batch", type=int, default=0,
                    help="rollouts per batched generate() call across prompts (0 = one call per prompt)")
     p.add_argument("--device-map", choices=["single", "auto"], default="single")
@@ -1581,6 +1584,10 @@ def main():
 
         # ---- save LoRA periodically (and at the last step, or when --max-hours runs out) ----
         time_up = args.max_hours > 0 and time.time() - t_train_start > args.max_hours * 3600
+        stop_req = bool(args.stop_file) and Path(args.stop_file).exists()
+        if stop_req:
+            print(f"[stop] {args.stop_file} exists: saving and stopping after step {step}", flush=True)
+        time_up = time_up or stop_req
         if (step + 1) % args.save_every == 0 or step + 1 == args.num_steps or time_up:
             out_dir = save_dir / f"iter_{step + 1:06d}"
             out_dir.mkdir(parents=True, exist_ok=True)
