@@ -133,7 +133,7 @@ table.heads tr{cursor:pointer}table.heads tr.sel{background:var(--accent-soft)}t
 <label for="zoom">Cell width</label><select id="zoom"><option value="4">4 px</option><option value="6" selected>6 px</option><option value="9">9 px</option><option value="14">14 px</option></select>
 <span style="width:8px"></span><span class="muted">Show</span><button id="t-sft" aria-pressed="false">SFT AV</button><button id="t-gold" aria-pressed="false">Gold (Haiku)</button><button id="t-hl" aria-pressed="true">Highlight quotes &amp; markup</button><button id="theme" title="Toggle light/dark">◐</button></div>
 <div class="hm-wrap"><canvas id="hm" tabindex="0" aria-label="Heads by tokens heatmap; arrow keys move the selection"></canvas>
-<div class="legend"><b id="lgname" style="color:var(--ink)"></b><span class="lg"><canvas class="ramp" id="ramp" width="260" height="10"></canvas><span class="ticks"><span id="lo"></span><span id="mid"></span><span id="hi"></span></span></span><span id="lgnote"></span><span id="stat" style="margin-left:auto"></span></div></div>
+<div class="legend"><b id="lgname" style="color:var(--ink)"></b><span class="lg"><canvas class="ramp" id="ramp" width="260" height="10"></canvas><span class="ticks"><span id="lo"></span><span id="mid"></span><span id="hi"></span></span></span><span id="lgnote"></span><span class="muted" style="margin-left:12px">← → previous / next token · ↑ ↓ heads (heatmap focused)</span><span id="stat" style="margin-left:auto"></span></div></div>
 <div class="panel ov"><h2>Heads overview <span class="meta">each thumbnail is the head's attention over this document (rows = query token, top to bottom; columns = key token, left to right; darker = more attention). Click one to select that head.</span></h2>
 <div class="bar"><label for="osort">Sort</label><select id="osort"><option value="h">by head</option><option value="sink">least first-token sink</option><option value="prev">most previous-token</option>
 <option value="self">most self</option><option value="ent">most spread out (non-sink)</option><option value="dist">longest range</option><option value="focus">most focused on specific tokens</option><option value="foc">least spread out (non-sink)</option><option value="fve">highest mean RL FVE</option></select>
@@ -248,8 +248,12 @@ tip.replaceChildren(el('b',{},`H${c.h} · #${D.pos[c.pi]} “${vis(D.tokens[D.po
 tip.style.display='block';tip.style.left=Math.min(innerWidth-330,e.clientX+14)+'px';tip.style.top=(e.clientY+14)+'px'});
 $('hm').addEventListener('mouseleave',()=>tip.style.display='none');
 $('hm').addEventListener('click',e=>{$('hm').focus({preventScroll:true});const c=cellAt(e);if(c){S.h=c.h;S.pi=c.pi;update()}});
-$('hm').addEventListener('keydown',e=>{const m={ArrowLeft:[0,-1],ArrowRight:[0,1],ArrowUp:[-1,0],ArrowDown:[1,0]}[e.key];if(!m)return;e.preventDefault();
-S.h=Math.max(0,Math.min(D.n_heads-1,S.h+m[0]));S.pi=Math.max(0,Math.min(D.pos.length-1,S.pi+m[1]));update()});
+// ← / → anywhere on the page: previous / next token for the current head. ↑ / ↓ switch heads only while the
+// heatmap has focus, so they don't take over page scrolling. Ignored while typing or with modifier keys.
+function keepVisible(){const w=$('hm').parentElement,x=LAB+S.pi*S.zoom;if(x<w.scrollLeft+LAB||x>w.scrollLeft+w.clientWidth-30)w.scrollLeft=Math.max(0,x-w.clientWidth/2)}
+document.addEventListener('keydown',e=>{if(!D||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey)return;const t=e.target.tagName;if(t==='INPUT'||t==='SELECT'||t==='TEXTAREA')return;
+const lr={ArrowLeft:-1,ArrowRight:1}[e.key],ud=e.target===$('hm')?{ArrowUp:-1,ArrowDown:1}[e.key]:undefined;if(lr==null&&ud==null)return;e.preventDefault();
+if(lr!=null)S.pi=Math.max(0,Math.min(D.pos.length-1,S.pi+lr));if(ud!=null)S.h=Math.max(0,Math.min(D.n_heads-1,S.h+ud));update();keepVisible()});
 $('metric').onchange=e=>{S.metric=e.target.value;drawHM()};$('osort').onchange=e=>{S.osort=e.target.value;renderThumbs()};$('t-sink').onclick=e=>{S.dropSink=!S.dropSink;e.currentTarget.setAttribute('aria-pressed',String(S.dropSink));renderThumbs()};$('zoom').onchange=e=>{S.zoom=+e.target.value;drawHM()};
 for(const k of['sft','gold','hl'])$('t-'+k).onclick=e=>{S.show[k]=!S.show[k];e.currentTarget.setAttribute('aria-pressed',String(S.show[k]));renderDetail()};
 $('theme').onclick=()=>{const r=document.documentElement,dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;r.dataset.theme=dark?'light':'dark';LUTN={};drawHM();renderThumbs()};
