@@ -139,7 +139,8 @@ Retention is the share of the gain over no text (cos 0.028) that each version ke
 
 **Tools for looking at it** (public, `syvb/head-nla-qwen3-8b`): `l24/std_rl/examples_100.md`,
 `fve_distribution.png`, `viewer/` (all heads at 32 positions of 8 held-out docs) and `doc_viewer/` (every
-token × every head of 4 held-out docs with full attention, heads overview and FVE heatmap).
+token × every head of 4 held-out docs with full attention, heads overview and FVE heatmap). Per-head mean FVE on the held-out eval: `docs/head_nla_l24_std_fve_by_head.png`
+(`scripts/heads_fve_by_head_plot.py`): 24/32 heads above 0%, from H3 −59% to H18 +63%.
 
 ### Explanation-free baselines on the doc-viewer sites (`scripts/heads_nla_baselines.py`)
 
