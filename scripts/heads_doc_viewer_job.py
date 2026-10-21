@@ -250,6 +250,9 @@ def main() -> None:
                 th.join()
                 gold = EX.load_cache(gold_cache)
             texts["gold"] = [gold.get(i, {}).get("explain", "") for i in range(len(sites))]
+            n_gold = sum(bool(x) for x in texts["gold"])
+            if not args.no_gold and n_gold < 0.9 * len(sites):
+                log(f"!!! WARNING: only {n_gold}/{len(sites)} gold explanations (API errors? see above)")
             g = unit(vs, mse_scale_f)
             base_err = ((head_mean[[h for _, h in sites]] - g) ** 2).sum(-1)
             cols: dict = {"pos": [t for t, _ in sites], "head": [h for _, h in sites],
@@ -263,6 +266,8 @@ def main() -> None:
                     pred = unit(ar_predict(ar[reader], tok, ar_in, mse_scale_f, args.device, 64), mse_scale_f)
                     err = ((pred - g) ** 2).sum(-1)
                     tag = kind if kind != "gold" else f"gold_{reader}"
+                    if kind == "gold":     # a failed Haiku call: no score rather than scoring an empty text
+                        err = np.where(np.array([bool(x) for x in texts["gold"]]), err, np.nan)
                     cols[f"{tag}_cos"] = 1 - err / (2 * mse_scale_f ** 2)
                     cols[f"{tag}_fve"] = 1 - err / base_err
             ar_ = attn                                                             # stats per (pos, head)
@@ -278,6 +283,7 @@ def main() -> None:
             (dd / "meta.json").write_text(json.dumps(meta, indent=1))
             log(f"{name}: {T} tokens in {meta['minutes']} min; RL FVE mean {meta['rl_fve_mean']:+.3f}, "
                 f"SFT {meta['sft_fve_mean']:+.3f}; gold {meta['n_gold']}/{len(sites)}")
+            (dd / "DONE").write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
             if api is not None:
                 for attempt in range(3):
                     try:
@@ -289,7 +295,6 @@ def main() -> None:
                     except Exception as e:   # noqa: BLE001 — the local copy is fetched at the end anyway
                         log(f"upload attempt {attempt + 1} failed: {e}")
                         time.sleep(30)
-            (dd / "DONE").write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         except Exception:
             log(f"!!! {f.name} failed:\n{traceback.format_exc()}")
             (out / f"{f.stem}.FAILED").write_text(traceback.format_exc())

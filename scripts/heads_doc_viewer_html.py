@@ -58,14 +58,15 @@ def main() -> None:
         att_q = [[base64.b64encode((np.sqrt(np.clip(attn[h, t, : t + 1], 0, 1)) * 255).round().astype(np.uint8)
                                    .tobytes()).decode() for t in pos] for h in range(H)]
         a16 = [toks(x) for x in s.avg16]
+        has_gold = s.gold_text.str.len() > 0          # a failed Haiku call: no gold score, not an empty "explanation"
         thr = args.common_threshold
         d = {"name": meta["name"], "domain": meta.get("domain", ""), "source": meta.get("source", ""),
              "url": meta.get("url", ""), "n_heads": H, "layer": meta.get("layer", 24),
              "tokens": [tok.decode([i]) for i in ids], "pos": [int(x) for x in pos],
              # every per-site column is [head][pos-index] (row-major over heads)
-             "rl_fve": r3(s.rl_fve), "sft_fve": r3(s.sft_fve), "gold_fve": r3(s.gold_rl_fve),
-             "rl_cos": r3(s.rl_cos), "sft_cos": r3(s.sft_cos), "gold_cos": r3(s.gold_rl_cos),
-             "gold_fve_sft": r3(s.gold_sft_fve), "first_w": r3(s.first_w), "self_w": r3(s.self_w),
+             "rl_fve": r3(s.rl_fve), "sft_fve": r3(s.sft_fve), "gold_fve": r3(s.gold_rl_fve.where(has_gold)),
+             "rl_cos": r3(s.rl_cos), "sft_cos": r3(s.sft_cos), "gold_cos": r3(s.gold_rl_cos.where(has_gold)),
+             "gold_fve_sft": r3(s.gold_sft_fve.where(has_gold)), "first_w": r3(s.first_w), "self_w": r3(s.self_w),
              "entropy": r3(s.entropy), "v_norm": r3(s.v_norm),
              "rl": s.rl_text.tolist(), "sft": s.sft_text.tolist(), "gold": s.gold_text.tolist(),
              "gold_ok": [bool(x) for x in s.gold_ok],
@@ -144,10 +145,11 @@ const txt=await new Response(new Blob([b]).stream().pipeThrough(new Decompressio
 const idx=(h,pi)=>h*D.pos.length+pi;
 function val(h,pi){const k=idx(h,pi);if(S.metric==='gap'){const a=D.rl_fve[k],b=D.sft_fve[k];return a==null||b==null?null:a-b}return D[S.metric][k]}
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
-function color(v){if(v==null)return'rgb(128,128,128)';const [nr,ng,nb]=css('--neg').split(',').map(Number),[pr,pg,pb]=css('--pos').split(',').map(Number),[mr,mg,mb]=css('--mid').split(',').map(Number);
+let PAL=null;function pal(){return PAL||(PAL=['--neg','--pos','--mid'].map(v=>css(v).split(',').map(Number)))}
+function color(v){if(v==null)return'rgb(128,128,128)';const [[nr,ng,nb],[pr,pg,pb],[mr,mg,mb]]=pal();
 let t=S.metric==='first_w'?v*2-1:Math.max(-1,Math.min(1,v));const [r,g,b]=t>=0?[pr,pg,pb]:[nr,ng,nb];t=Math.abs(t);return `rgb(${Math.round(mr+(r-mr)*t)},${Math.round(mg+(g-mg)*t)},${Math.round(mb+(b-mb)*t)})`}
 const LAB=34,TOP=4;
-function drawHM(){const c=$('hm'),H=D.n_heads,P=D.pos.length,cw=S.zoom,ch=11,dpr=window.devicePixelRatio||1;
+function drawHM(){PAL=null;const c=$('hm'),H=D.n_heads,P=D.pos.length,cw=S.zoom,ch=11,dpr=window.devicePixelRatio||1;
 c.width=(LAB+P*cw)*dpr;c.height=(TOP+H*ch)*dpr;c.style.width=(LAB+P*cw)+'px';c.style.height=(TOP+H*ch)+'px';const g=c.getContext('2d');g.scale(dpr,dpr);
 g.fillStyle=css('--card');g.fillRect(0,0,LAB+P*cw,TOP+H*ch);g.font='10px system-ui';g.fillStyle=css('--ink-2');g.textBaseline='middle';
 for(let h=0;h<H;h++){if(h%2===0||ch>=11)g.fillText('H'+h,2,TOP+h*ch+ch/2);for(let pi=0;pi<P;pi++){g.fillStyle=color(val(h,pi));g.fillRect(LAB+pi*cw,TOP+h*ch,cw-(cw>4?1:0),ch-1)}g.fillStyle=css('--ink-2')}
