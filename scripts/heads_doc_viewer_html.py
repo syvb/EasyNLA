@@ -149,7 +149,7 @@ function css(v){return getComputedStyle(document.documentElement).getPropertyVal
 // Colour scales (dataviz reference palette): FVE metrics and RL−SFT are DIVERGING around 0 (blue below, grey
 // midpoint, red above); attention to the first token is SEQUENTIAL blue. Stops are interpolated in OKLab and
 // cached as a 256-entry lookup per scale and theme; values beyond a scale's ends are clamped.
-const SCALES={fve:{kind:'div',lo:-1,hi:1,ticks:['−100%','0','+100%'],note:'≤ −100% and ≥ +100% clamped'},
+const SCALES={fve:{kind:'div',lo:-1,hi:1,ticks:['−100%','0','+100%'],note:'FVE is at most +100% (perfect); values below −100% are shown as −100%'},
  gap:{kind:'div',lo:-2,hi:2,ticks:['−200%','0','+200%'],note:'RL − SFT, in FVE points; clamped at ±200%'},
  seq:{kind:'seq',lo:0,hi:1,ticks:['0','0.5','1'],note:'share of the head’s attention on the first token'}};
 const STOPS={light:{div:['#0d366b','#3987e5','#f0efec','#e66767','#9b1c1c'],seq:['#f0efec','#cde2fb','#86b6ef','#3987e5','#1c5cab','#0d366b']},
