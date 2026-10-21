@@ -59,17 +59,28 @@ PY
 stage datagen
 python -m nla.datagen.heads.run_pipeline --config "$CFG" --stages corpus,extract,stats,select
 
-# the records must be the ones the models' data came from (same corpus, positions and stats)
+# The viewer needs the held-out doc split and the sampled positions to be the ones the models' data came
+# from (both seeded, GPU-independent): gate on those. Write-size-weighted picks and dev_norm can shift with
+# GPU numerics (the saved selection was made on H100), so they are only reported.
 stage selection_check
-python - "$OUT/warmstart/selection.parquet" "$RES/saved_selection.parquet" <<'PY'
-import sys, numpy as np, pyarrow.parquet as pq
-cols = ["example_idx", "split", "layer", "head", "doc_id", "pos", "dev_norm"]
-new, old = (pq.read_table(p, columns=cols).to_pydict() for p in sys.argv[1:])
-n = len(old["example_idx"])
-dn_new, dn_old = np.array(new.pop("dev_norm")[:n]), np.array(old.pop("dev_norm"))
-assert {k: v[:n] for k, v in new.items()} == old, "regenerated selection differs from the saved one"
-assert np.allclose(dn_new, dn_old, rtol=1e-3, atol=1e-6), "dev_norm drifted"
-print(f"first {n} rows identical")
+python - "$OUT/warmstart/selection.parquet" "$RES/saved_selection.parquet" "$OUT/docs" <<'PY'
+import glob, sys, numpy as np, pyarrow.parquet as pq
+new, old = (pq.read_table(p, columns=["split", "layer", "head", "doc_id", "pos", "dev_norm"]).to_pandas() for p in sys.argv[1:3])
+split_new, split_old = dict(zip(new.doc_id, new.split)), dict(zip(old.doc_id, old.split))
+shared = set(split_new) & set(split_old)
+bad = [d for d in shared if split_new[d] != split_old[d]]
+assert not bad, f"doc split differs for {len(bad)} docs, e.g. {bad[:3]}"
+pos = {}
+for f in glob.glob(sys.argv[3] + "/*.parquet"):
+    t = pq.read_table(f, columns=["doc_id", "positions"]).to_pydict()
+    pos.update({d: set(p) for d, p in zip(t["doc_id"], t["positions"])})
+missing = [(d, p) for d, p in zip(old.doc_id, old.pos) if p not in pos.get(d, set())]
+assert not missing, f"{len(missing)} saved sites are not among the regenerated sampled positions, e.g. {missing[:3]}"
+key = ["layer", "head", "doc_id", "pos"]
+m = old.merge(new, on=key, suffixes=("_old", "_new"))
+rel = np.abs(m.dev_norm_new / m.dev_norm_old - 1)
+print(f"doc split identical on {len(shared)} docs; all {len(old)} saved sites are sampled positions; "
+      f"{len(m)}/{len(old)} saved picks re-picked; dev_norm rel diff on those: median {np.median(rel):.1e}, max {rel.max():.1e}")
 PY
 
 stage viewer_select
