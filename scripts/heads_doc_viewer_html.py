@@ -45,7 +45,7 @@ def main() -> None:
     df = doc_freq(pq.read_table(args.texts_ref, columns=["avg16"]).to_pydict()["avg16"]) if args.texts_ref else {}
     docs = []
     for dd in sorted(Path(args.docs).iterdir()):
-        if not (dd / "DONE").exists():
+        if not ((dd / "meta.json").exists() and (dd / "sites.parquet").exists() and (dd / "attn.npz").exists()):
             continue
         meta = json.loads((dd / "meta.json").read_text())
         ids = np.load(dd / "token_ids.npy").tolist()
@@ -193,7 +193,7 @@ const tip=$('tip');$('hm').addEventListener('mousemove',e=>{const c=cellAt(e);if
 tip.replaceChildren(el('b',{},`H${c.h} · #${D.pos[c.pi]} “${vis(D.tokens[D.pos[c.pi]])}”`),el('br'),`RL FVE ${pct(D.rl_fve[k])} · SFT ${pct(D.sft_fve[k])} · first-token ${(D.first_w[k]??0).toFixed(2)}`,el('br'),D.rl[k].split('\n')[0].slice(0,140));
 tip.style.display='block';tip.style.left=Math.min(innerWidth-330,e.clientX+14)+'px';tip.style.top=(e.clientY+14)+'px'});
 $('hm').addEventListener('mouseleave',()=>tip.style.display='none');
-$('hm').addEventListener('click',e=>{const c=cellAt(e);if(c){S.h=c.h;S.pi=c.pi;update()}});
+$('hm').addEventListener('click',e=>{$('hm').focus({preventScroll:true});const c=cellAt(e);if(c){S.h=c.h;S.pi=c.pi;update()}});
 $('hm').addEventListener('keydown',e=>{const m={ArrowLeft:[0,-1],ArrowRight:[0,1],ArrowUp:[-1,0],ArrowDown:[1,0]}[e.key];if(!m)return;e.preventDefault();
 S.h=Math.max(0,Math.min(D.n_heads-1,S.h+m[0]));S.pi=Math.max(0,Math.min(D.pos.length-1,S.pi+m[1]));update()});
 $('metric').onchange=e=>{S.metric=e.target.value;drawHM()};$('zoom').onchange=e=>{S.zoom=+e.target.value;drawHM()};
