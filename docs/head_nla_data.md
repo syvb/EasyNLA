@@ -208,7 +208,10 @@ A per-request reminder, label-style notes and a third readout did not help.
 - Details, curves, incidents: `docs/head_nla_l24_std_plan.md`. The earlier raw-magnitude RL run
   (`docs/head_nla_l24_rl_plan.md`) was stopped at step 44.
 - Artifacts: models `syvb/head-nla-qwen3-8b-l24-std-{av,ar,rl-ckpts}`; dataset `l24/rl_data/`,
-  `l24/std_rl/results/`.
+  `l24/std_rl/results/`, `l24/std_rl/faithfulness/` (blinded judge: RL AV no more faithful than SFT, 1.99 vs 1.98).
+- **Viewer:** `l24/std_rl/viewer/head_nla_viewer.html` (offline, single file): all 32 heads at 32 positions of 8
+  held-out docs with RL / SFT / gold explanations, cos and FVE, attended tokens and readouts. Rebuild with
+  `scripts/runpod/heads_l24_viewer_remote.sh` + `scripts/heads_viewer_html.py`.
 
 ## L24 run: probe test + SFT on soft-token explanations
 
