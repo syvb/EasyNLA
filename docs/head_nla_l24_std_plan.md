@@ -81,6 +81,20 @@ T=1 frozen-reader cross pairing, frozen-AR reads of checkpoints 50–300); the m
 `fve_distribution.png`, `viewer/` (all heads at 32 positions of 8 held-out docs) and `doc_viewer/` (every
 token × every head of 4 held-out docs with full attention, heads overview and FVE heatmap).
 
+### Explanation-free baselines on the doc-viewer sites (`scripts/heads_nla_baselines.py`)
+
+These guesses about a site's write read no explanation; mean FVE over heads:
+
+| guess | mean FVE | heads where it beats RL |
+|---|---|---|
+| RL explanation (for reference) | +23% | — |
+| the head's other writes in the same doc, averaged | +14% | 10/32, incl. H18, H24–27 |
+| the head's write at the previous token | +46% | 27/32 |
+
+- **The head's constant first-token write** accounts for 25% of a write's direction (mean cos², 6–48% by head).
+- **What the per-site text adds on top of the doc average** is largest on the self-attending heads: H0 (+79 pts) and H7 (+56). It is negative on 10 heads, which act as per-doc topic encoders.
+- **Interp case study of the strongest group (H16–19):** `docs/head_nla_l24_h18_case_study.md`.
+
 ## Why
 
 The first L24 RL run (`l24-rl-sgpu`, wandb `oscgpslq`) carried over two choices from the head SFT
