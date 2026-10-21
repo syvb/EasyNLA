@@ -25,7 +25,10 @@ head, 100% = perfect). 6,360 eval rows (cross pairings: 3,200).
   above gold text for that reader); the RL AR reads ordinary (SFT-AV, gold) text ≈ 2× better (partly
   the training the 1-epoch SFT AR lacked).
 - **Most of the gain is co-adaptation**: the pair (0.55–0.60) is far above either model alone
-  (≈ 0.18–0.20); a frozen reader recovers ≈ 18% of the pair's gain.
+  (≈ 0.18–0.20). On grammatical heads (H3, H4) the RL AR scores RL-AV text at 0.21–0.25 but gold at
+  0.02–0.03 — text that beats gold 10× where gold carries nothing is a code. Caveat: the "frozen reader
+  recovers ≈ 18%" figure is not a bound — that cross pairing was greedy with 74% of outputs cut to 300
+  characters and never run at T=1, the 1-epoch SFT AR is under-trained, and quotes hurt it.
 - **The explanations broke the warm-start rules** (pre-registered criterion 4 fails): at T=1, 93%
   quote tokens (SFT: 0%), 114 words (SFT: 34), 79% contain stray markup (`</p>`, `</turns>`), 14%
   non-Latin fragments. Typical step-390 text: one real sentence about what the head does, then a tail
@@ -34,12 +37,25 @@ head, 100% = perfect). 6,360 eval rows (cross pairings: 3,200).
 - **Where the quotes come from** (greedy step-400 outputs, 12,456 quotes; chance = another write of
   the same head): content-word quotes match a token **the head attended to** 14.8% (chance 3.0%), the
   **current token** 8.2% (0.3%), the write's avg16 / lens readouts 10.4% / 7.5% (4.0% / 1.2%); any
-  source 31% (9.8%). The write carries the identity of tokens the head copies (OV), and the AV learned
-  to name them. 69% of content quotes match no source (invented strings, a code for the co-trained AR).
-  Function-word quotes ("for", "of", "into") are ≈ chance. (Attention data used for this analysis
-  only, never for warm-start data.)
+  source 31% (9.8%) — rule-sensitive by ±10 points (`scripts/heads_quote_sources.py`). The write carries
+  the identity of tokens the head copies (OV), and the AV learned to name them. Of the 69% that match
+  no source, a Fable review found ~55% are generic repeated words ("first", "next", "future" —
+  plausibly next-token promotions beyond the stored readout lists), ~12% morphological variants, ~15%
+  semantic neighbours and only ~15% truly invented. Function-word quotes are ≈ chance. (Attention data
+  used for this analysis only, never for warm-start data.)
+- **Quotes and markup are not what earns the reward**: within head, quote-free T=1 rows score
+  *higher* (cos 0.73 vs 0.59; ρ(cos, #quotes) = −0.21) and `</p>` count tracks short prose (filler).
+  The co-adapted channel is the templated prose: 66% of greedy outputs open "Statements about…", 281
+  distinct two-word openers vs 3,158 for SFT, top-50 words = 50% of content tokens (SFT 25%).
+- **Faithfulness did not improve** (blinded Sonnet judge, 480 eval rows, `heads_faithfulness_judge_rl.py`):
+  against the write's readouts, gold 4.06 / SFT 1.98 / **RL 1.99** / control 1.28 (RL first paragraph
+  only: 2.02); with context and attended tokens added: 2.82 / 1.59 / 1.58 / 1.09. Within each text type
+  faithfulness and cosine correlate (ρ ≈ +0.41; within head +0.27), but RL rows judged unrelated (score
+  1) still reach cos 0.51, and 33% of RL rows have cos ≥ 0.6 with faithfulness ≤ 2. The most faithful
+  RL heads are H16–H19, H5, H26 (2.5–3.1).
 - **Greedy decoding degenerates** at step 400: 74% of greedy outputs run to the 256-token cap (T=1:
-  0.1%); the checks keep the first 300 characters of uncapped text.
+  0.1%); the checks keep the first 300 characters of capped text, so the greedy T=1 gap (+0.046) is a
+  truncation artifact (−0.005 on rows that were not truncated).
 
 Training curve (trainer eval, 128 held-out RL prompts, T=1): cosine 0.076 (step 0) → 0.229 (50) →
 0.338 (100) → 0.469 (200) → 0.530 (250) → 0.550 (300) → 0.592 (350) → 0.608 (390). KL to the SFT AV
@@ -47,11 +63,23 @@ rose to ≈ 1 nat/token by step 20 and stayed 1.1–1.4 (main Qwen3-8B NLA basel
 0.72 at 100); entropy 1.8 → 2.5–3.4; length 65 → ~105 tokens; quote rate 0.2% → 75% of rollouts by
 step 70.
 
-**Verdict.** RL on the direction-only reward works as optimization and produces partly real
-improvement (both models individually ~2×), but under this setup it mostly buys a private AV↔AR code
-built from copied token identities and junk tokens. Before another RL run: a quote / copy penalty (or
-a frozen or periodically reset AR), the multi-epoch AR retrain below, a better-converged AV, and the
-main setup's 4× larger batch (`train_rl_vllm`, 256 prompts × 8).
+**Pre-registered criteria** (Fable review): 1 RL pair beats SFT — pass; 2 RL AV via the frozen SFT AR
+beats the SFT pair — nominal pass (0.178 vs 0.095; confounded, see above); 3 true − shuffled — pass;
+4 quote ≤ 5% — **fail** (93%); 5 faithfulness — **fail** (RL = SFT); no-degeneration (KL bounded,
+length < cap) — **fail** (KL ≈ 1.2 with β 0.01 ⇒ the KL term was ≈ 1% of the reward signal).
+
+**Verdict.** RL on the direction-only reward works as optimization and produces some real improvement
+(both models individually ~2×), but under this setup most of the gain is a private AV↔AR code carried
+by templated prose, while the explanations are no more faithful and break the no-token rule.
+Likely drivers, ranked: a co-trained LoRA AR starting under-fit (its "finishing SFT" and "learning
+the dialect" are one gradient), an effectively-off KL, a 1-epoch AV, and a 4× smaller batch than the
+main setup. Next, cheapest first: offline re-scoring (quotes/markup stripped, first sentence only,
+T=1 frozen-reader cross pairing, frozen-AR reads of checkpoints 50–300); the multi-epoch AR retrain
+(below); a frozen-AR GRPO run with β 0.05–0.1 and a penalty for quotes/markup/non-Latin.
+
+**Tools for looking at it** (public, `syvb/head-nla-qwen3-8b`): `l24/std_rl/examples_100.md`,
+`fve_distribution.png`, `viewer/` (all heads at 32 positions of 8 held-out docs) and `doc_viewer/` (every
+token × every head of 4 held-out docs with full attention, heads overview and FVE heatmap).
 
 ## Why
 
