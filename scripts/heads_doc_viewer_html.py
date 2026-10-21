@@ -39,9 +39,11 @@ def main() -> None:
     p.add_argument("--base-model", default="Qwen/Qwen3-8B")
     p.add_argument("--common-threshold", type=float, default=0.08)
     p.add_argument("--title", default="Head NLA — every token × every head (Qwen3-8B layer 24)")
+    p.add_argument("--n-kv-heads", type=int, default=None, help="GQA KV heads (default: from the base model's config)")
     args = p.parse_args()
-    from transformers import AutoTokenizer
+    from transformers import AutoConfig, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(args.base_model)
+    n_kv = args.n_kv_heads or AutoConfig.from_pretrained(args.base_model).num_key_value_heads
     df = doc_freq(pq.read_table(args.texts_ref, columns=["avg16"]).to_pydict()["avg16"]) if args.texts_ref else {}
     docs = []
     for dd in sorted(Path(args.docs).iterdir()):
@@ -51,6 +53,7 @@ def main() -> None:
         ids = np.load(dd / "token_ids.npy").tolist()
         s = pq.read_table(dd / "sites.parquet").to_pandas().sort_values(["head", "pos"])
         H, T = int(meta["n_heads"]), len(ids)
+        assert H % n_kv == 0, f"{H} heads not divisible into {n_kv} KV groups"
         pos = sorted(s.pos.unique())
         assert len(s) == H * len(pos), f"{dd.name}: {len(s)} sites for {H} heads × {len(pos)} positions"
         attn = np.load(dd / "attn.npz")["attn"].astype(np.float32)                    # [H, T, T]
@@ -61,7 +64,7 @@ def main() -> None:
         has_gold = s.gold_text.str.len() > 0          # a failed Haiku call: no gold score, not an empty "explanation"
         thr = args.common_threshold
         d = {"name": meta["name"], "domain": meta.get("domain", ""), "source": meta.get("source", ""),
-             "url": meta.get("url", ""), "n_heads": H, "layer": meta.get("layer", 24),
+             "url": meta.get("url", ""), "n_heads": H, "n_kv": n_kv, "layer": meta.get("layer", 24),
              "tokens": [tok.decode([i]) for i in ids], "pos": [int(x) for x in pos],
              # every per-site column is [head][pos-index] (row-major over heads)
              "rl_fve": r3(s.rl_fve), "sft_fve": r3(s.sft_fve), "gold_fve": r3(s.gold_rl_fve.where(has_gold)),
@@ -120,22 +123,29 @@ table.heads{width:100%;border-collapse:collapse;font-size:12.5px}table.heads td,
 table.heads tr{cursor:pointer}table.heads tr.sel{background:var(--accent-soft)}table.heads td.n{font-variant-numeric:tabular-nums;text-align:right}
 .loading{color:var(--ink-2);padding:20px}
 .ov{margin-top:14px}.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:10px;margin-top:8px}
-.thumb{border:1px solid var(--border);border-radius:10px;padding:6px 7px;cursor:pointer;background:var(--card);text-align:left;font:inherit;color:inherit}
+.thumb{display:flex;flex-direction:column;justify-content:flex-start;border:1px solid var(--border);border-radius:10px;padding:6px 7px;cursor:pointer;background:var(--card);text-align:left;font:inherit;color:inherit}
 .thumb.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}canvas.am{width:100%;aspect-ratio:1;image-rendering:pixelated;display:block;border-radius:4px;background:var(--surface-2)}
 .thumb .row1{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;margin:2px 0}.thumb .row2{font-size:11px;color:var(--ink-2);font-variant-numeric:tabular-nums;line-height:1.35}
+.kvgroups{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,600px),1fr));gap:12px;margin-top:8px}
+.kvg{border:1px solid var(--border);border-radius:12px;padding:8px;background:var(--surface-2)}.kvg.sel{border-color:var(--accent)}.kvh{font-size:12.5px;color:var(--ink-2);margin:0 2px}
+.kvg .thumbs{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:6px}@media (max-width:700px){.kvg .thumbs{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.thumb.sib{border-style:dashed;border-color:var(--accent)}.kvt{font-weight:400;color:var(--ink-3);font-size:11px}
+.chip.kvb{cursor:pointer;font-family:system-ui;padding:1px 6px;color:var(--ink)}.chip.kvb.on{border-color:var(--accent);background:var(--accent-soft)}
+table.heads tr.sib td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
 .tag{font-size:10.5px;border:1px solid var(--border);border-radius:999px;padding:0 6px;color:var(--ink-2);background:var(--surface-2)}
 </style></head><body>
 <header><h1>__TITLE__</h1>
-<p>Rows are the layer's 32 attention heads, columns are every token of a held-out document. Each cell is one head's write at one token, explained by the <b>AV</b> (it sees only the write vector) and reconstructed from that explanation by the <b>AR</b>. Colour = <b>FVE</b> (1 − error / error of predicting the head's mean write): orange above 0, blue below, grey ≈ 0; it is negative below cos ≈ 0.5 by construction. Click a cell for its explanation, scores and evidence; the text then shows that head's full attention from the token (evidence only, never used for any explanation).</p></header>
+<p>Rows are the layer's 32 attention heads, columns are every token of a held-out document. Each cell is one head's write at one token, explained by the <b>AV</b> (it sees only the write vector) and reconstructed from that explanation by the <b>AR</b>. Colour = <b>FVE</b> (1 − error / error of predicting the head's mean write): orange above 0, blue below, grey ≈ 0; it is negative below cos ≈ 0.5 by construction. Click a cell for its explanation, scores and evidence; the text then shows that head's full attention from the token (evidence only, never used for any explanation).</p>
+<p>Heads come in <b>GQA groups</b>: Qwen3-8B has 8 key/value heads, each shared by 4 query heads (KV0 = H0–3, KV1 = H4–7, …). Heads in a group read the same keys and values and differ only in their query and output projections, so they often share a theme. Groups are banded in the heatmap and boxed in the overview; the selected head's group-mates are marked.</p></header>
 <main>
 <div class="bar" id="docs" role="group" aria-label="Document"></div>
 <div class="bar"><label for="metric">Colour</label><select id="metric"><option value="rl_fve">RL FVE</option><option value="sft_fve">SFT FVE</option><option value="gold_fve">Gold FVE (RL AR)</option><option value="gap">RL − SFT FVE</option><option value="first_w">attention to first token</option></select>
 <label for="zoom">Cell width</label><select id="zoom"><option value="4">4 px</option><option value="6" selected>6 px</option><option value="9">9 px</option><option value="14">14 px</option></select>
 <span style="width:8px"></span><span class="muted">Show</span><button id="t-sft" aria-pressed="false">SFT AV</button><button id="t-gold" aria-pressed="false">Gold (Haiku)</button><button id="t-hl" aria-pressed="true">Highlight quotes &amp; markup</button><button id="theme" title="Toggle light/dark">◐</button></div>
 <div class="hm-wrap"><canvas id="hm" tabindex="0" aria-label="Heads by tokens heatmap; arrow keys move the selection"></canvas>
-<div class="legend"><b id="lgname" style="color:var(--ink)"></b><span class="lg"><canvas class="ramp" id="ramp" width="260" height="10"></canvas><span class="ticks"><span id="lo"></span><span id="mid"></span><span id="hi"></span></span></span><span id="lgnote"></span><span class="muted" style="margin-left:12px">← → previous / next token · ↑ ↓ heads (heatmap focused)</span><span id="stat" style="margin-left:auto"></span></div></div>
+<div class="legend"><b id="lgname" style="color:var(--ink)"></b><span class="lg"><canvas class="ramp" id="ramp" width="260" height="10"></canvas><span class="ticks"><span id="lo"></span><span id="mid"></span><span id="hi"></span></span></span><span id="lgnote"></span><span class="muted" style="margin-left:12px">← → previous / next token · ↑ ↓ heads (heatmap focused) · rows banded by KV group</span><span id="stat" style="margin-left:auto"></span></div></div>
 <div class="panel ov"><h2>Heads overview <span class="meta">each thumbnail is the head's attention over this document (rows = query token, top to bottom; columns = key token, left to right; darker = more attention). Click one to select that head.</span></h2>
-<div class="bar"><label for="osort">Sort</label><select id="osort"><option value="h">by head</option><option value="sink">least first-token sink</option><option value="prev">most previous-token</option>
+<div class="bar"><label for="osort">Sort</label><select id="osort"><option value="h">by head (in KV groups)</option><option value="kv">by KV group, best mean RL FVE first</option><option value="sink">least first-token sink</option><option value="prev">most previous-token</option>
 <option value="self">most self</option><option value="ent">most spread out (non-sink)</option><option value="dist">longest range</option><option value="focus">most focused on specific tokens</option><option value="foc">least spread out (non-sink)</option><option value="fve">highest mean RL FVE</option></select>
 <button id="t-sink" aria-pressed="true" title="Remove the first-token column and renormalize each row, so the non-sink pattern is visible">Hide first-token sink</button>
 <span class="muted">No BOS: Qwen's tokenizer adds none, so the first real token is the attention sink. Thumbnail rows are scaled to their own maximum.</span></div>
@@ -155,6 +165,8 @@ const vis=s=>s.replace(/\n/g,'⏎').replace(/ /g,'·').replace(/\t/g,'⇥')||'�
 async function load(i){if(CACHE[i])return CACHE[i];const b=Uint8Array.from(atob(DOCS[i].blob),c=>c.charCodeAt(0));
 const txt=await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).text();return CACHE[i]=JSON.parse(txt)}
 const idx=(h,pi)=>h*D.pos.length+pi;
+// GQA: query head h reads KV head ⌊h / (n_heads / n_kv)⌋, shared with its group-mates.
+const GS=()=>D.n_heads/D.n_kv,kvOf=h=>Math.floor(h/GS()),sibs=h=>[...Array(GS()).keys()].map(i=>kvOf(h)*GS()+i),kvName=q=>`KV${q} (H${q*GS()}–${(q+1)*GS()-1})`;
 function val(h,pi){const k=idx(h,pi);if(S.metric==='gap'){const a=D.rl_fve[k],b=D.sft_fve[k];return a==null||b==null?null:a-b}return D[S.metric][k]}
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
 // Colour scales (dataviz reference palette): FVE metrics and RL−SFT are DIVERGING around 0 (blue below, grey
@@ -176,11 +188,13 @@ let LUT={};function isDark(){const n=parseInt(css('--surface').slice(1),16);retu
 function lut(kind){const key=kind+(isDark()?'d':'l');if(LUT[key])return LUT[key];const st=STOPS[isDark()?'dark':'light'][kind].map(hex2lab),out=[];
 for(let i=0;i<256;i++){const x=i/255*(st.length-1),k=Math.min(st.length-2,Math.floor(x)),f=x-k,a=st[k],b=st[k+1];const [r,g,bl]=lab2rgb([0,1,2].map(j=>a[j]+(b[j]-a[j])*f));out.push(`rgb(${r},${g},${bl})`)}return LUT[key]=out}
 function color(v,m=S.metric){if(v==null)return null;const sc=scaleOf(m),t=Math.max(0,Math.min(1,(v-sc.lo)/(sc.hi-sc.lo)));return lut(sc.kind)[Math.round(t*255)]}
-const LAB=34,TOP=4;
+const LAB=46,TOP=4;
 function drawHM(){LUT={};const c=$('hm'),H=D.n_heads,P=D.pos.length,cw=S.zoom,ch=11,dpr=window.devicePixelRatio||1;
 c.width=(LAB+P*cw)*dpr;c.height=(TOP+H*ch)*dpr;c.style.width=(LAB+P*cw)+'px';c.style.height=(TOP+H*ch)+'px';const g=c.getContext('2d');g.scale(dpr,dpr);
 g.fillStyle=css('--card');g.fillRect(0,0,LAB+P*cw,TOP+H*ch);g.font='10px system-ui';g.fillStyle=css('--ink-2');g.textBaseline='middle';
-for(let h=0;h<H;h++){if(h%2===0||ch>=11)g.fillText('H'+h,2,TOP+h*ch+ch/2);for(let pi=0;pi<P;pi++){const col=color(val(h,pi)),x=LAB+pi*cw,y=TOP+h*ch;if(col){g.fillStyle=col;g.fillRect(x,y,cw-(cw>4?1:0),ch-1)}else{g.fillStyle=css('--ink-3');g.fillRect(x+cw/2-1,y+ch/2-1,2,2)}}g.fillStyle=css('--ink-2')}
+const G=GS(),sib=new Set(sibs(S.h));for(let q=0;q<D.n_kv;q++){const y=TOP+q*G*ch;g.fillStyle=css(q%2?'--surface-2':'--card');g.fillRect(0,y,LAB-4,G*ch);g.fillStyle=css('--ink-3');g.font='9px system-ui';g.fillText('kv'+q,1,y+G*ch/2)}
+g.font='10px system-ui';for(let h=0;h<H;h++){if(sib.has(h)){g.fillStyle=css('--accent');g.fillRect(LAB-6,TOP+h*ch,2,ch-1)}g.fillStyle=css(h===S.h?'--ink':'--ink-2');g.fillText('H'+h,18,TOP+h*ch+ch/2);for(let pi=0;pi<P;pi++){const col=color(val(h,pi)),x=LAB+pi*cw,y=TOP+h*ch;if(col){g.fillStyle=col;g.fillRect(x,y,cw-(cw>4?1:0),ch-1)}else{g.fillStyle=css('--ink-3');g.fillRect(x+cw/2-1,y+ch/2-1,2,2)}}g.fillStyle=css('--ink-2')}
+g.fillStyle=css('--ink-2');for(let q=1;q<D.n_kv;q++)g.fillRect(0,TOP+q*G*ch-1,LAB+P*cw,1);   // group separators sit in the row gap
 g.strokeStyle=css('--ink');g.lineWidth=2;g.strokeRect(LAB+S.pi*cw-1,TOP+S.h*ch-1,cw+1,ch+1);
 g.strokeStyle=css('--accent');g.lineWidth=1;g.strokeRect(LAB+S.pi*cw-.5,TOP-2,cw,H*ch+3);
 const sc=scaleOf(S.metric),rc=$('ramp'),r=rc.getContext('2d'),RW=rc.width;for(let x=0;x<RW;x++){r.fillStyle=color(sc.lo+(sc.hi-sc.lo)*x/(RW-1));r.fillRect(x,0,1,rc.height)}
@@ -202,17 +216,19 @@ function hl(text){const f=document.createDocumentFragment();if(!S.show.hl){f.app
 while((m=re.exec(text))){f.append(text.slice(l,m.index));f.append(el('mark',{class:m[1]?'m':'q'},m[0]));l=re.lastIndex}f.append(text.slice(l));return f}
 function renderDetail(){const k=idx(S.h,S.pi),P=D.pos[S.pi],a=attRow(S.h,S.pi),top=[...a.keys()].sort((x,y)=>a[y]-a[x]).slice(0,10).filter(i=>a[i]>=0.005);
 $('detail').replaceChildren(...[el('h2',{},`L${D.layer}H${S.h} at #${P} “${vis(D.tokens[P])}”`,el('span',{class:fveCls(D.rl_fve[k]??-9)},'RL FVE '+pct(D.rl_fve[k])),
-el('span',{class:'meta'},`cos ${f2(D.rl_cos[k])} · ‖v‖ ${D.v_norm[k]?.toFixed(2)} · first-token attn ${D.first_w[k]?.toFixed(2)} · entropy ${D.entropy[k]?.toFixed(2)}`)),
+el('span',{class:'meta'},`${kvName(kvOf(S.h))} · cos ${f2(D.rl_cos[k])} · ‖v‖ ${D.v_norm[k]?.toFixed(2)} · first-token attn ${D.first_w[k]?.toFixed(2)} · entropy ${D.entropy[k]?.toFixed(2)}`)),
 el('div',{class:'ex rl'},el('div',{class:'lab'},el('b',{},'RL AV'),`  FVE ${pct(D.rl_fve[k])} · cos ${f2(D.rl_cos[k])}`),el('div',{class:'txt'},hl(D.rl[k]))),
 S.show.sft?el('div',{class:'ex sft'},el('div',{class:'lab'},el('b',{},'SFT AV'),`  FVE ${pct(D.sft_fve[k])} · cos ${f2(D.sft_cos[k])}`),el('div',{class:'txt'},hl(D.sft[k]))):null,
 S.show.gold&&D.gold[k]?el('div',{class:'ex gold'},el('div',{class:'lab'},el('b',{},'Gold (Haiku)'),`  FVE ${pct(D.gold_fve[k])} via RL AR · ${pct(D.gold_fve_sft[k])} via SFT AR${D.gold_ok[k]?'':' · breaks rules'}`),el('div',{class:'txt'},hl(D.gold[k]))):null,
-el('div',{class:'ev'},el('div',{class:'k'},'Reads'),el('div',{class:'chips'},...top.map(i=>el('span',{class:'chip'},vis(D.tokens[i]),el('span',{class:'w'},(i===P?'self ':i===0?'first ':'')+a[i].toFixed(2))))),
+el('div',{class:'ev'},el('div',{class:'k'},'KV group'),el('div',{class:'chips'},el('span',{class:'w',style:'align-self:center;color:var(--ink-3);font-size:11.5px'},kvName(kvOf(S.h))+' · same keys & values:'),...sibs(S.h).map(s=>{const q=idx(s,S.pi);
+return el('button',{class:'chip kvb'+(s===S.h?' on':''),title:`H${s} at this token: RL FVE · first-token attention`,onclick:()=>{S.h=s;update()}},'H'+s,el('span',{class:'w'},pct(D.rl_fve[q])+' · sink '+(D.first_w[q]??0).toFixed(2)))})),
+el('div',{class:'k'},'Reads'),el('div',{class:'chips'},...top.map(i=>el('span',{class:'chip'},vis(D.tokens[i]),el('span',{class:'w'},(i===P?'self ':i===0?'first ':'')+a[i].toFixed(2))))),
 el('div',{class:'k'},'Promotes'),el('div',{class:'chips'},...D.distinct[k].map(t=>el('span',{class:'chip'},vis(t))),...D.filler[k].map(t=>el('span',{class:'chip f',title:'common filler'},vis(t)))),
 el('div',{class:'k'},'Lens'),el('div',{class:'chips'},...D.lens[k].map(t=>el('span',{class:'chip'},vis(t)))))].filter(Boolean))}
 function renderHeads(){const rows=[...Array(D.n_heads).keys()].map(h=>({h,f:D.rl_fve[idx(h,S.pi)]})).sort((a,b)=>(b.f??-9)-(a.f??-9));
-$('colh').replaceChildren('Heads at this token',el('span',{class:'meta'},'sorted by RL FVE; click to select'));
-$('heads').replaceChildren(el('tr',{},el('th',{},'head'),el('th',{},'RL FVE'),el('th',{},'SFT FVE'),el('th',{},'first-token attn'),el('th',{},'RL explanation')),
-...rows.map(({h,f})=>{const k=idx(h,S.pi);return el('tr',{class:h===S.h?'sel':'',onclick:()=>{S.h=h;update()}},el('td',{},'H'+h),el('td',{class:'n'},pct(f)),el('td',{class:'n'},pct(D.sft_fve[k])),
+$('colh').replaceChildren('Heads at this token',el('span',{class:'meta'},'sorted by RL FVE; click to select; blue edge = the selected head\'s KV group'));
+$('heads').replaceChildren(el('tr',{},el('th',{},'head'),el('th',{},'KV'),el('th',{},'RL FVE'),el('th',{},'SFT FVE'),el('th',{},'first-token attn'),el('th',{},'RL explanation')),
+...rows.map(({h,f})=>{const k=idx(h,S.pi);return el('tr',{class:h===S.h?'sel':kvOf(h)===kvOf(S.h)?'sib':'',onclick:()=>{S.h=h;update()}},el('td',{},'H'+h),el('td',{class:'n'},'kv'+kvOf(h)),el('td',{class:'n'},pct(f)),el('td',{class:'n'},pct(D.sft_fve[k])),
 el('td',{class:'n'},(D.first_w[k]??0).toFixed(2)),el('td',{},D.rl[k].split('\n')[0].slice(0,90)+(D.rl[k].length>90?'…':'')))}))}
 let LUTN={};function lutNum(kind){const key=kind+(isDark()?'d':'l');if(LUTN[key])return LUTN[key];LUTN[key]=lut(kind).map(c=>c.match(/\d+/g).map(Number));return LUTN[key]}
 let HS=null;S.osort='h';S.dropSink=true;
@@ -229,22 +245,27 @@ function drawThumb(cv,st){const P=D.pos.length,img=new ImageData(P,P),L=lutNum('
 let mx=0;for(let j=S.dropSink?1:0;j<a.length;j++)mx=Math.max(mx,a[j]);mx=Math.max(mx,1e-6);   // each row scaled to its own max
 for(let j=0;j<P;j++){const o=(pi*P+j)*4;let v=0;if(j<=t&&!(S.dropSink&&j===0))v=a[j]/mx;const c=L[Math.round(255*Math.sqrt(Math.min(1,v)))];img.data[o]=c[0];img.data[o+1]=c[1];img.data[o+2]=c[2];img.data[o+3]=j<=t?255:0}}
 cv.width=P;cv.height=P;cv.getContext('2d').putImageData(img,0,0)}
-function renderThumbs(){const key={h:r=>r.h,sink:r=>r.sink,prev:r=>-r.prev,self:r=>-r.self,ent:r=>-r.ent,foc:r=>r.ent,dist:r=>-r.dist,focus:r=>-r.focus,fve:r=>-r.fve}[S.osort];
-const rows=[...HS].sort((a,b)=>key(a)-key(b)),box=$('thumbs');box.replaceChildren();
-for(const r of rows){const cv=el('canvas',{class:'am','aria-hidden':'true'});drawThumb(cv,r);
-box.append(el('button',{class:'thumb'+(r.h===S.h?' sel':''),'data-h':String(r.h),'aria-label':`Head ${r.h}: ${r.tag}`,onclick:()=>{S.h=r.h;update()}},cv,
-el('div',{class:'row1'},el('b',{},'H'+r.h),el('span',{class:'tag'},r.tag)),
+function thumbBtn(r,kv){const cv=el('canvas',{class:'am','aria-hidden':'true'});drawThumb(cv,r);return el('button',{class:'thumb'+(r.h===S.h?' sel':''),'data-h':String(r.h),'aria-label':`Head ${r.h}: ${r.tag}`,onclick:()=>{S.h=r.h;update()}},cv,
+el('div',{class:'row1'},el('b',{},'H'+r.h,kv?el('span',{class:'kvt'},' · kv'+kvOf(r.h)):null),el('span',{class:'tag'},r.tag)),
 el('div',{class:'row2',title:'sink = attention on the first token; prev/self = on the previous/current token; spread = entropy of non-sink attention; dist = mean tokens back; focus = share of non-sink attention on the 5 most-attended tokens'},
 `sink ${(100*r.sink).toFixed(0)}% · prev ${(100*r.prev).toFixed(0)}% · self ${(100*r.self).toFixed(0)}%`,el('br'),`spread ${r.ent.toFixed(2)} · dist ${r.dist.toFixed(0)} · focus ${(100*r.focus).toFixed(0)}%`,el('br'),
-`top: ${r.topKeys.slice(0,3).map(j=>vis(D.tokens[j]).trim()).join(', ')}`,el('br'),`mean RL FVE ${pct(r.fve)}`)))}}
-function selThumbs(){document.querySelectorAll('.thumb').forEach(b=>b.classList.toggle('sel',+b.dataset.h===S.h))}
+`top: ${r.topKeys.slice(0,3).map(j=>vis(D.tokens[j]).trim()).join(', ')}`,el('br'),`mean RL FVE ${pct(r.fve)}`))}
+function renderThumbs(){const box=$('thumbs');box.replaceChildren();
+if(S.osort==='h'||S.osort==='kv'){box.className='kvgroups';const G=GS(),gs=[...Array(D.n_kv).keys()].map(q=>({q,hs:HS.slice(q*G,(q+1)*G)}));
+for(const x of gs){x.f=x.hs.reduce((a,r)=>a+r.fve,0)/G;x.sink=x.hs.reduce((a,r)=>a+r.sink,0)/G}if(S.osort==='kv')gs.sort((a,b)=>b.f-a.f);
+for(const x of gs)box.append(el('div',{class:'kvg','data-kv':String(x.q)},el('div',{class:'kvh'},el('b',{style:'color:var(--ink)'},kvName(x.q)),` · shared keys & values · mean RL FVE ${pct(x.f)} · mean sink ${(100*x.sink).toFixed(0)}%`),
+el('div',{class:'thumbs'},...x.hs.map(r=>thumbBtn(r,false)))));selThumbs();return}
+box.className='thumbs';const key={h:r=>r.h,sink:r=>r.sink,prev:r=>-r.prev,self:r=>-r.self,ent:r=>-r.ent,foc:r=>r.ent,dist:r=>-r.dist,focus:r=>-r.focus,fve:r=>-r.fve}[S.osort];
+for(const r of [...HS].sort((a,b)=>key(a)-key(b)))box.append(thumbBtn(r,true));selThumbs()}
+function selThumbs(){const q=kvOf(S.h);document.querySelectorAll('.thumb').forEach(b=>{const h=+b.dataset.h;b.classList.toggle('sel',h===S.h);b.classList.toggle('sib',h!==S.h&&kvOf(h)===q)});
+document.querySelectorAll('.kvg').forEach(b=>b.classList.toggle('sel',+b.dataset.kv===q))}
 function update(){drawHM();renderCtx();renderDetail();renderHeads();selThumbs()}
 function renderDocs(){$('docs').replaceChildren(el('label',{},'Document'),...DOCS.map((d,i)=>el('button',{'aria-pressed':String(i===S.doc),onclick:()=>openDoc(i)},`${d.name.replace(/_/g,' ')} · ${d.n_pos} tok · RL FVE ${pct(d.rl_fve_mean)}`)))}
 async function openDoc(i){S.doc=i;renderDocs();$('detail').replaceChildren(el('div',{class:'loading'},'Loading…'));D=await load(i);
 let best=[0,0,-9];for(let h=0;h<D.n_heads;h++)for(let pi=0;pi<D.pos.length;pi++){const v=D.rl_fve[idx(h,pi)];if(v!=null&&v>best[2]&&D.first_w[idx(h,pi)]<0.9)best=[h,pi,v]}
 S.h=best[0];S.pi=best[1];HS=headStats();renderThumbs();update()}
 const tip=$('tip');$('hm').addEventListener('mousemove',e=>{const c=cellAt(e);if(!c){tip.style.display='none';return}const k=idx(c.h,c.pi);
-tip.replaceChildren(el('b',{},`H${c.h} · #${D.pos[c.pi]} “${vis(D.tokens[D.pos[c.pi]])}”`),el('br'),`RL FVE ${pct(D.rl_fve[k])} · SFT ${pct(D.sft_fve[k])} · first-token ${(D.first_w[k]??0).toFixed(2)}`,el('br'),D.rl[k].split('\n')[0].slice(0,140));
+tip.replaceChildren(el('b',{},`H${c.h} · kv${kvOf(c.h)} · #${D.pos[c.pi]} “${vis(D.tokens[D.pos[c.pi]])}”`),el('br'),`RL FVE ${pct(D.rl_fve[k])} · SFT ${pct(D.sft_fve[k])} · first-token ${(D.first_w[k]??0).toFixed(2)}`,el('br'),D.rl[k].split('\n')[0].slice(0,140));
 tip.style.display='block';tip.style.left=Math.min(innerWidth-330,e.clientX+14)+'px';tip.style.top=(e.clientY+14)+'px'});
 $('hm').addEventListener('mouseleave',()=>tip.style.display='none');
 $('hm').addEventListener('click',e=>{$('hm').focus({preventScroll:true});const c=cellAt(e);if(c){S.h=c.h;S.pi=c.pi;update()}});
