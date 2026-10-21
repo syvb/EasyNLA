@@ -100,7 +100,8 @@ button,select{font:inherit;color:var(--ink);background:var(--card);border:1px so
 button[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent)}button:focus-visible,select:focus-visible,canvas:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .hm-wrap{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 10px 6px;overflow-x:auto}
 canvas{display:block;image-rendering:pixelated;cursor:crosshair}
-.legend{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);margin:6px 2px 0}.ramp{width:220px;height:10px;border-radius:3px}
+.legend{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-2);margin:8px 2px 0;flex-wrap:wrap}.lg{display:inline-flex;flex-direction:column;gap:2px}
+.ramp{width:260px;height:10px;border-radius:3px;display:block}.ticks{display:flex;justify-content:space-between;width:260px;font-variant-numeric:tabular-nums}
 .tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:12.5px;box-shadow:0 2px 10px rgba(0,0,0,.12);display:none;z-index:5;max-width:320px}
 .cols{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px;margin-top:14px}@media (max-width:980px){.cols{grid-template-columns:1fr}}
 .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
@@ -127,7 +128,7 @@ table.heads tr{cursor:pointer}table.heads tr.sel{background:var(--accent-soft)}t
 <label for="zoom">Cell width</label><select id="zoom"><option value="4">4 px</option><option value="6" selected>6 px</option><option value="9">9 px</option><option value="14">14 px</option></select>
 <span style="width:8px"></span><span class="muted">Show</span><button id="t-sft" aria-pressed="false">SFT AV</button><button id="t-gold" aria-pressed="false">Gold (Haiku)</button><button id="t-hl" aria-pressed="true">Highlight quotes &amp; markup</button><button id="theme" title="Toggle light/dark">◐</button></div>
 <div class="hm-wrap"><canvas id="hm" tabindex="0" aria-label="Heads by tokens heatmap; arrow keys move the selection"></canvas>
-<div class="legend"><span id="lo">−100%</span><canvas class="ramp" id="ramp" width="220" height="10"></canvas><span id="hi">+100%</span><span id="lgname"></span><span id="stat" style="margin-left:auto"></span></div></div>
+<div class="legend"><b id="lgname" style="color:var(--ink)"></b><span class="lg"><canvas class="ramp" id="ramp" width="260" height="10"></canvas><span class="ticks"><span id="lo"></span><span id="mid"></span><span id="hi"></span></span></span><span id="lgnote"></span><span id="stat" style="margin-left:auto"></span></div></div>
 <div class="cols"><div><div class="panel"><h2 id="ctxh">Text</h2><div class="ctx" id="ctx"></div></div>
 <div class="panel" style="margin-top:14px"><h2 id="colh">Heads at this token</h2><table class="heads" id="heads"></table></div></div>
 <div class="panel" id="detail"></div></div>
@@ -145,18 +146,34 @@ const txt=await new Response(new Blob([b]).stream().pipeThrough(new Decompressio
 const idx=(h,pi)=>h*D.pos.length+pi;
 function val(h,pi){const k=idx(h,pi);if(S.metric==='gap'){const a=D.rl_fve[k],b=D.sft_fve[k];return a==null||b==null?null:a-b}return D[S.metric][k]}
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
-let PAL=null;function pal(){return PAL||(PAL=['--neg','--pos','--mid'].map(v=>css(v).split(',').map(Number)))}
-function color(v){if(v==null)return'rgb(128,128,128)';const [[nr,ng,nb],[pr,pg,pb],[mr,mg,mb]]=pal();
-let t=S.metric==='first_w'?v*2-1:Math.max(-1,Math.min(1,v));const [r,g,b]=t>=0?[pr,pg,pb]:[nr,ng,nb];t=Math.abs(t);return `rgb(${Math.round(mr+(r-mr)*t)},${Math.round(mg+(g-mg)*t)},${Math.round(mb+(b-mb)*t)})`}
+// Colour scales (dataviz reference palette): FVE metrics and RL−SFT are DIVERGING around 0 (blue below, grey
+// midpoint, red above); attention to the first token is SEQUENTIAL blue. Stops are interpolated in OKLab and
+// cached as a 256-entry lookup per scale and theme; values beyond a scale's ends are clamped.
+const SCALES={fve:{kind:'div',lo:-1,hi:1,ticks:['−100%','0','+100%'],note:'≤ −100% and ≥ +100% clamped'},
+ gap:{kind:'div',lo:-2,hi:2,ticks:['−200%','0','+200%'],note:'RL − SFT, in FVE points; clamped at ±200%'},
+ seq:{kind:'seq',lo:0,hi:1,ticks:['0','0.5','1'],note:'share of the head’s attention on the first token'}};
+const STOPS={light:{div:['#0d366b','#3987e5','#f0efec','#e66767','#9b1c1c'],seq:['#f0efec','#cde2fb','#86b6ef','#3987e5','#1c5cab','#0d366b']},
+ dark:{div:['#b7d3f6','#3987e5','#383835','#d24d4d','#ffb4ab'],seq:['#383835','#184f95','#256abf','#3987e5','#86b6ef','#cde2fb']}};
+const scaleOf=m=>m==='gap'?SCALES.gap:m==='first_w'?SCALES.seq:SCALES.fve;
+function toLin(c){c/=255;return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}function toSrgb(c){c=c<=0.0031308?12.92*c:1.055*Math.pow(c,1/2.4)-0.055;return Math.round(255*Math.max(0,Math.min(1,c)))}
+function hex2lab(h){const n=parseInt(h.slice(1),16),r=toLin(n>>16&255),g=toLin(n>>8&255),b=toLin(n&255);
+const l=Math.cbrt(0.4122214708*r+0.5363325363*g+0.0514459929*b),m=Math.cbrt(0.2119034982*r+0.6806995451*g+0.1073969566*b),s=Math.cbrt(0.0883024619*r+0.2817188376*g+0.6299787005*b);
+return[0.2104542553*l+0.7936177850*m-0.0040720468*s,1.9779984951*l-2.4285922050*m+0.4505937099*s,0.0259040371*l+0.7827717662*m-0.8086757660*s]}
+function lab2rgb([L,A,B]){const l=(L+0.3963377774*A+0.2158037573*B)**3,m=(L-0.1055613458*A-0.0638541728*B)**3,s=(L-0.0894841775*A-1.2914855480*B)**3;
+return[toSrgb(4.0767416621*l-3.3077115913*m+0.2309699292*s),toSrgb(-1.2684380046*l+2.6097574011*m-0.3413193965*s),toSrgb(-0.0041960863*l-0.7034186147*m+1.7076147010*s)]}
+let LUT={};function isDark(){const n=parseInt(css('--surface').slice(1),16);return((n>>16&255)+(n>>8&255)+(n&255))/3<128}
+function lut(kind){const key=kind+(isDark()?'d':'l');if(LUT[key])return LUT[key];const st=STOPS[isDark()?'dark':'light'][kind].map(hex2lab),out=[];
+for(let i=0;i<256;i++){const x=i/255*(st.length-1),k=Math.min(st.length-2,Math.floor(x)),f=x-k,a=st[k],b=st[k+1];const [r,g,bl]=lab2rgb([0,1,2].map(j=>a[j]+(b[j]-a[j])*f));out.push(`rgb(${r},${g},${bl})`)}return LUT[key]=out}
+function color(v,m=S.metric){if(v==null)return null;const sc=scaleOf(m),t=Math.max(0,Math.min(1,(v-sc.lo)/(sc.hi-sc.lo)));return lut(sc.kind)[Math.round(t*255)]}
 const LAB=34,TOP=4;
-function drawHM(){PAL=null;const c=$('hm'),H=D.n_heads,P=D.pos.length,cw=S.zoom,ch=11,dpr=window.devicePixelRatio||1;
+function drawHM(){LUT={};const c=$('hm'),H=D.n_heads,P=D.pos.length,cw=S.zoom,ch=11,dpr=window.devicePixelRatio||1;
 c.width=(LAB+P*cw)*dpr;c.height=(TOP+H*ch)*dpr;c.style.width=(LAB+P*cw)+'px';c.style.height=(TOP+H*ch)+'px';const g=c.getContext('2d');g.scale(dpr,dpr);
 g.fillStyle=css('--card');g.fillRect(0,0,LAB+P*cw,TOP+H*ch);g.font='10px system-ui';g.fillStyle=css('--ink-2');g.textBaseline='middle';
-for(let h=0;h<H;h++){if(h%2===0||ch>=11)g.fillText('H'+h,2,TOP+h*ch+ch/2);for(let pi=0;pi<P;pi++){g.fillStyle=color(val(h,pi));g.fillRect(LAB+pi*cw,TOP+h*ch,cw-(cw>4?1:0),ch-1)}g.fillStyle=css('--ink-2')}
+for(let h=0;h<H;h++){if(h%2===0||ch>=11)g.fillText('H'+h,2,TOP+h*ch+ch/2);for(let pi=0;pi<P;pi++){const col=color(val(h,pi)),x=LAB+pi*cw,y=TOP+h*ch;if(col){g.fillStyle=col;g.fillRect(x,y,cw-(cw>4?1:0),ch-1)}else{g.fillStyle=css('--ink-3');g.fillRect(x+cw/2-1,y+ch/2-1,2,2)}}g.fillStyle=css('--ink-2')}
 g.strokeStyle=css('--ink');g.lineWidth=2;g.strokeRect(LAB+S.pi*cw-1,TOP+S.h*ch-1,cw+1,ch+1);
 g.strokeStyle=css('--accent');g.lineWidth=1;g.strokeRect(LAB+S.pi*cw-.5,TOP-2,cw,H*ch+3);
-const r=$('ramp').getContext('2d');for(let x=0;x<220;x++){r.fillStyle=color(S.metric==='first_w'?x/219:(x/219)*2-1);r.fillRect(x,0,1,10)}
-$('lo').textContent=S.metric==='first_w'?'0':'−100%';$('hi').textContent=S.metric==='first_w'?'1':'+100%';$('lgname').textContent=$('metric').selectedOptions[0].text;
+const sc=scaleOf(S.metric),rc=$('ramp'),r=rc.getContext('2d'),RW=rc.width;for(let x=0;x<RW;x++){r.fillStyle=color(sc.lo+(sc.hi-sc.lo)*x/(RW-1));r.fillRect(x,0,1,rc.height)}
+$('lo').textContent=sc.ticks[0];$('mid').textContent=sc.ticks[1];$('hi').textContent=sc.ticks[2];$('lgname').textContent=$('metric').selectedOptions[0].text;$('lgnote').textContent=sc.note;
 const vs=[];for(let h=0;h<H;h++)for(let pi=0;pi<P;pi++){const v=D.rl_fve[idx(h,pi)];if(v!=null)vs.push(v)}const m=vs.reduce((a,b)=>a+b,0)/vs.length;
 $('stat').textContent=`${D.pos.length} tokens × ${H} heads · RL FVE mean ${pct(m)} · ${Math.round(100*vs.filter(v=>v>0).length/vs.length)}% of cells > 0`}
 function cellAt(e){const r=$('hm').getBoundingClientRect(),x=e.clientX-r.left-LAB,y=e.clientY-r.top-TOP,pi=Math.floor(x/S.zoom),h=Math.floor(y/11);
