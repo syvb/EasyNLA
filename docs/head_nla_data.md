@@ -194,7 +194,23 @@ What helped:
 
 A per-request reminder, label-style notes and a third readout did not help.
 
-## L24 run: probe test + SFT on soft-token explanations (current)
+## L24 RL on the standard NLA recipe (latest)
+
+- **Setup:** AV + AR SFT redone per `docs/train_new_model.md` (norm-matched injection, direction-only
+  normalized MSE, 1 epoch), then 400 GRPO steps on `configs/rl_sgpu.yaml` defaults (single H100,
+  co-trained AR, k3 KL 0.01). Reward = 2·cos − 2.
+- **Result** (held-out mean cosine of the reconstruction; skill vs the head-mean direction):
+  SFT pair 0.071 (T=1) → RL step 400 **0.596 (57% skill)**; shuffled control 0. Each model alone ≈ 2×
+  (RL AV → frozen SFT AR 0.178; SFT AV → RL AR 0.198), so most of the gain is AV↔AR co-adaptation.
+- **But the explanations break the rules:** 93% quote tokens at T=1 (often tokens the head attended
+  to, or the current token), plus stray markup and invented strings. A copy/quote penalty or a frozen
+  reader is needed before using RL here.
+- Details, curves, incidents: `docs/head_nla_l24_std_plan.md`. The earlier raw-magnitude RL run
+  (`docs/head_nla_l24_rl_plan.md`) was stopped at step 44.
+- Artifacts: models `syvb/head-nla-qwen3-8b-l24-std-{av,ar,rl-ckpts}`; dataset `l24/rl_data/`,
+  `l24/std_rl/results/`.
+
+## L24 run: probe test + SFT on soft-token explanations
 
 - **Setup:** all 32 heads of L24, 1,500 examples per head.
 - **Probe:** the explanations keep 42–47% of the word lists' FVE (0.067–0.075 vs 0.159), and only about 10% of
@@ -213,14 +229,21 @@ descriptions, with residuals in neither model. The AR learned a little (held-out
 shuffled). The AV did not beat a shuffled control. Launcher: `scripts/runpod/launch_heads_quick_sft.py`.
 Checks: `scripts/heads_sft_checks.py`. Description comparison: `scripts/heads_compare_descriptions.py`.
 
-## Artifacts on Hugging Face (private)
+## Artifacts on Hugging Face (public since 2026-10-21)
+
+Scanned before release: no credentials (exact-value and pattern search over every text file, every
+parquet string column and the safetensors headers); wandb host/entity names and dead pod SSH
+endpoints were redacted from logs and the dataset history squashed.
 
 - Dataset `syvb/head-nla-qwen3-8b`. See its README for which parts matter:
-  - `l24/`: the L24 probe test + SFT run (highest)
+  - `l24/`: the L24 probe test + SFT run, and `l24/rl_data/` + `l24/std_rl/` for the standard-recipe RL (highest)
   - `soft_token/`: sweep and diagnostic readouts, curves, logs
   - `explanations/`: the prompt-lab outputs and the final pilot
   - `quick_sft_run1/`: SFT data, Claude descriptions, checks
   - `dev_qwen3_0.6b/`: small local dev runs, unimportant
+- Models `syvb/head-nla-qwen3-8b-l24-std-av` / `-l24-std-ar` (standard-recipe SFT) and
+  `-l24-std-rl-ckpts` (RL checkpoints every 50 steps with optimizer state).
+- Models `syvb/head-nla-qwen3-8b-l24-av` / `-l24-ar`: the earlier L24 SFT (raw-magnitude contract).
 - Model `syvb/head-nla-qwen3-8b-ar-quick`: the AR from the quick SFT test (LoRA + value head, 400 steps).
   It is marginal and kept for reference. The matching AV adapter was lost when its pod was deleted.
 

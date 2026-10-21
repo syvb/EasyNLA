@@ -1,6 +1,7 @@
 # Plan: L24 head-NLA RL from the SFT warm-starts
 
-**Status:** implemented, CPU-tested and reviewed. **The real run waits for approval.**
+**Status:** run 2026-10-20, **stopped at step 44 by decision**: its raw-magnitude reward and injection were
+inherited, not argued for. Superseded by `docs/head_nla_l24_std_plan.md` (standard NLA recipe; results there).
 
 **Commits on `sv/head-nla`:**
 - `5abf823`: trainer and data support, tests, and this plan.

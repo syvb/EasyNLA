@@ -1,7 +1,57 @@
 # L24 head-NLA on the standard NLA recipe (SFT redo + RL)
 
-Status (2026-10-20): implemented, CPU-tested, not yet run. Supersedes the raw-magnitude RL run of
-`head_nla_l24_rl_plan.md`, which was stopped at step 44 by decision (see "Why").
+Status (2026-10-21): **run complete** (SFT redo + 400 RL steps + post-run checks); results below.
+Supersedes the raw-magnitude RL run of `head_nla_l24_rl_plan.md`, which was stopped at step 44 by
+decision (see "Why").
+
+## Results (summary)
+
+Held-out, mean cosine between the AR's reconstruction and the true write; "skill" =
+(cos − 0.06) / 0.94, where 0.06 is the cosine of each head's mean write direction (0 = knows only the
+head, 100% = perfect). 6,360 eval rows (cross pairings: 3,200).
+
+| AV → AR | decoding | AV on true write | skill | AV on another write | gold → AR |
+|---|---|---|---|---|---|
+| SFT → SFT | greedy | 0.095 | 3.7% | 0.009 | 0.116 |
+| SFT → SFT | T=1 | 0.071 | 1.2% | 0.006 | 0.116 |
+| RL step 400 → RL step 400 | greedy | 0.551 | 52.2% | 0.004 | 0.231 |
+| **RL step 400 → RL step 400** | **T=1** | **0.596** | **57.0%** | 0.000 | 0.231 |
+| RL step 400 → frozen SFT AR | greedy | 0.178 | 12.6% | 0.004 | 0.117 |
+| SFT → RL step-400 AR | greedy | 0.198 | 14.6% | 0.017 | 0.231 |
+
+- **Large, write-specific gain**: 1% → 57% skill (same T=1 decoding), shuffled control stays at 0,
+  all 32 heads improve.
+- **Both models improved on their own**: the RL AV read by the frozen SFT AR ≈ 2× the SFT pair (and
+  above gold text for that reader); the RL AR reads ordinary (SFT-AV, gold) text ≈ 2× better (partly
+  the training the 1-epoch SFT AR lacked).
+- **Most of the gain is co-adaptation**: the pair (0.55–0.60) is far above either model alone
+  (≈ 0.18–0.20); a frozen reader recovers ≈ 18% of the pair's gain.
+- **The explanations broke the warm-start rules** (pre-registered criterion 4 fails): at T=1, 93%
+  quote tokens (SFT: 0%), 114 words (SFT: 34), 79% contain stray markup (`</p>`, `</turns>`), 14%
+  non-Latin fragments. Typical step-390 text: one real sentence about what the head does, then a tail
+  of quoted words, markup and invented strings ("DIF (Differential Individuation Framework)",
+  "Cryptonorrow").
+- **Where the quotes come from** (greedy step-400 outputs, 12,456 quotes; chance = another write of
+  the same head): content-word quotes match a token **the head attended to** 14.8% (chance 3.0%), the
+  **current token** 8.2% (0.3%), the write's avg16 / lens readouts 10.4% / 7.5% (4.0% / 1.2%); any
+  source 31% (9.8%). The write carries the identity of tokens the head copies (OV), and the AV learned
+  to name them. 69% of content quotes match no source (invented strings, a code for the co-trained AR).
+  Function-word quotes ("for", "of", "into") are ≈ chance. (Attention data used for this analysis
+  only, never for warm-start data.)
+- **Greedy decoding degenerates** at step 400: 74% of greedy outputs run to the 256-token cap (T=1:
+  0.1%); the checks keep the first 300 characters of uncapped text.
+
+Training curve (trainer eval, 128 held-out RL prompts, T=1): cosine 0.076 (step 0) → 0.229 (50) →
+0.338 (100) → 0.469 (200) → 0.530 (250) → 0.550 (300) → 0.592 (350) → 0.608 (390). KL to the SFT AV
+rose to ≈ 1 nat/token by step 20 and stayed 1.1–1.4 (main Qwen3-8B NLA baseline: 0.41 at step 15,
+0.72 at 100); entropy 1.8 → 2.5–3.4; length 65 → ~105 tokens; quote rate 0.2% → 75% of rollouts by
+step 70.
+
+**Verdict.** RL on the direction-only reward works as optimization and produces partly real
+improvement (both models individually ~2×), but under this setup it mostly buys a private AV↔AR code
+built from copied token identities and junk tokens. Before another RL run: a quote / copy penalty (or
+a frozen or periodically reset AR), the multi-epoch AR retrain below, a better-converged AV, and the
+main setup's 4× larger batch (`train_rl_vllm`, 256 prompts × 8).
 
 ## Why
 
@@ -115,3 +165,44 @@ every baseline (zero, global mean, per-head mean: cos 0.016 / 0.06) scores ≈ 1
 prediction only beats the baseline above cos 0.5 — far above what text-to-head-write reaches. The
 FVE in this space is mostly that handicap; mean cosine (and comparisons between conditions) is the
 readable number. The RL reward is exactly 2·cos − 2.
+
+## What happened during the run (2026-10-20 → 21)
+
+Pod `v2xudlsul9ka52` (secure H100, $3.99/hr, machine `6s1wqc1gf9go`; the first raw-run pod's machine
+had been flagged by RunPod, so launches use `--avoid-machine`), 13:02 → 01:46 UTC (≈ 12.7 h, ≈ $51).
+
+- **SFT** (13:10–13:30): AR 1 epoch (324 steps, training-batch cosine 0.01 → 0.12, still rising as the
+  lr decayed); AV at micro-batch 64 OOMed and the built-in retry ran 32 × 2 (held-out ppl 6.09 → 5.26;
+  the old 2-epoch AV reached 4.90). Uploaded as `syvb/head-nla-qwen3-8b-l24-std-{av,ar}`.
+- **checks_sft**: AV cosine 0.095 vs 0.009 shuffled (check 2 CI [+0.164, +0.180] direction FVE),
+  28/32 heads significantly above shuffled; the signal is concentrated in H16–19, H25–26, H5, H13, H24.
+- **AR retrain** (multi-epoch with held-out selection, `heads_l24_std_ar2_remote.sh`) was prepared and
+  CPU-tested but **not run**: RL started first and was let continue.
+- **Step-50 checkpoint verification** on a second pod (A100, 0.41 h): structure (keys, shapes, finite,
+  moved from SFT, optimizer state) + functional checks on 960 rows; the step-50 pair already quoted
+  in 81% of greedy outputs.
+- **No early stopping by the operator; the 5 h trainer cap was bypassed on request**: the pipeline
+  script was paused (SIGSTOP) so it would not move on to the checks; at the cap (step 260, 18:59) a
+  watcher (`scripts/runpod/rl_continue_watch.sh`) resumed from the cap's checkpoint with the full
+  state (policy, co-trained AR, both Adam states, data cursor) into the same wandb run. The first
+  resume crashed at `wandb.config.update` (a float-repr ConfigError on a re-logged baseline); fixed
+  with `allow_val_change=True` (`7c37904`), tested against the server, relaunched a minute later.
+  The trainer gained `--stop-file` for a clean operator stop (`9240399`).
+- **Watchdog / launcher**: the 8 h launcher was SIGKILLed (no cleanup) and the on-pod watchdog
+  replaced twice with longer ones (new one started before the old shell, then the old shell, then its
+  sleep), so only the operator deleted the pod.
+- **Checkpoints** mirrored to HF every 50 steps by `scripts/runpod/hf_ckpt_uploader.py`, each with
+  `optim_latest.pt` (step 400's verified loadable at step 400): resume past 400 with
+  `--resume-from-lora iter_000400`.
+- **Post-run checks** took ≈ 2 h instead of 1: greedy step-400 outputs mostly run to the 256-token cap.
+  `heads_sft_checks.py --temperature 1` (`b095c40`) added the T=1 checks for the RL and SFT pairs.
+
+## Artifacts (public)
+
+- Models: `syvb/head-nla-qwen3-8b-l24-std-av`, `-std-ar` (SFT), `-std-rl-ckpts` (`iter_000050` …
+  `iter_000400` and the cap's `iter_000260`; each: AV adapter, `critic/` AR LoRA + value head,
+  `optim_latest.pt`, configs).
+- Dataset `syvb/head-nla-qwen3-8b`: `l24/rl_data/` (the 32k RL prompts) and `l24/std_rl/results/`
+  (all checks greedy + T=1 with generations and per-row errors, `eval_ctx.parquet` with the eval rows'
+  context and attended tokens for the quote analysis, training/run logs).
+- wandb: group `l24-std` (`l24-std-ar-sft`, `l24-std-av-sft`, `l24-std-rl` = run `hv887ru2`).
