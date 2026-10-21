@@ -131,6 +131,7 @@ def main() -> None:
     p.add_argument("--hf-repo", default=None)
     p.add_argument("--hf-path", default="l24/std_rl/doc_viewer")
     p.add_argument("--no-gold", action="store_true")
+    p.add_argument("--gold-concurrency", type=int, default=24, help="parallel Haiku calls (the per-doc bottleneck)")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--debug-positions", type=int, default=0, help="explain only the last N tokens (dry runs)")
     args = p.parse_args()
@@ -179,7 +180,7 @@ def main() -> None:
     ref = pq.read_table(args.texts_ref, columns=["avg16"]).to_pydict()["avg16"]
     df = EX.doc_freq(ref)
     key = os.environ.get("ANTHROPIC_API_KEY", "")
-    ex_args = argparse.Namespace(model="claude-haiku-5-5", effort="medium", retries=4, concurrency=24,
+    ex_args = argparse.Namespace(model="claude-haiku-5-5", effort="medium", retries=4, concurrency=args.gold_concurrency,
                                  common_threshold=0.08)
     api = None
     if args.hf_repo:

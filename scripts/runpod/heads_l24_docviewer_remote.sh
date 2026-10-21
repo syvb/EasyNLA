@@ -13,6 +13,7 @@ RES=/workspace/results
 CK=/workspace/ckpt
 HF_PREFIX=${HF_PREFIX:-syvb/head-nla-qwen3-8b-l24-std}
 IDLE_MIN=${IDLE_MIN:-20}
+GOLD_CONC=${GOLD_CONC:-48}
 mkdir -p "$RES" /workspace/queue
 exec > >(tee -a "$RES/run.log") 2>&1
 cd "$REPO"
@@ -52,7 +53,7 @@ python scripts/heads_doc_viewer_job.py --queue /workspace/queue --out "$RES/docs
     --meta /workspace/hfdata/l24/meta --sft-dir /workspace/hfdata/l24/sft_data \
     --texts-ref /workspace/hfdata/l24/probe/texts.parquet \
     --sft-av "$CK/sft_av" --sft-ar "$CK/sft_ar" --rl-ckpt "$CK/rl/iter_000400" \
-    --idle-minutes "$IDLE_MIN" --hf-repo syvb/head-nla-qwen3-8b --hf-path l24/std_rl/doc_viewer
+    --idle-minutes "$IDLE_MIN" --gold-concurrency "$GOLD_CONC" --hf-repo syvb/head-nla-qwen3-8b --hf-path l24/std_rl/doc_viewer
 
 date -u > "$RES/DONE"
 echo "=== all stages done ==="
