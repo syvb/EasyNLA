@@ -173,7 +173,7 @@ mark.m{background:none;color:var(--bad);text-decoration:line-through}
 <div class="sum" id="sum"></div><div class="grid" id="grid"></div>
 <div class="notes"><h2>About this page</h2>
 <p><b>RL AV</b>: verbalizer after 400 GRPO steps, scored by its co-trained AR. <b>SFT AV</b>: the warm-start verbalizer, scored by the SFT AR. Both sampled at T=1 (as in RL). <b>Gold</b>: Claude Haiku 5.5's explanation written from the write's readouts only (the SFT target); its scores are through the RL AR and the SFT AR.</p>
-<p>Caveat: RL explanations often quote tokens (highlighted) and add markup (struck through); a blinded judge found them no more faithful to the evidence than SFT's, and much of their reconstruction comes from an AV↔AR code. Data: <code>syvb/head-nla-qwen3-8b</code> (Hugging Face), code: <code>sv/head-nla</code> branch of EasyNLA.</p></div>
+<p>Caveat: RL explanations often quote tokens (highlighted) and add markup (struck through); a blinded judge found them no more faithful to the readouts than SFT's. Their reconstruction is not a private AV↔AR code: it survives paraphrase (97%), and the text's form alone carries none of it. Data: <code>syvb/head-nla-qwen3-8b</code> (Hugging Face), code: <code>sv/head-nla</code> branch of EasyNLA.</p></div>
 </main>
 <script id="data" type="application/json">__DATA__</script>
 <script>

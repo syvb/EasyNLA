@@ -20,7 +20,7 @@ Across all 6,360 eval rows (pooled):
 | Gold → RL AR | 0.231 | -55% |
 | AV given another write (RL) | -0.000 | -101% |
 
-RL explanations quote tokens in 93% of cases (SFT 0%). Much of the RL gain is an AV↔AR code carried by templated prose rather than better explanations: a blinded judge rates RL and SFT explanations equally faithful, and quote-free RL outputs actually score higher. Read by the frozen SFT AR, the RL AV's explanations score cos 0.178 (greedy). Details: `docs/head_nla_l24_std_plan.md` on [`sv/head-nla`](https://github.com/syvb/EasyNLA/tree/sv/head-nla).
+RL explanations quote tokens in 93% of cases (SFT 0%). The RL gain is not a private AV↔AR code: a paraphrase of the RL text keeps 97% of what the RL AR recovers, while the text's form alone keeps 2%. But a blinded judge rates RL and SFT explanations equally faithful to the write's readouts. Read by the frozen SFT AR, the RL AV's explanations score cos 0.178 (greedy). Details: `docs/head_nla_l24_std_plan.md` on [`sv/head-nla`](https://github.com/syvb/EasyNLA/tree/sv/head-nla).
 
 Context: the document text just before the token, with the token itself in **[[ ]]**. The AV never sees this text.
 

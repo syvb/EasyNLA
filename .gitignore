@@ -36,3 +36,4 @@ data/
 venv/
 docviewer_queue/
 docviewer_queue_pod1/
+private_code_data/

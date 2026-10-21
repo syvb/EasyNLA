@@ -24,11 +24,19 @@ head, 100% = perfect). 6,360 eval rows (cross pairings: 3,200).
 - **Both models improved on their own**: the RL AV read by the frozen SFT AR ≈ 2× the SFT pair (and
   above gold text for that reader); the RL AR reads ordinary (SFT-AV, gold) text ≈ 2× better (partly
   the training the 1-epoch SFT AR lacked).
-- **Most of the gain is co-adaptation**: the pair (0.55–0.60) is far above either model alone
-  (≈ 0.18–0.20). On grammatical heads (H3, H4) the RL AR scores RL-AV text at 0.21–0.25 but gold at
-  0.02–0.03 — text that beats gold 10× where gold carries nothing is a code. Caveat: the "frozen reader
-  recovers ≈ 18%" figure is not a bound — that cross pairing was greedy with 74% of outputs cut to 300
-  characters and never run at T=1, the 1-epoch SFT AR is under-trained, and quotes hurt it.
+- **The gain needs both models, but it is not a private code** (corrected 2026-10-21 by the
+  private-code test below; an earlier version of this doc said it was).
+  - The pair (0.55–0.60) is far above either model alone (≈ 0.18–0.20) because the 1-epoch SFT AR
+    reads *any* text poorly. On the doc-viewer sample it gets 0.15 from RL text and 0.15 from gold.
+  - The RL AR reads gold 2× better than the SFT AR (0.30) and RL text 4× better (0.63).
+  - Rewording the RL text keeps what the RL AR recovers:
+    - Haiku paraphrase: 97% of the gain over no text. Gold under the same treatment: 97%.
+    - Markup and quote marks stripped: 99%.
+    - Words shuffled: 92%.
+    - Content words only: 91%.
+  - Keeping only its form (content words masked) keeps 2%.
+  - On H3/H4, where RL text beats gold ~10×, the paraphrase still keeps 90–95%. The RL text says
+    something gold (written from readouts only) doesn't; it is not a code.
 - **The explanations broke the warm-start rules** (pre-registered criterion 4 fails): at T=1, 93%
   quote tokens (SFT: 0%), 114 words (SFT: 34), 79% contain stray markup (`</p>`, `</turns>`), 14%
   non-Latin fragments. Typical step-390 text: one real sentence about what the head does, then a tail
@@ -45,8 +53,9 @@ head, 100% = perfect). 6,360 eval rows (cross pairings: 3,200).
   used for this analysis only, never for warm-start data.)
 - **Quotes and markup are not what earns the reward**: within head, quote-free T=1 rows score
   *higher* (cos 0.73 vs 0.59; ρ(cos, #quotes) = −0.21) and `</p>` count tracks short prose (filler).
-  The co-adapted channel is the templated prose: 66% of greedy outputs open "Statements about…", 281
-  distinct two-word openers vs 3,158 for SFT, top-50 words = 50% of content tokens (SFT 25%).
+  The prose is templated: 66% of greedy outputs open "Statements about…", 281 distinct two-word
+  openers vs 3,158 for SFT, top-50 words = 50% of content tokens (SFT 25%). The template itself
+  carries nothing, though: with the content words masked, the AR recovers 2% of the gain.
 - **Faithfulness did not improve** (blinded Sonnet judge, 480 eval rows, `heads_faithfulness_judge_rl.py`):
   against the write's readouts, gold 4.06 / SFT 1.98 / **RL 1.99** / control 1.28 (RL first paragraph
   only: 2.02); with context and attended tokens added: 2.82 / 1.59 / 1.58 / 1.09. Within each text type
@@ -68,14 +77,65 @@ beats the SFT pair — nominal pass (0.178 vs 0.095; confounded, see above); 3 t
 4 quote ≤ 5% — **fail** (93%); 5 faithfulness — **fail** (RL = SFT); no-degeneration (KL bounded,
 length < cap) — **fail** (KL ≈ 1.2 with β 0.01 ⇒ the KL term was ≈ 1% of the reward signal).
 
-**Verdict.** RL on the direction-only reward works as optimization and produces some real improvement
-(both models individually ~2×), but under this setup most of the gain is a private AV↔AR code carried
-by templated prose, while the explanations are no more faithful and break the no-token rule.
-Likely drivers, ranked: a co-trained LoRA AR starting under-fit (its "finishing SFT" and "learning
-the dialect" are one gradient), an effectively-off KL, a 1-epoch AV, and a 4× smaller batch than the
-main setup. Next, cheapest first: offline re-scoring (quotes/markup stripped, first sentence only,
-T=1 frozen-reader cross pairing, frozen-AR reads of checkpoints 50–300); the multi-epoch AR retrain
-(below); a frozen-AR GRPO run with β 0.05–0.1 and a penalty for quotes/markup/non-Latin.
+**Verdict** (revised 2026-10-21 after the private-code test).
+- **RL on the direction-only reward works.** The AV's explanations carry much more information about
+  the write, and the AR learned to read text in general far better than the 1-epoch SFT AR did.
+- **That information is in the meaning of the text.** It survives paraphrase, stripped quotes and
+  markup, and shuffled word order; the template alone carries none of it.
+- **What is wrong is the content and the rules, not a code:**
+  - the explanations break the no-token rule (93% quote tokens);
+  - against the readouts they are judged no more faithful than SFT's;
+  - much of the extra content is the document's topic and quoted (often attended or current) tokens,
+    which the write does carry but the readouts often don't show.
+- **Next, cheapest first:** a faithfulness check against evidence beyond the readouts (the per-source
+  value breakdown, attention for evaluation only); the multi-epoch AR retrain (below); a GRPO run with
+  β 0.05–0.1 and a penalty for quotes/markup/non-Latin (needs the user's go-ahead).
+
+### Private-code test (`scripts/heads_private_code_test.py`, 2026-10-21)
+
+**Setup.**
+- 1,454 doc-viewer sites: 4 held-out docs, all 32 heads, ~12 per doc × head (82 of 1,536 dropped
+  because Haiku refused the paraphrase).
+- Each site's RL explanation was rewritten several ways. Haiku's gold explanation got the same edits,
+  as the reference for a text the RL AR was never co-trained with.
+- Both ARs scored every version on an A100 (secure cloud). The pod reproduced the viewer's stored
+  scores exactly.
+- Reading rule, written before the run: a private code shows as rewording that keeps the meaning
+  losing much more for RL text than for gold, or as the form alone keeping a real share.
+
+Retention is the share of the gain over no text (cos 0.028) that each version keeps:
+
+| text read by the RL AR | cos | FVE | retention |
+|---|---|---|---|
+| RL explanation | 0.630 | +24% | 100% |
+| markup and quote marks stripped (quoted words kept) | 0.624 | +22% | 99% |
+| Haiku paraphrase (new wording and structure, no markup) | 0.609 | +19% | **97%** |
+| quoted spans deleted | 0.602 | +18% | 95% |
+| content words only | 0.574 | +12% | 91% |
+| words in random order | 0.580 | +13% | 92% |
+| first sentence only | 0.441 | −16% | 69% |
+| **content words masked ("thing"), form kept** | 0.038 | −104% | **2%** |
+| RL text from another position of the same head and doc | 0.252 | −56% | 37% |
+| RL text of the same head from another doc | 0.091 | −89% | 11% |
+| gold explanation | 0.296 | −47% | (gold scale) |
+| gold paraphrase / content words / shuffled / masked | 0.289 / 0.255 / 0.247 / 0.005 | | 97% / 85% / 82% / −9% |
+
+**Findings.**
+- **Paraphrase robustness:** the paraphrase keeps ≥ 88% on every head, and the per-site scores track
+  the originals (within-head r = 0.94).
+- **SFT AR:** it reads every version about equally poorly (cos 0.15).
+- **Occlusion** (each word of 256 explanations deleted in turn):
+  - content words hold 62% of the weight (52% of tokens);
+  - stopwords hold 25% (43% of tokens);
+  - quoted words hold 12% (3.5% of tokens);
+  - markup holds 1% (2% of tokens).
+- **Where the heaviest words come from:**
+  - 27% have their stem in the document, against a base rate of 10%;
+  - the heaviest of the rest are locale words on H24–27 ("French", "American", "Indian"), which those
+    heads' logit-lens readouts support: British spellings and Cyrillic on H27, US places on H24.
+- **One limit:** a paraphrase keeps uncommon content words, so a convention built on *which topic
+  words* appear would survive it. The words that matter, though, are the doc's own topics or are
+  supported by the readouts.
 
 **Tools for looking at it** (public, `syvb/head-nla-qwen3-8b`): `l24/std_rl/examples_100.md`,
 `fve_distribution.png`, `viewer/` (all heads at 32 positions of 8 held-out docs) and `doc_viewer/` (every

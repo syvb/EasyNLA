@@ -201,7 +201,7 @@ A per-request reminder, label-style notes and a third readout did not help.
   co-trained AR, k3 KL 0.01). Reward = 2·cos − 2.
 - **Result** (held-out mean cosine of the reconstruction; skill vs the head-mean direction):
   SFT pair 0.071 (T=1) → RL step 400 **0.596 (57% skill)**; shuffled control 0. Each model alone ≈ 2×
-  (RL AV → frozen SFT AR 0.178; SFT AV → RL AR 0.198), so most of the gain is AV↔AR co-adaptation.
+  (RL AV → frozen SFT AR 0.178; SFT AV → RL AR 0.198). The gain needs both models, but it is not a private code: a paraphrase of the RL text keeps 97% of what the RL AR recovers, while the text's form alone keeps 2% (`scripts/heads_private_code_test.py`).
 - **But the explanations break the rules:** 93% quote tokens at T=1 (often tokens the head attended
   to, or the current token), plus stray markup and invented strings. A copy/quote penalty or a frozen
   reader is needed before using RL here.
