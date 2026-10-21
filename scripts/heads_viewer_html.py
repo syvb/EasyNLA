@@ -140,6 +140,11 @@ mark.m{background:none;color:var(--bad);text-decoration:line-through}
 .chip.f{color:var(--ink-3)}.chip .w{color:var(--ink-3);font-family:system-ui;font-size:11px;margin-left:3px}
 .score{font-variant-numeric:tabular-nums}
 .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:baseline}
+.fve{font-weight:700;font-size:15px;padding:2px 9px;border-radius:999px;font-variant-numeric:tabular-nums;border:1px solid var(--border);background:var(--surface-2);color:var(--ink-2)}
+.fve.p{background:#fde3d6;color:#5a2410;border-color:#f6b99c}.fve.m{background:#f6a77f;color:#3b1406;border-color:#ee8a58}.fve.h{background:#c4471a;color:#fff;border-color:#a8380f}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fve.p{background:#4a2617;color:#ffd9c7;border-color:#6b3620}:root:not([data-theme="light"]) .fve.m{background:#9a4220;color:#fff;border-color:#b5532b}:root:not([data-theme="light"]) .fve.h{background:#e2723f;color:#1a0a03;border-color:#f08a5b}}
+:root[data-theme="dark"] .fve.p{background:#4a2617;color:#ffd9c7;border-color:#6b3620}:root[data-theme="dark"] .fve.m{background:#9a4220;color:#fff;border-color:#b5532b}:root[data-theme="dark"] .fve.h{background:#e2723f;color:#1a0a03;border-color:#f08a5b}
+.card.lowf{opacity:.72}.sum{color:var(--ink-2);font-size:12.5px;margin:2px 0 10px}.sum b{color:var(--ink)}
 .notes{color:var(--ink-2);font-size:12.5px;max-width:980px;margin-top:22px}
 .notes h2{font-size:14px;color:var(--ink)}
 @media (max-width:520px){.grid{grid-template-columns:1fr}header,main{padding-left:16px;padding-right:16px}}
@@ -156,15 +161,16 @@ mark.m{background:none;color:var(--bad);text-decoration:line-through}
 <div class="legend"><span class="sw" style="background:var(--rl)"></span>current token ·
 <span class="sw" style="background:rgba(var(--att),.45)"></span>attended by the hovered/selected head (darker = more weight) · dotted = other positions you can select · grey = text after the token (the model hasn't seen it)</div>
 <div class="bar">
-<label for="sort">Sort heads</label><select id="sort"><option value="h">by head</option><option value="rl">by RL cos</option>
+<label for="sort">Sort heads</label><select id="sort"><option value="fve" selected>by RL FVE (high first)</option><option value="h">by head</option><option value="rl">by RL cos</option>
 <option value="gap">by RL − SFT cos</option><option value="norm">by attention entropy</option><option value="first">by attention to first token</option></select>
+<label for="minf">Min RL FVE</label><select id="minf"><option value="-1e9">all</option><option value="0">&gt; 0%</option><option value="0.25">&gt; 25%</option><option value="0.5">&gt; 50%</option></select>
 <span style="width:10px"></span><span class="lab" style="color:var(--ink-2);font-size:12.5px">Show</span>
-<button id="t-rl" aria-pressed="true">RL AV</button><button id="t-sft" aria-pressed="true">SFT AV</button><button id="t-gold" aria-pressed="true">Gold (Haiku)</button>
+<button id="t-rl" aria-pressed="true">RL AV</button><button id="t-sft" aria-pressed="false">SFT AV</button><button id="t-gold" aria-pressed="false">Gold (Haiku)</button>
 <button id="t-hl" aria-pressed="true">Highlight quotes &amp; markup</button>
 <span style="width:10px"></span><input id="q" type="search" placeholder="Filter heads by text…" aria-label="Filter heads by text" size="22">
 <button id="theme" title="Toggle light/dark">◐</button>
 </div>
-<div class="grid" id="grid"></div>
+<div class="sum" id="sum"></div><div class="grid" id="grid"></div>
 <div class="notes"><h2>About this page</h2>
 <p><b>RL AV</b>: verbalizer after 400 GRPO steps, scored by its co-trained AR. <b>SFT AV</b>: the warm-start verbalizer, scored by the SFT AR. Both sampled at T=1 (as in RL). <b>Gold</b>: Claude Haiku 5.5's explanation written from the write's readouts only (the SFT target); its scores are through the RL AR and the SFT AR.</p>
 <p>Caveat: RL explanations often quote tokens (highlighted) and add markup (struck through); a blinded judge found them no more faithful to the evidence than SFT's, and much of their reconstruction comes from an AV↔AR code. Data: <code>syvb/head-nla-qwen3-8b</code> (Hugging Face), code: <code>sv/head-nla</code> branch of EasyNLA.</p></div>
@@ -172,49 +178,55 @@ mark.m{background:none;color:var(--bad);text-decoration:line-through}
 <script id="data" type="application/json">__DATA__</script>
 <script>
 const D=JSON.parse(document.getElementById('data').textContent);
-const S={doc:0,pos:0,sel:null,hover:null,show:{rl:true,sft:true,gold:true,hl:true},sort:'h',q:''};
+const S={doc:0,pos:0,sel:null,hover:null,show:{rl:true,sft:false,gold:false,hl:true},sort:'fve',q:'',minf:-1e9};
+const fveCls=f=>f>=0.5?'fve h':f>=0.25?'fve m':f>0?'fve p':'fve';
 const $=id=>document.getElementById(id);
 function el(t,a={},...kids){const e=document.createElement(t);for(const[k,v]of Object.entries(a)){if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v)}for(const c of kids)if(c!=null)e.append(c);return e}
 const f2=x=>(x>=0?'':'−')+Math.abs(x).toFixed(2), pct=x=>(x>=0?'+':'−')+Math.abs(Math.round(100*x))+'%';
 function vis(s){return s.replace(/\n/g,'⏎').replace(/ /g,'·').replace(/\t/g,'⇥')||'∅'}
 function curDoc(){return D.docs[S.doc]}function curPos(){return curDoc().positions[S.pos]}
 function renderDocs(){const box=$('docs');box.replaceChildren(el('label',{},'Text'));D.docs.forEach((d,i)=>{const words=d.tokens.join('').trim().slice(0,60);
-box.append(el('button',{'aria-pressed':String(i===S.doc),title:(d.domain?d.domain+' · ':'')+words,onclick:()=>{S.doc=i;S.pos=0;S.sel=null;renderAll()}},`${i+1}. ${d.domain?d.domain.replace(/_/g,' ')+': ':''}${words}…`))})}
+box.append(el('button',{'aria-pressed':String(i===S.doc),title:(d.domain?d.domain+' · ':'')+words,onclick:()=>{S.doc=i;S.pos=0;S.sel=null;renderAll(true)}},`${i+1}. ${d.domain?d.domain.replace(/_/g,' ')+': ':''}${words}…`))})}
 function renderPositions(){const box=$('positions');box.replaceChildren(el('label',{},'Token'));curDoc().positions.forEach((p,i)=>{const t=curDoc().tokens[p.pos];
-box.append(el('button',{'aria-pressed':String(i===S.pos),onclick:()=>{S.pos=i;S.sel=null;renderAll()}},`#${p.pos} “${t.trim()||vis(t)}”`))})}
+const npos=p.heads.filter(H=>(H.rl?.fve??-9)>0).length;
+box.append(el('button',{'aria-pressed':String(i===S.pos),title:`${npos} of ${p.heads.length} heads with RL FVE > 0`,onclick:()=>{S.pos=i;S.sel=null;renderAll(true)}},`#${p.pos} “${t.trim()||vis(t)}” · ${npos} > 0`))})}
 function attOf(h){if(h==null)return null;const H=curPos().heads.find(x=>x.h===h);return H?new Map(H.att.map(([p,w])=>[p,w])):null}
-function renderCtx(){const d=curDoc(),P=curPos().pos,m=attOf(S.hover??S.sel),others=new Set(d.positions.map(p=>p.pos));
+function renderCtx(scroll){const d=curDoc(),P=curPos().pos,m=attOf(S.hover??S.sel),others=new Set(d.positions.map(p=>p.pos));
 const start=Math.max(0,P-160),box=$('ctx');box.replaceChildren();if(start>0)box.append(el('span',{class:'after'},'… '));
 const end=Math.min(d.tokens.length,P+26);
 for(let i=start;i<end;i++){const t=d.tokens[i];const s=el('span',{class:'t'});s.textContent=t;
-if(i===P)s.classList.add('cur');else{if(i>P)s.classList.add('after');if(others.has(i)){s.classList.add('pos');s.title='select this position';s.onclick=()=>{S.pos=d.positions.findIndex(p=>p.pos===i);S.sel=null;renderAll()}}}
+if(i===P)s.classList.add('cur');else{if(i>P)s.classList.add('after');if(others.has(i)){s.classList.add('pos');s.title='select this position';s.onclick=()=>{S.pos=d.positions.findIndex(p=>p.pos===i);S.sel=null;renderAll(true)}}}
 if(m&&m.has(i)){const w=m.get(i);s.style.background=`rgba(var(--att),${(0.15+0.85*Math.min(1,w/0.5)).toFixed(2)})`;s.title=`attention ${w.toFixed(3)}`}
-box.append(s)}if(end<d.tokens.length)box.append(el('span',{class:'after'},' …'));const cur=box.querySelector('.cur');if(cur)cur.scrollIntoView({block:'nearest'})}
+box.append(s)}if(end<d.tokens.length)box.append(el('span',{class:'after'},' …'));const cur=box.querySelector('.cur');if(scroll&&cur)box.scrollTop=Math.max(0,cur.offsetTop-box.offsetTop-box.clientHeight/2)}
 function hl(text){const frag=document.createDocumentFragment();if(!S.show.hl){frag.append(text);return frag}
 const re=/(<\/?[A-Za-z][\w-]*>|\[end\])|([“"][^”"\n]{1,80}[”"])/g;let last=0,m;while((m=re.exec(text))){frag.append(text.slice(last,m.index));frag.append(el('mark',{class:m[1]?'m':'q'},m[0]));last=re.lastIndex}frag.append(text.slice(last));return frag}
 function exBlock(kind,lab,obj,extra){if(!obj)return null;const txt=el('div',{class:'txt clamp'},hl(obj.text));const more=el('button',{class:'more',onclick:e=>{e.stopPropagation();txt.classList.toggle('clamp');more.textContent=txt.classList.contains('clamp')?'more':'less'}},'more');
 return el('div',{class:'ex '+kind},el('div',{class:'lab'},el('b',{},lab),el('span',{class:'score'},extra)),txt,obj.text.length>330?more:null)}
 function renderGrid(){const g=$('grid');g.replaceChildren();let hs=[...curPos().heads];const q=S.q.toLowerCase();
 if(q)hs=hs.filter(H=>[H.rl?.text,H.sft?.text,H.gold,H.distinct.join(' '),H.lens.join(' ')].join(' ').toLowerCase().includes(q));
-const key={h:H=>H.h,rl:H=>-(H.rl?.cos??-9),gap:H=>-((H.rl?.cos??0)-(H.sft?.cos??0)),norm:H=>H.entropy,first:H=>-H.first_w}[S.sort];hs.sort((a,b)=>key(a)-key(b));
+hs=hs.filter(H=>(H.rl?.fve??-9)>S.minf);
+const all=curPos().heads,pos=all.filter(H=>(H.rl?.fve??-9)>0).length,mean=all.reduce((a,H)=>a+(H.rl?.fve??0),0)/all.length;
+$('sum').replaceChildren('Showing ',el('b',{},String(hs.length)),` of ${all.length} heads · `,el('b',{},String(pos)),' with RL FVE > 0 at this token · mean RL FVE ',el('b',{},pct(mean)));
+const key={fve:H=>-(H.rl?.fve??-9),h:H=>H.h,rl:H=>-(H.rl?.cos??-9),gap:H=>-((H.rl?.cos??0)-(H.sft?.cos??0)),norm:H=>H.entropy,first:H=>-H.first_w}[S.sort];hs.sort((a,b)=>key(a)-key(b));
 const d=curDoc(),P=curPos().pos;
 for(const H of hs){const atts=H.att.map(([p,w])=>el('span',{class:'chip'},vis(d.tokens[p]??'?'),el('span',{class:'w'},(p===P?'self ':p===0?'first ':'')+w.toFixed(2))));
-const card=el('article',{class:'card'+(S.sel===H.h?' sel':''),tabindex:'0','aria-label':`Head ${H.h}`,
-onmouseenter:()=>{S.hover=H.h;renderCtx()},onmouseleave:()=>{S.hover=null;renderCtx()},
-onclick:()=>{S.sel=S.sel===H.h?null:H.h;renderGrid();renderCtx()},onkeydown:e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();S.sel=S.sel===H.h?null:H.h;renderGrid();renderCtx()}}},
-el('h3',{},`L${D.layer}H${H.h}`,el('span',{class:'meta'},`attn to first token ${H.first_w.toFixed(2)} · self ${H.self_w.toFixed(2)} · entropy ${H.entropy.toFixed(2)}`)),
-S.show.rl?exBlock('rl','RL AV',H.rl,`cos ${f2(H.rl?.cos??0)} · FVE ${pct(H.rl?.fve??0)}`):null,
-S.show.sft?exBlock('sft','SFT AV',H.sft,`cos ${f2(H.sft?.cos??0)} · FVE ${pct(H.sft?.fve??0)}`):null,
-S.show.gold&&H.gold?exBlock('gold','Gold (Haiku)',{text:H.gold},`cos ${f2(H.rl?.gold_cos??0)} via RL AR · ${f2(H.sft?.gold_cos??0)} via SFT AR`):null,
+const card=el('article',{class:'card'+(S.sel===H.h?' sel':'')+((H.rl?.fve??-9)<=0?' lowf':''),tabindex:'0','data-h':String(H.h),'aria-label':`Head ${H.h}, RL FVE ${pct(H.rl?.fve??0)}`,
+onmouseenter:()=>{S.hover=H.h;renderCtx(false)},onmouseleave:()=>{S.hover=null;renderCtx(false)},
+onclick:()=>selectHead(H.h),onkeydown:e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectHead(H.h)}}},
+el('h3',{},`L${D.layer}H${H.h}`,H.rl?el('span',{class:fveCls(H.rl.fve),title:'RL pair FVE at this token'},'FVE '+pct(H.rl.fve)):null,el('span',{class:'meta'},`attn to first token ${H.first_w.toFixed(2)} · self ${H.self_w.toFixed(2)} · entropy ${H.entropy.toFixed(2)}`)),
+S.show.rl?exBlock('rl','RL AV',H.rl,`FVE ${pct(H.rl?.fve??0)} · cos ${f2(H.rl?.cos??0)}`):null,
+S.show.sft?exBlock('sft','SFT AV',H.sft,`FVE ${pct(H.sft?.fve??0)} · cos ${f2(H.sft?.cos??0)}`):null,
+S.show.gold&&H.gold?exBlock('gold','Gold (Haiku)',{text:H.gold},`FVE ${pct(H.rl?.gold_fve??0)} via RL AR · ${pct(H.sft?.gold_fve??0)} via SFT AR`):null,
 el('div',{class:'ev'},el('div',{class:'k'},'Reads'),el('div',{class:'chips'},...atts),
 el('div',{class:'k'},'Promotes'),el('div',{class:'chips'},...H.distinct.map(t=>el('span',{class:'chip'},vis(t))),...H.filler.map(t=>el('span',{class:'chip f',title:'common filler'},vis(t)))),
 el('div',{class:'k'},'Lens'),el('div',{class:'chips'},...H.lens.map(t=>el('span',{class:'chip'},vis(t))))));
 g.append(card)}if(!hs.length)g.append(el('p',{},'No heads match the filter.'))}
-function renderAll(){renderDocs();renderPositions();renderCtx();renderGrid()}
+function selectHead(h){S.sel=S.sel===h?null:h;document.querySelectorAll('.card').forEach(c=>c.classList.toggle('sel',+c.dataset.h===S.sel));renderCtx(false)}
+function renderAll(scroll){renderDocs();renderPositions();renderCtx(scroll);renderGrid()}
 for(const k of['rl','sft','gold','hl'])$('t-'+k).onclick=e=>{S.show[k]=!S.show[k];e.currentTarget.setAttribute('aria-pressed',String(S.show[k]));renderGrid()};
-$('sort').onchange=e=>{S.sort=e.target.value;renderGrid()};$('q').oninput=e=>{S.q=e.target.value;renderGrid()};
+$('sort').onchange=e=>{S.sort=e.target.value;renderGrid()};$('minf').onchange=e=>{S.minf=+e.target.value;renderGrid()};$('q').oninput=e=>{S.q=e.target.value;renderGrid()};
 $('theme').onclick=()=>{const r=document.documentElement,dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;r.dataset.theme=dark?'light':'dark'};
-renderAll();
+renderAll(true);
 </script></body></html>"""
 
 if __name__ == "__main__":
