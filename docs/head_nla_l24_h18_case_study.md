@@ -69,3 +69,42 @@ The table gives the share of H18 explanations whose text names each domain (rege
 - The logit lens at L24 of 36 is only indicative. There is **no causal test**: ablating H16–19 and measuring the loss on domain words needs a GPU.
 - The per-source values come from a noisy least-squares solve. Individual low-attention tokens (e.g. `Friday` with |u| = 10) can be artifacts; the aggregates are stable.
 - The domain regexes are crude.
+
+## Can the explanations tell the four sibling heads apart?
+
+H16–19 read the same values at every site, but their writes are nearly orthogonal (mean cos 0.02–0.19). So the question is whether an explanation says anything specific to *its* head.
+
+**Text classifier.** `scripts/heads_sibling_textclf.py` trains a TF-IDF logistic regression on 3 docs and tests on the 4th. It is 4-way, so chance is 25%.
+
+| input | H16–19 | H0–3 | H24–27 |
+|---|---|---|---|
+| RL text | .55 | .71 | .43 |
+| gold text | .59 | .72 | .30 |
+| SFT text | .35 | .31 | .28 |
+| lens readout | .63 | .81 | .35 |
+| avg16 readout | .57 | .84 | .43 |
+
+The words that separate the four heads' RL texts line up with the facets found by the logit lens. They also reflect each head's constant sink write:
+- **H16** (roles; its sink lens is `Teacher`, `Classroom`): RL text uses medical, clinical, student(s), police, hospitals.
+- **H17** (mechanisms): anxiety, brain, behavior, recursive, sequences, data structures.
+- **H18** (constant junk sink write): vague, uncertainty, absence, modal. This is the hedging template.
+- **H19** (activity; its sink lens is `mathematical`, `algebra`): therapy, depression, TMS, Lisp, languages, arithmetic, algebra, math.
+
+**Blinded matching.** `scripts/heads_sibling_match.py` uses Sonnet 5.5.
+- For each of 160 sites (40 per doc), Sonnet sees the 4 siblings' readouts (avg16 + lens), labelled A–D.
+- It also sees the 4 siblings' explanations, shuffled, and assigns them one-to-one to the readouts.
+- 617 of 640 calls returned a valid matching.
+
+| source | accuracy (chance .25) |
+|---|---|
+| gold | 1.00 (ceiling: Haiku wrote these from the same readouts) |
+| **RL** | **.79** (per head .72–.85; per doc .75–.88) |
+| RL from another position of the same head (control) | .45 |
+| SFT | .50 |
+
+**Reading.**
+- RL explanations do carry readable, head-specific information.
+- Part of it is head-level (the shuffled-position control gets .45, from each head's constant sink write and style).
+- The rest (.45 → .79) is specific to the site.
+- This tests agreement with the readouts, not with the mechanism. The lens readouts alone separate the heads about as well (the classifier gets .63 from them), so the explanations mostly restate readout content in prose.
+- The constant sink write, query gating and shared values still appear nowhere in the text.
