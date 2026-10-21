@@ -212,6 +212,11 @@ A per-request reminder, label-style notes and a third readout did not help.
 - **Viewer:** `l24/std_rl/viewer/head_nla_viewer.html` (offline, single file): all 32 heads at 32 positions of 8
   held-out docs with RL / SFT / gold explanations, cos and FVE, attended tokens and readouts. Rebuild with
   `scripts/runpod/heads_l24_viewer_remote.sh` + `scripts/heads_viewer_html.py`.
+- **Every-token doc viewer:** `l24/std_rl/doc_viewer/` — 4 held-out docs × every token × all 32 heads (~38k sites):
+  writes, full L24 attention (float16, eager/bf16), readouts, RL / SFT / Haiku-gold explanations with cos and FVE,
+  and `head_nla_doc_viewer.html` (heatmap). RL FVE mean +15% to +31% per doc (65–77% of cells > 0); SFT ≈ −90%.
+  Job: `scripts/runpod/heads_l24_docviewer_remote.sh` + `scripts/heads_doc_viewer_job.py` (queue worker; docs can be
+  added mid-run); HTML: `scripts/heads_doc_viewer_html.py`.
 
 ## L24 run: probe test + SFT on soft-token explanations
 
