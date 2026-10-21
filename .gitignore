@@ -34,3 +34,4 @@ data/
 .DS_Store
 .venv/
 venv/
+docviewer_queue/

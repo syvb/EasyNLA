@@ -136,8 +136,9 @@ def user_text(avg16: str, lens: str, df: dict[str, float], threshold: float) -> 
 
     def j(xs: list[str]) -> str:
         return ", ".join(json.dumps(t, ensure_ascii=False) for t in xs) or "(none)"
-    return (f"Readout A, distinctive: {j([t for t in ts if df[t] < threshold])}\n"
-            f"Readout A, common filler: {j([t for t in ts if df[t] >= threshold])}\n"
+    # a token absent from the reference table (a new text's readouts) is rare there: distinctive
+    return (f"Readout A, distinctive: {j([t for t in ts if df.get(t, 0.0) < threshold])}\n"
+            f"Readout A, common filler: {j([t for t in ts if df.get(t, 0.0) >= threshold])}\n"
             f"Readout B: {show(lens)}")
 
 
