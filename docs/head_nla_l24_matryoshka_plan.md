@@ -27,44 +27,41 @@ by continuing training from the std pair's step-400 checkpoint
 Context: the step-400 AV writes about 147 tokens at T=1 (p10–p90 137–158) and the gold texts about 42,
 so U[1, 120] covers most of what the AV says.
 
-## Runs
+## Run
 
-| run | script | steps | wandb |
-|---|---|---|---|
-| matryoshka | `scripts/runpod/heads_l24_mtry_remote.sh` | 400 → 440 AR-only → 840 | `l24-mtry` / `l24-mtry-rl` |
-| control | `scripts/runpod/heads_l24_ctrl_remote.sh` | 400 → 800, std objective | `l24-mtry` / `l24-ctrl-rl` |
+`scripts/runpod/heads_l24_mtry_remote.sh` (wandb `l24-mtry` / `l24-mtry-rl`). Steps 400 → 440 are
+the AR-only warm-up; 440 → 840 use the matryoshka objective. The script:
+- runs a three-step smoke test first (one AV-frozen step with the held-out eval, then two
+  matryoshka steps);
+- mirrors checkpoints every 50 steps, plus the warm-up's last step, to
+  `syvb/head-nla-qwen3-8b-l24-mtry-rl-ckpts`;
+- logs held-out prefix FVE (`eval/fve_pct_t{4,16,64}`) next to the usual `eval/fve_pct`;
+- ends with the standard T=1 checks on all 6,360 eval rows (`--no-fallback-cut`, because a matryoshka
+  AV may not close its explanation).
 
-The control separates the objective's effect from simply training 400 more steps. Both runs:
-- resume the same step-400 state;
-- run a three-step smoke test first;
-- mirror checkpoints every 50 steps to `syvb/head-nla-qwen3-8b-l24-{mtry,ctrl}-rl-ckpts`;
-- log held-out prefix FVE (`eval/fve_pct_t{4,16,64}`) next to the usual `eval/fve_pct`;
-- end with the standard T=1 checks on all 6,360 eval rows (`--no-fallback-cut`, because a matryoshka AV
-  may not close its explanation).
-
-Neither run has a trainer time cap. The pod watchdog is set at 16 h, about twice the expected time.
+There is no trainer time cap. The pod watchdog is set at 16 h, about twice the expected time.
 
 ## Evaluation (`scripts/heads_matryoshka_sweep.py`, `heads_l24_mtry_sweep_remote.sh`)
 
-On 2,000 held-out eval rows (seeded, all heads), each AV writes one T=1 explanation:
-- the step-400 AV;
-- the matryoshka AV;
-- the control AV;
-- plus the gold texts.
-
-Every AR (step 400, end of warm-up, matryoshka, control) scores every AV's first L ∈ {0, 1, 2, 4, 8,
-16, 32, 64, 120} tokens and the whole explanation. Metrics are mean direction cosine and FVE against
-the head's mean write. The questions:
+On 2,000 held-out eval rows (seeded, all heads), the step-400 AV and the matryoshka AV each write one
+T=1 explanation; the gold texts are included too. Every AR (step 400, end of warm-up, matryoshka) scores
+every AV's first L ∈ {0, 1, 2, 4, 8, 16, 32, 64, 120} tokens and the whole explanation. Metrics are mean
+direction cosine and FVE against the head's mean write. The questions:
 
 1. Does the matryoshka pair beat the warm-up baseline (step-400 AV + prefix AR) at short prefixes?
-2. What does it cost at full length relative to the control?
+2. What does it cost at full length relative to the step-400 pair?
 3. With the AR held fixed (cross-reads), is the gain in the AV's ordering or only in the AR?
 
 ## Time and cost (secure H100, $3.99/hr)
 
-Estimates:
-- matryoshka: setup + smoke 0.6 h, 40 warm-up steps ≈ 0.4 h, 400 steps ≈ 5–6 h (capped rollouts, est. 45–55 s/step), checks ≈ 0.7 h; ≈ 7.5 h, ≈ $30;
-- control: 0.6 + 400 × ~70 s ≈ 7.8 h + 0.7 h; ≈ 9 h, ≈ $36;
-- sweep: ≈ 1.2 h, ≈ $5.
+The aborted first launch measured about 18–20 s per AV-frozen step and about 45 s per matryoshka
+step. Estimate:
+- run: setup + smoke 0.6 h, warm-up 0.2 h, 400 steps ≈ 5 h, checks ≈ 0.7 h; ≈ 6.5 h, ≈ $26;
+- sweep: ≈ 1 h, ≈ $4.
 
-Total ≈ $70.
+## History
+
+The first launch (2026-10-22) was stopped during the warm-up, before any AV update or checkpoint.
+Generation in each chunk ran exactly to the chunk's largest cap, so the group at that cap looked
+"stopped at the cap", was not marked as cut, and failed the closing-tag extraction (−2; 3–6% of
+rollouts). Fixed in `5d1a06a` (generate one token past the largest cap), with a regression test.

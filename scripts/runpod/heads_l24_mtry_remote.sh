@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Continue the L24 head-NLA std RL pair (step 400) — executes ON the pod. MODE=matryoshka (default):
-# the matryoshka objective (docs/head_nla_l24_matryoshka_plan.md): each GRPO group keeps its first
-# L ~ U[1,120] explanation tokens, the AR scores and co-trains on that prefix, KL tripled (0.03) and
-# tapered past content token 16 to 0.1× at 120, after a 40-step AR-only warm-up (AV frozen) so the AR
-# first learns to read prefixes. MODE=control: the same resume continued with the std objective.
-# Launch with (one pod per mode):
+# Continue the L24 head-NLA std RL pair (step 400) with the matryoshka objective — executes ON the pod
+# (docs/head_nla_l24_matryoshka_plan.md): each GRPO group keeps its first L ~ U[1,120] explanation
+# tokens, the AR scores and co-trains on that prefix, KL tripled (0.03) and tapered past content token
+# 16 to 0.1× at 120, after a 40-step AR-only warm-up (AV frozen) so the AR first learns to read prefixes.
+# Launch with:
 #   GPUS="NVIDIA H100 80GB HBM3|3.5|4.5" scripts/runpod/launch_with_retry.sh <out dir> heads-l24-mtry \
 #       --remote-script scripts/runpod/heads_l24_mtry_remote.sh --secrets hf,wandb \
 #       --fetch results --no-checkpoints --max-hours 16 --avoid-machine bdh8atjj57i7
-# and the same with heads_l24_ctrl_remote.sh (MODE=control; the launcher passes no environment).
 # Markers: /workspace/results/DONE | FAILED (first failing stage); log /workspace/results/run.log.
 set -eEuo pipefail
 
@@ -19,19 +17,13 @@ RES=/workspace/results
 BASE=Qwen/Qwen3-8B
 SRC_PREFIX=syvb/head-nla-qwen3-8b-l24-std
 FROM_ITER=${FROM_ITER:-iter_000400}
-MODE=${MODE:-matryoshka}
-EXTRA_STEPS=${EXTRA_STEPS:-400}     # objective steps after the resume (plus the warm-up for matryoshka)
+EXTRA_STEPS=${EXTRA_STEPS:-400}     # matryoshka steps after the AR-only warm-up
 FREEZE=${FREEZE:-40}
-case "$MODE" in
-  matryoshka) TAG=mtry
-    OBJ=(--trunc-min-tokens 1 --trunc-max-tokens 120 --kl-beta 0.03
-         --kl-taper-start 16 --kl-taper-end 120 --kl-taper-floor 0.1 --av-freeze-steps "$FREEZE") ;;
-  control) TAG=ctrl; FREEZE=0; OBJ=() ;;
-  *) echo "unknown MODE $MODE"; exit 1 ;;
-esac
+OBJ=(--trunc-min-tokens 1 --trunc-max-tokens 120 --kl-beta 0.03
+     --kl-taper-start 16 --kl-taper-end 120 --kl-taper-floor 0.1 --av-freeze-steps "$FREEZE")
 START=${FROM_ITER#iter_}; START=$((10#$START))
 NUM_STEPS=$((START + FREEZE + EXTRA_STEPS))
-HF_RUN=syvb/head-nla-qwen3-8b-l24-$TAG
+HF_RUN=syvb/head-nla-qwen3-8b-l24-mtry
 mkdir -p "$RES"
 exec > >(tee -a "$RES/run.log") 2>&1
 cd "$REPO"
@@ -48,7 +40,7 @@ stage() { STAGE=$1; echo; echo "=== [$(date -u +%H:%M:%S)] $1 ==="; }
 set -a; source /workspace/.secrets; set +a      # HF_TOKEN, WANDB_API_KEY
 export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false FROM_ITER SRC_PREFIX
 unset PYTORCH_CUDA_ALLOC_CONF
-echo "MODE=$MODE resume=$SRC_PREFIX-rl-ckpts/$FROM_ITER steps $START -> $NUM_STEPS (freeze $FREEZE) ${OBJ[*]}"
+echo "resume=$SRC_PREFIX-rl-ckpts/$FROM_ITER steps $START -> $NUM_STEPS (freeze $FREEZE) ${OBJ[*]}"
 wandb_flags() {   # wandb_flags <run name>
   if [ -n "${WANDB_API_KEY:-}" ]; then
     echo --wandb-project head-nla-qwen3-8b --wandb-group l24-mtry --wandb-name "$1"
@@ -97,12 +89,10 @@ rl_train() {   # rl_train <save dir> <num steps> <rollout batch> <logp mb> <AR m
     --eval-trunc-lengths 4 16 64 "${OBJ[@]}" --seed 0 "$@"
 }
 
-# Three steps on a throwaway save dir (warm-up and objective steps both exercised for matryoshka),
-# no wandb: shapes, memory and the step time at the real batch.
+# Three steps on a throwaway save dir, no wandb: one AV-frozen step (with the held-out eval and its
+# prefix FVE), then two matryoshka steps — shapes, memory and the step times at the real batch.
 stage smoke
-SMOKE_FREEZE=()
-[ "$MODE" = matryoshka ] && SMOKE_FREEZE=(--av-freeze-steps 1)
-rl_train "$CK/smoke" $((START + 3)) 256 8 16 64 --no-wandb --eval-every 1000 "${SMOKE_FREEZE[@]}" \
+rl_train "$CK/smoke" $((START + 3)) 256 8 16 64 --no-wandb --eval-every "$START" --av-freeze-steps 1 \
   2>&1 | tee "$RES/smoke.log"
 grep -E "^step " "$RES/smoke.log"
 rm -rf "$CK/smoke"
@@ -111,11 +101,11 @@ stage rl
 setsid nohup nice -n 19 python scripts/runpod/hf_ckpt_uploader.py --log "$RES/run.log" --ckpt-dir "$CK/rl" \
   --repo "$HF_RUN-rl-ckpts" > "$RES/hf_upload.log" 2>&1 < /dev/null &
 # Same OOM fallback as the std run: half batches if it dies before the first checkpoint.
-if ! rl_train "$CK/rl" "$NUM_STEPS" 256 8 16 64 $(wandb_flags "l24-$TAG-rl") 2>&1 | tee "$RES/rl_train.log"; then
+if ! rl_train "$CK/rl" "$NUM_STEPS" 256 8 16 64 $(wandb_flags l24-mtry-rl) 2>&1 | tee "$RES/rl_train.log"; then
   if grep -q "OutOfMemoryError\|CUDA out of memory" "$RES/rl_train.log" && ! ls -d "$CK"/rl/iter_* >/dev/null 2>&1; then
     echo "OOM before the first checkpoint: retrying at half batch"
     rm -rf "$CK/rl"
-    rl_train "$CK/rl" "$NUM_STEPS" 128 4 8 32 $(wandb_flags "l24-$TAG-rl") 2>&1 | tee "$RES/rl_train.log"
+    rl_train "$CK/rl" "$NUM_STEPS" 128 4 8 32 $(wandb_flags l24-mtry-rl) 2>&1 | tee "$RES/rl_train.log"
   else
     false
   fi
