@@ -9,7 +9,9 @@ On --max-rows held-out eval rows (a seeded subset of eval.parquet, all heads), e
 explanation (at most --max-new-tokens; one cut off before its closing tag keeps what it said, as in the
 matryoshka trainer); the gold descriptions come along as AV "gold". Every AR then scores every AV's
 first L tokens (L in --lengths; 0 = empty text) and the whole explanation ("full"), with the head prefix
-the AR was trained on. Direction metrics as in heads_sft_checks.py: both vectors at norm √d, mean
+the AR was trained on. Each generated AV also gets a "<name>_rev" variant: the same explanations with
+their sentences in reverse order (the matryoshka post's ordering check — if an AV frontloads, its
+reversed prefixes score clearly worse at small L and converge at "full"). Direction metrics as in heads_sft_checks.py: both vectors at norm √d, mean
 cosine, and FVE against the head's mean normalized AR-training write.
 
 Writes generations.parquet (row-aligned texts + token counts), sweep.json (av → ar → L → cos / fve /
@@ -19,6 +21,7 @@ earlier generations (only AVs missing from it are generated).
 import argparse
 import json
 import math
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -41,6 +44,12 @@ from nla.train_rl_self_contained import open_explanation  # noqa: E402
 from nla.utils import build_prompt_text, register_karvonen_hook  # noqa: E402
 
 
+def reverse_sentences(text: str) -> str:
+    """The text's sentences (split after . ! ? or at line breaks) in reverse order."""
+    parts = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", text) if x.strip()]
+    return " ".join(reversed(parts))
+
+
 def named(items: list[str]) -> dict[str, str]:
     out = {}
     for s in items:
@@ -54,6 +63,7 @@ def named(items: list[str]) -> dict[str, str]:
 def generate(actor, vref, tok, cfg, prompts, vecs, device, batch_size, max_new_tokens) -> list[str]:
     tok.padding_side = "left"
     out = []
+    n_open = 0
     for s in range(0, len(prompts), batch_size):
         texts = [build_prompt_text(p, cfg.injection_char, tok) for p in prompts[s:s + batch_size]]
         enc = tok(texts, return_tensors="pt", padding=True, add_special_tokens=False).to(device)
@@ -66,8 +76,10 @@ def generate(actor, vref, tok, cfg, prompts, vecs, device, batch_size, max_new_t
             vref[0] = None
         for g in tok.batch_decode(gen[:, enc["input_ids"].shape[1]:], skip_special_tokens=True):
             e = open_explanation(g)
+            n_open += e is None
             out.append("" if e is None else e)
         print(f"  generated {min(s + batch_size, len(prompts))}/{len(prompts)}", flush=True)
+    print(f"  without an <explanation> opening (scored as empty): {n_open}/{len(prompts)}", flush=True)
     return out
 
 
@@ -124,7 +136,7 @@ def main() -> None:
     if a.gens:
         g = pq.read_table(a.gens).to_pydict()
         assert list(g["eval_row"]) == sel.tolist(), "--gens was made on other rows"
-        texts.update({k[4:]: g[k] for k in g if k.startswith("av__")})
+        texts.update({k[4:]: g[k] for k in g if k.startswith("av__") and not k.endswith("_rev")})
     todo = {k: d for k, d in named(a.av).items() if k not in texts}
     if todo:
         model = AutoModelForCausalLM.from_pretrained(a.base_ckpt, dtype=torch.bfloat16).to(a.device)
@@ -146,6 +158,8 @@ def main() -> None:
         del actor, model
         if a.device.startswith("cuda"):
             torch.cuda.empty_cache()
+    for k in named(a.av):
+        texts[f"{k}_rev"] = [reverse_sentences(t) for t in texts[k]]
     ids = {k: [tok.encode(t, add_special_tokens=False) for t in ts] for k, ts in texts.items()}
     pq.write_table(pa.table({
         "eval_row": sel, "layer": [la for la, _ in heads], "head": [hd for _, hd in heads],

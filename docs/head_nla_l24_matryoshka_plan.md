@@ -74,7 +74,7 @@ direction cosine and FVE against the head's mean write. The questions:
 The aborted first launch measured about 18–20 s per AV-frozen step and about 45 s per matryoshka
 step. Estimate:
 - run: setup + smoke 0.4 h, warm-up 0.2 h, 400 steps ≈ 5 h, held-out evals every 10 steps ≈ 0.8 h,
-  checks ≈ 1 h; ≈ 7.5–8 h, ≈ $31;
+  checks ≈ 1–1.5 h; ≈ 8 h, ≈ $32;
 - sweep: ≈ 1 h, ≈ $4.
 
 ## History

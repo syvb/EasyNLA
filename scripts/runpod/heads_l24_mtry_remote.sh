@@ -33,7 +33,15 @@ keep_ckpt() {   # keep_ckpt <iter dir> <dest>: policy adapter + co-trained AR, m
   mkdir -p "$2"
   cp -r "$1" "$2/" && rm -rf "$2/$(basename "$1")/reference"
 }
-trap 'echo "$STAGE" > "$RES/FAILED"; echo "!!! FAILED in stage $STAGE"' ERR
+save_partial() {   # the newest checkpoint into results/ (the launcher fetches results/, then deletes the pod)
+  local latest
+  latest=$(ls -d "$CK"/rl/iter_* 2>/dev/null | sort | tail -1 || true)
+  if [ -n "$latest" ] && [ ! -d "$RES/rl_ckpt/$(basename "$latest")" ]; then
+    keep_ckpt "$latest" "$RES/rl_ckpt_partial"
+  fi
+}
+# copy the newest checkpoint out BEFORE writing FAILED: the launcher fetches and deletes on the marker
+trap 'save_partial || true; echo "$STAGE" > "$RES/FAILED"; echo "!!! FAILED in stage $STAGE"' ERR
 stage() { STAGE=$1; echo; echo "=== [$(date -u +%H:%M:%S)] $1 ==="; }
 
 # shellcheck disable=SC1091
@@ -100,10 +108,17 @@ rm -rf "$CK/smoke"
 stage rl
 setsid nohup nice -n 19 python scripts/runpod/hf_ckpt_uploader.py --log "$RES/run.log" --ckpt-dir "$CK/rl" \
   --repo "$HF_RUN-rl-ckpts" > "$RES/hf_upload.log" 2>&1 < /dev/null &
-# Same OOM fallback as the std run: half batches if it dies before the first checkpoint.
+# OOM fallback as in the std run: half batches if it dies before any checkpoint past the warm-up (the
+# first AV update, the memory-heavy step, comes right after the warm-up's checkpoint). The retry
+# starts over, warm-up included (~15 min).
+past_warmup() {
+  local latest
+  latest=$(ls -d "$CK"/rl/iter_* 2>/dev/null | sort | tail -1 || true)
+  [ -n "$latest" ] && [ "$((10#${latest##*iter_}))" -gt $((START + FREEZE)) ]
+}
 if ! rl_train "$CK/rl" "$NUM_STEPS" 256 8 16 64 $(wandb_flags l24-mtry-rl) 2>&1 | tee "$RES/rl_train.log"; then
-  if grep -q "OutOfMemoryError\|CUDA out of memory" "$RES/rl_train.log" && ! ls -d "$CK"/rl/iter_* >/dev/null 2>&1; then
-    echo "OOM before the first checkpoint: retrying at half batch"
+  if grep -q "OutOfMemoryError\|CUDA out of memory" "$RES/rl_train.log" && ! past_warmup; then
+    echo "OOM before any checkpoint past the warm-up: retrying at half batch"
     rm -rf "$CK/rl"
     rl_train "$CK/rl" "$NUM_STEPS" 128 4 8 32 $(wandb_flags l24-mtry-rl) 2>&1 | tee "$RES/rl_train.log"
   else
@@ -123,9 +138,16 @@ python scripts/heads_sft_checks.py --sft-dir "$SFT" --base-ckpt "$BASE" --no-inj
     --batch-size 64 --max-new-tokens 256 --temperature 1 --no-fallback-cut \
     --av-ckpt "$LAST" --ar-ckpt "$LAST/critic" --out-dir "$RES/checks_t1"
 
+# The sweep pod downloads the warm-up's and the last checkpoint from HF: wait (≤ 60 min) until both are
+# uploaded, unless the uploader is gone (then say so; results/rl_ckpt still has both).
 stage wait_uploads
-for _ in $(seq 1 60); do   # the uploader lags the trainer by up to a few minutes
-  grep -q "$(basename "$LAST")" /workspace/hf_upload_stage/uploaded.txt 2>/dev/null && break
+WARM=iter_$(printf %06d $((START + FREEZE)))
+for _ in $(seq 1 120); do
+  up=/workspace/hf_upload_stage/uploaded.txt
+  if grep -qx "$(basename "$LAST")" "$up" 2>/dev/null && grep -qx "$WARM" "$up" 2>/dev/null; then break; fi
+  if ! pgrep -f hf_ckpt_uploader.py >/dev/null; then
+    echo "WARNING: the HF uploader is not running; last lines of its log:"; tail -n 20 "$RES/hf_upload.log"; break
+  fi
   sleep 30
 done
 cat /workspace/hf_upload_stage/uploaded.txt || true

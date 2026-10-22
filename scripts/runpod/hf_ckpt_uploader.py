@@ -3,7 +3,8 @@
 Watches the trainer log for `[save] LoRA → <dir>` (printed only after the critic, the actor
 adapter and optim_latest.pt are all written), snapshots that iter dir — minus the frozen
 `reference/` adapter, a copy of the SFT AV already on HF — plus the newest optimizer state into a
-staging dir, and uploads it as `<iter>/` (optim as `optim_latest.pt`, overwritten each time).
+staging dir, and uploads it as `<iter>/` (each iter dir gets the optimizer state current at its save,
+as `<iter>/optim_latest.pt`, so any uploaded checkpoint can be resumed).
 Read-only toward the training run: it never signals, locks or writes into the checkpoint dir.
 
   HF_TOKEN=... python scripts/runpod/hf_ckpt_uploader.py --log /workspace/results/run.log \

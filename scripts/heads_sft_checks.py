@@ -94,7 +94,12 @@ def av_generate(actor, vref, tok, cfg, rows: list[dict], vecs: np.ndarray, devic
             expl = extract_explanation(g)
             if expl is None:   # cut off before </explanation>: keep what was said, minus the tag
                 n_fallback += 1
-                expl = g.replace("<explanation>", "").strip()[:fallback_chars]
+                if fallback_chars is None:   # the whole text, as the matryoshka trainer reads it
+                    from nla.train_rl_self_contained import open_explanation
+                    expl = open_explanation(g)
+                    expl = g.strip() if expl is None else expl
+                else:
+                    expl = g.replace("<explanation>", "").strip()[:fallback_chars]
             out.append(expl)
     print(f"  AV generations without a closing tag: {n_fallback}/{len(rows)}", flush=True)
     return out
