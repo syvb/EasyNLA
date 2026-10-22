@@ -221,3 +221,28 @@ def test_kl_weight_fn_scales_kl_term():
     loss_w, _ = rl.grpo_token_loss(new_lp, ref_lp, torch.tensor(0.0), kl_beta=0.03 * w)
     loss_1, _ = rl.grpo_token_loss(new_lp, ref_lp, torch.tensor(0.0), kl_beta=0.03)
     assert math.isclose(float(loss_w) / float(loss_1), float(w.mean()), rel_tol=1e-5)
+
+
+def test_rollout_batched_caps_never_stopping_rows_are_all_capped():
+    """Rows that open the explanation and never stop must all come back capped, including the group
+    at the chunk's largest cap: the chunk's generation limit must lie past every row's cap."""
+    from types import SimpleNamespace
+    tok = _tokenizer_or_skip()
+    opening = tok.encode("<explanation>\n", add_special_tokens=False)
+    filler = tok.encode(" word", add_special_tokens=False)[0]
+
+    class Stub:   # opens the explanation, then never stops, up to max_new_tokens
+        def generate(self, input_ids, max_new_tokens, **kw):
+            new = (opening + [filler] * max_new_tokens)[:max_new_tokens]
+            tail = torch.tensor([new] * input_ids.shape[0], dtype=torch.long)
+            return SimpleNamespace(sequences=torch.cat([input_ids, tail], dim=1))
+
+    caps = [3, 7, 7, 5]
+    vref = [None]
+    res = rl.rollout_batched(Stub(), tok, ["Describe it"] * 4, [torch.randn(8) for _ in caps], vref, 2, 40, 1.0,
+                             "cpu", {tok.eos_token_id}, chunk_rows=4, caps=caps, opening_ids=opening)
+    for r in res:
+        resp = r["full_ids"][r["prompt_len"]:].tolist()
+        assert r["capped"], r["prompt_idx"]
+        assert len(resp) - rl.content_offset(resp, opening) == caps[r["prompt_idx"]]
+        assert rl.open_explanation(tok.decode(resp)) is not None

@@ -208,7 +208,9 @@ def rollout_batched(
         part = flat[s:s + chunk_rows]
         n_new = max_new_tokens
         if caps is not None:
-            n_new = min(max_new_tokens, len(opening_ids) + max(caps[pi] for pi in part))
+            # +1: a row at the chunk's largest cap must run PAST it to be recognized as cut (stopping
+            # exactly at the cap is indistinguishable from a cap-length response that would go on)
+            n_new = min(max_new_tokens, len(opening_ids) + max(caps[pi] for pi in part) + 1)
         width = max(len(ids[pi]) for pi in part)
         inp = torch.full((len(part), width), tokenizer.pad_token_id, dtype=torch.long, device=device)
         attn = torch.zeros((len(part), width), dtype=torch.long, device=device)
