@@ -81,7 +81,7 @@ rl_train() {   # rl_train <save dir> <num steps> <rollout batch> <logp mb> <AR m
   python -m nla.train_rl_self_contained --config configs/rl_sgpu.yaml \
     --base-ckpt "$BASE" --quant none --device cuda \
     --av-ckpt "$CK/sft_av" --ar-ckpt "$CK/prev/$FROM_ITER/critic" \
-    --resume-from-lora "$CK/prev/$FROM_ITER" \
+    --resume-from-lora "$CK/prev/$FROM_ITER" --start-step "$START" \
     --rl-parquet "$SFT/rl.parquet" --sidecar "$SFT/rl.parquet" --save-dir "$dir" \
     --critic-prefix-column critic_prefix \
     --rollout-batch "$rb" --logp-micro-batch "$lmb" --critic-micro-batch "$cmb" --eval-gen-batch "$egb" \

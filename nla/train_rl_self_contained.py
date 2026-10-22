@@ -209,8 +209,9 @@ def rollout_batched(
         n_new = max_new_tokens
         if caps is not None:
             # +1: a row at the chunk's largest cap must run PAST it to be recognized as cut (stopping
-            # exactly at the cap is indistinguishable from a cap-length response that would go on)
-            n_new = min(max_new_tokens, len(opening_ids) + max(caps[pi] for pi in part) + 1)
+            # exactly at the cap is indistinguishable from a cap-length response that would go on);
+            # +6: room for a differently tokenized opening (content_offset)
+            n_new = min(max_new_tokens, len(opening_ids) + max(caps[pi] for pi in part) + 7)
         width = max(len(ids[pi]) for pi in part)
         inp = torch.full((len(part), width), tokenizer.pad_token_id, dtype=torch.long, device=device)
         attn = torch.zeros((len(part), width), dtype=torch.long, device=device)
@@ -232,8 +233,10 @@ def rollout_batched(
             n_real = next((i + 1 for i, t in enumerate(resp_ids) if t in eos_ids), len(resp_ids))
             resp_ids = resp_ids[:n_real]
             capped = False
+            noncanon = False
             if caps is not None:
-                resp_ids, capped = cap_response(resp_ids, opening_ids, caps[pi], eos_ids)
+                noncanon = resp_ids[:len(opening_ids)] != list(opening_ids)
+                resp_ids, capped = cap_response(resp_ids, opening_ids, caps[pi], eos_ids, tokenizer)
                 n_real = len(resp_ids)
             out.append({
                 "text": tokenizer.decode(resp_ids, skip_special_tokens=True),
@@ -242,22 +245,34 @@ def rollout_batched(
                 "n_resp": n_real,
                 "prompt_idx": pi,
                 "capped": capped,
+                "noncanon_opening": noncanon,
             })
     return out
 
 
-def content_offset(resp_ids, opening_ids):
-    """Index of the first explanation-content token: just past the "<explanation>\n" opening
-    when the response starts with it, else 0."""
+def content_offset(resp_ids, opening_ids, tokenizer=None):
+    """Index of the first explanation-content token: just past the "<explanation>\n" opening.
+    The canonical opening ids match directly; with a tokenizer, a differently tokenized opening
+    ("<explanation>" + "\n", or "...>\n\n") is found by decoding, and whitespace-only tokens
+    right after it count as part of it. 0 when there is no opening."""
     k = len(opening_ids)
-    return k if list(resp_ids[:k]) == list(opening_ids) else 0
+    if list(resp_ids[:k]) == list(opening_ids):
+        return k
+    if tokenizer is None:
+        return 0
+    for j in range(1, min(len(resp_ids), k + 4) + 1):
+        if tokenizer.decode(resp_ids[:j]).lstrip().startswith(EXPLANATION_OPEN):
+            while j < len(resp_ids) and j < k + 6 and not tokenizer.decode(resp_ids[j:j + 1]).strip():
+                j += 1
+            return j
+    return 0
 
 
-def cap_response(resp_ids, opening_ids, cap, eos_ids=()):
+def cap_response(resp_ids, opening_ids, cap, eos_ids=(), tokenizer=None):
     """Matryoshka truncation: keep the opening + at most `cap` explanation-content tokens.
     Returns (ids, capped); a response that stopped within its cap (its final stop id not
     counted) is returned unchanged."""
-    lim = content_offset(resp_ids, opening_ids) + cap
+    lim = content_offset(resp_ids, opening_ids, tokenizer) + cap
     n = len(resp_ids) - (1 if resp_ids and resp_ids[-1] in eos_ids else 0)
     return (resp_ids[:lim], True) if n > lim else (resp_ids, False)
 
@@ -994,6 +1009,11 @@ def main():
     eos_ids.discard(None)
     print(f"[rollout] EOS-trim ids: {sorted(eos_ids)}")
     opening_ids = tokenizer.encode(EXPLANATION_OPEN + "\n", add_special_tokens=False)
+    if trunc:
+        # the chunk's generation limit (opening + largest cap + 7) must stay below the rollout cap, or
+        # the largest-cap group stops AT the rollout cap and is scored as a cap-truncated failure
+        assert len(opening_ids) + args.trunc_max_tokens + 7 <= args.max_new_tokens, (
+            f"--max-new-tokens {args.max_new_tokens} too small for --trunc-max-tokens {args.trunc_max_tokens}")
 
     # ---- dataset ----
     print(f"[data] loading {args.rl_parquet} (max_rows={args.max_rows}, "
@@ -1238,6 +1258,7 @@ def main():
         all_resp_lens = []  # response token count per sample (for length/throughput logging)
         all_prefixes = []   # per-sample AR prefix (--critic-prefix-column), else None
         all_capped = []     # cut by its matryoshka cap
+        n_noncanon = 0      # explanation opening tokenized differently from "<explanation>\n"
         _acts_b = [torch.tensor(rows[ri]["activation"], dtype=torch.float32) for ri in batch_idxs]
         # matryoshka caps: one per prompt group, from an RNG keyed on (seed, step) so a resume
         # draws the same caps the original run would have
@@ -1264,6 +1285,7 @@ def main():
         for r in _responses:
             gi = r["prompt_idx"]
             capped = bool(r.get("capped", False))
+            n_noncanon += bool(r.get("noncanon_opening", False))
             expl = open_explanation(r["text"]) if capped else extract_explanation(r["text"])
             all_capped.append(capped)
             all_full_ids.append(r["full_ids"])
@@ -1365,6 +1387,7 @@ def main():
         if trunc:
             shape_terms["trunc/cap_mean"] = float(np.mean(caps))
             shape_terms["trunc/capped_frac"] = float(np.mean(all_capped))
+            shape_terms["trunc/noncanon_opening_frac"] = n_noncanon / max(1, len(all_capped))
         for gi in range(args.batch_prompts):
             # exclude injection-failed rollouts from the group baseline; truncated
             # participate with the -2 failure reward.
@@ -1392,7 +1415,7 @@ def main():
         upd_adv = adv.index_select(0, torch.tensor(keep, device=device))
         kl_weight_fn = None
         if args.kl_taper_start > 0:
-            _offs = [content_offset(upd_full_ids[j][upd_prompt_lens[j]:].tolist(), opening_ids)
+            _offs = [content_offset(upd_full_ids[j][upd_prompt_lens[j]:].tolist(), opening_ids, tokenizer)
                      for j in range(len(keep))]
             def kl_weight_fn(j, n, _offs=_offs):
                 return kl_taper_weights(n, _offs[j], args.kl_taper_start, args.kl_taper_end, args.kl_taper_floor)

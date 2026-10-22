@@ -246,3 +246,25 @@ def test_rollout_batched_caps_never_stopping_rows_are_all_capped():
         assert r["capped"], r["prompt_idx"]
         assert len(resp) - rl.content_offset(resp, opening) == caps[r["prompt_idx"]]
         assert rl.open_explanation(tok.decode(resp)) is not None
+
+
+def test_cap_noncanonical_opening():
+    """An opening tokenized differently from the canonical "<explanation>\\n" ids still caps the
+    CONTENT: every cap keeps a non-empty prefix of the body (it used to count the opening's own
+    tokens, scoring caps 1-3 as failures and 4-5 as empty)."""
+    tok = _tokenizer_or_skip()
+    opening = tok.encode("<explanation>\n", add_special_tokens=False)
+    body = tok.encode("The head writes a broad topic direction for crime reports.", add_special_tokens=False)
+    variants = {
+        "split": tok.encode("<explanation>", add_special_tokens=False) + tok.encode("\n", add_special_tokens=False),
+        "double": tok.encode("<explanation>\n\n", add_special_tokens=False),
+    }
+    for name, op in variants.items():
+        assert op != opening, name
+        resp = op + body
+        for cap in range(1, 6):
+            ids, capped = rl.cap_response(resp, opening, cap, (), tok)
+            assert capped, (name, cap)
+            e = rl.open_explanation(tok.decode(ids))
+            assert e and tok.decode(body).startswith(e), (name, cap, e)
+            assert len(ids) - rl.content_offset(resp, opening, tok) == cap
