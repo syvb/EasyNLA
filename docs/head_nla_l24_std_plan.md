@@ -152,9 +152,45 @@ These guesses about a site's write read no explanation; mean FVE over heads:
 | the head's other writes in the same doc, averaged | +14% | 10/32, incl. H18, H24–27 |
 | the head's write at the previous token | +46% | 27/32 |
 
-- **The head's constant first-token write** accounts for 25% of a write's direction (mean cos², 6–48% by head).
+- **The head's position-0 vector accounts for 25% of a write's direction** (mean cos², 6–48% by head). That vector is the first-token (sink) contribution; like every write here, it is a deviation from the head's average write.
 - **What the per-site text adds on top of the doc average** is largest on the self-attending heads: H0 (+79 pts) and H7 (+56). It is negative on 10 heads, which act as per-doc topic encoders.
 - **Interp case study of the strongest group (H16–19):** `docs/head_nla_l24_h18_case_study.md`.
+
+### Counterfactual relevance of every head at every token (`scripts/heads_ablation_effects.py`, 2026-10-22)
+
+**Method.**
+- For each of the 4 doc-viewer documents (1,180 tokens × 32 heads), one head's output at one token only is replaced
+  by its mean output (also by zero), and layers 24–35 are re-run.
+- Measured at that token: KL of the next-token distribution, change in log p of the actual next token, and relative
+  change of the final residual. Also the KL summed over all later tokens.
+- Each value is measured against an unablated control row in the same batch.
+
+**Checks.**
+- Token differences of the writes match the viewer's stored writes (cos 1.0000).
+- Re-running from the cached layer-24 input reproduces the full model exactly.
+- Nothing before the ablated token changes.
+
+**fp32 matters.** The first run was all bf16. Rounding noise put a head-independent floor of ~7e-4 nats per token
+under every KL, so "later tokens" just tracked how many later tokens there were (ρ = 0.99). With layers 24–35 in fp32:
+- the at-token KL median drops from 8e-4 to 3–5e-5;
+- mean vs zero ablation agree (ρ = 0.96);
+- within a token, ranking heads by logit effect and by residual effect agrees (ρ = 0.93).
+
+**Findings.**
+- **Most relevant heads.** H27 is the top head by KL at 27% of tokens (16–49% per document), then H25, H11, H15, H10
+  and H16/H19. The top 5 heads carry 39% of all KL.
+- **KV6 (H24–27), the locale group.** It matters most when an English place name comes next:
+  - "the owners of the Br" → "igg" (Brigg): H25 +0.50 nats;
+  - "North" → "Lincoln": H26 +0.46 nats.
+
+  The RL explanations there say "Yorkshire countryside", "rural English countryside", "northern English cities".
+- **H10** drives ", such [as]" (+0.30 nats) in two documents.
+- **H16** gives "-being" after "during a well" +0.55 nats; this is the largest effect in the data (KL 0.25).
+- **Relevance vs explanation quality: unrelated.** ρ(KL, RL FVE) = −0.04 over sites (−0.16 within head). Each token's
+  most relevant head has the average FVE (+22% vs +23%).
+- **When heads matter.** Relevance falls with attention to the first token (ρ = −0.67) and rises with write norm (ρ = 0.68).
+- **The viewer** has these as heatmap colours (log scale; a dot marks each token's top head), a sortable per-token head
+  table with ranks, overview sorts, and a "most relevant sites" list.
 
 ## Why
 

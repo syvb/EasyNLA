@@ -5,6 +5,9 @@
 Per document: a heads × tokens heatmap (RL FVE by default), the text shaded by the selected head's full attention
 row at the selected token, and the selected site's explanations (RL; SFT and gold on request), scores and evidence.
 Each document's data is gzip-compressed and base64-embedded, decoded in the browser only when opened.
+If a document folder has effects.parquet (scripts/heads_ablation_effects.py), the page also shows each head's
+counterfactual relevance at each token (ablate that head at that token: effect on the final residual, on the
+next-token logits, on the actual next token, on later tokens), as heatmap colours, rankings and a top-sites list.
 """
 
 import argparse
@@ -31,6 +34,32 @@ def r3(x) -> list:
     return [None if not np.isfinite(v) else round(float(v), 3) for v in x]
 
 
+def g3(x) -> list:
+    """3 significant digits (effects span many orders of magnitude)."""
+    return [None if not np.isfinite(v) else float(f"{float(v):.3g}") for v in x]
+
+
+EFFECTS = ("kl", "resid", "dlogp", "later")
+
+
+def effect_scales(frames: list) -> dict:
+    """Colour ranges shared by all documents: log scale from the 5th to the 99.5th percentile for the magnitudes,
+    symmetric linear ±99th percentile of |Δ log p|."""
+    out = {}
+    for mode in ("mean", "zero"):
+        for k in EFFECTS:
+            v = np.concatenate([f[f"{k}_{mode}"].to_numpy() for f in frames])
+            v = v[np.isfinite(v)]
+            if k == "dlogp":
+                m = float(np.percentile(np.abs(v), 99))
+                out[f"{k}_{mode}"] = {"kind": "div", "lo": -m, "hi": m}
+            else:
+                pos = v[v > 0]
+                out[f"{k}_{mode}"] = {"kind": "mag", "log": True, "lo": float(np.log10(np.percentile(pos, 5))),
+                                      "hi": float(np.log10(np.percentile(pos, 99.5)))}
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--docs", required=True)
@@ -45,7 +74,7 @@ def main() -> None:
     tok = AutoTokenizer.from_pretrained(args.base_model)
     n_kv = args.n_kv_heads or AutoConfig.from_pretrained(args.base_model).num_key_value_heads
     df = doc_freq(pq.read_table(args.texts_ref, columns=["avg16"]).to_pydict()["avg16"]) if args.texts_ref else {}
-    docs = []
+    docs, eff_frames = [], []
     for dd in sorted(Path(args.docs).iterdir()):
         if not ((dd / "meta.json").exists() and (dd / "sites.parquet").exists() and (dd / "attn.npz").exists()):
             continue
@@ -76,13 +105,25 @@ def main() -> None:
              "distinct": [[t for t in x if df.get(t, 0) < thr] for x in a16],
              "filler": [[t for t in x if df.get(t, 0) >= thr] for x in a16],
              "lens": [toks(x) for x in s.lens], "att": att_q}
+        if (dd / "effects.parquet").exists():
+            e = pq.read_table(dd / "effects.parquet").to_pandas()
+            e = s[["head", "pos"]].merge(e, on=["head", "pos"], how="left", validate="1:1")
+            assert len(e) == len(s)
+            for k in EFFECTS:
+                for mode in ("mean", "zero"):
+                    d[f"{k}_{mode}"] = g3(e[f"{k}_{mode}"])
+            c0 = e[e["head"] == e["head"].min()].sort_values("pos")
+            d["clean_entropy"], d["clean_logp_next"] = r3(c0.clean_entropy), r3(c0.clean_logp_next)
+            eff_frames.append(e)
         blob = base64.b64encode(gzip.compress(json.dumps(d, ensure_ascii=False).encode(), 9)).decode()
         docs.append({"name": meta["name"], "domain": meta.get("domain", ""), "n_tokens": T, "n_pos": len(pos),
                      "rl_fve_mean": round(float(np.nanmean(s.rl_fve)), 3), "blob": blob})
         print(f"{dd.name}: {T} tokens × {H} heads, {len(blob) / 1e6:.1f} MB embedded")
     assert docs, "no finished documents"
     data = json.dumps(docs).replace("</", "<\\/")
-    Path(args.out).write_text(TEMPLATE.replace("__TITLE__", html.escape(args.title)).replace("__DATA__", data))
+    escales = json.dumps(effect_scales(eff_frames) if eff_frames else {})
+    Path(args.out).write_text(TEMPLATE.replace("__TITLE__", html.escape(args.title)).replace("__DATA__", data)
+                              .replace("__ESCALES__", escales))
     print(f"wrote {args.out}: {len(docs)} documents, {Path(args.out).stat().st_size / 1e6:.1f} MB")
 
 
@@ -106,7 +147,7 @@ canvas{display:block;image-rendering:pixelated;cursor:crosshair}
 .legend{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-2);margin:8px 2px 0;flex-wrap:wrap}.lg{display:inline-flex;flex-direction:column;gap:2px}
 .ramp{width:260px;height:10px;border-radius:3px;display:block}.ticks{display:flex;justify-content:space-between;width:260px;font-variant-numeric:tabular-nums}
 .tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:12.5px;box-shadow:0 2px 10px rgba(0,0,0,.12);display:none;z-index:5;max-width:320px}
-.cols{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px;margin-top:14px}@media (max-width:980px){.cols{grid-template-columns:1fr}}
+.cols>*{min-width:0}.cols{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px;margin-top:14px}@media (max-width:980px){.cols{grid-template-columns:1fr}}
 .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
 .ctx{line-height:1.8;white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;font-size:13.5px}
 .ctx .t{border-radius:3px;cursor:pointer}.ctx .cur{outline:2px solid var(--rl);font-weight:600}.ctx .after{color:var(--ink-3)}
@@ -132,32 +173,42 @@ table.heads tr{cursor:pointer}table.heads tr.sel{background:var(--accent-soft)}t
 .thumb.sib{border-style:dashed;border-color:var(--accent)}.kvt{font-weight:400;color:var(--ink-3);font-size:11px}
 .chip.kvb{cursor:pointer;font-family:system-ui;padding:1px 6px;color:var(--ink)}.chip.kvb.on{border-color:var(--accent);background:var(--accent-soft)}
 table.heads tr.sib td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+th.srt{cursor:pointer;white-space:nowrap}th.srt:hover{color:var(--accent)}th.srt.on{color:var(--accent)}table.heads td.rk{color:var(--ink-3);font-variant-numeric:tabular-nums;text-align:right}
+table.heads tr.top3 td.rk{color:var(--ink);font-weight:700}.toplist{max-height:340px;overflow:auto;margin-top:4px}
 .tag{font-size:10.5px;border:1px solid var(--border);border-radius:999px;padding:0 6px;color:var(--ink-2);background:var(--surface-2)}
 </style></head><body>
 <header><h1>__TITLE__</h1>
 <p>Rows are the layer's 32 attention heads, columns are every token of a held-out document. Each cell is one head's write at one token, explained by the <b>AV</b> (it sees only the write vector) and reconstructed from that explanation by the <b>AR</b>. Colour = <b>FVE</b> (1 − error / error of predicting the head's mean write): orange above 0, blue below, grey ≈ 0; it is negative below cos ≈ 0.5 by construction. Click a cell for its explanation, scores and evidence; the text then shows that head's full attention from the token (evidence only, never used for any explanation).</p>
-<p>Heads come in <b>GQA groups</b>: Qwen3-8B has 8 key/value heads, each shared by 4 query heads (KV0 = H0–3, KV1 = H4–7, …). Heads in a group read the same keys and values and differ only in their query and output projections, so they often share a theme. Groups are banded in the heatmap and boxed in the overview; the selected head's group-mates are marked.</p></header>
+<p>Heads come in <b>GQA groups</b>: Qwen3-8B has 8 key/value heads, each shared by 4 query heads (KV0 = H0–3, KV1 = H4–7, …). Heads in a group read the same keys and values and differ only in their query and output projections, so they often share a theme. Groups are banded in the heatmap and boxed in the overview; the selected head's group-mates are marked.</p>
+<p id="effintro"><b>Counterfactual relevance</b>: for every token and head, that head's output at that token alone was replaced (by the head's mean output, or by zero) and the rest of the model re-run. <b>Logit effect</b> = KL between the clean and ablated next-token distributions at that token; <b>Δ log p</b> = how much the head raises the log-probability of the actual next token (positive = it helps); <b>residual effect</b> = relative change of the final-layer residual at that token; <b>later tokens</b> = summed KL over all later tokens (the write is read by later positions). Pick one under <i>Colour</i>, sort the <i>Heads at this token</i> table or the overview by it, or use <i>Most relevant sites</i>.</p></header>
 <main>
 <div class="bar" id="docs" role="group" aria-label="Document"></div>
-<div class="bar"><label for="metric">Colour</label><select id="metric"><option value="rl_fve">RL FVE</option><option value="sft_fve">SFT FVE</option><option value="gold_fve">Gold FVE (RL AR)</option><option value="gap">RL − SFT FVE</option><option value="first_w">attention to first token</option></select>
+<div class="bar"><label for="metric">Colour</label><select id="metric"><optgroup label="Explanations and attention"><option value="rl_fve">RL FVE</option><option value="sft_fve">SFT FVE</option><option value="gold_fve">Gold FVE (RL AR)</option><option value="gap">RL − SFT FVE</option><option value="first_w">attention to first token</option></optgroup><optgroup label="Counterfactual relevance (ablate the head at the token)" class="effopt"><option value="kl">effect on next-token logits (KL)</option><option value="dlogp">helps predict the actual next token (Δ log p)</option><option value="resid">effect on final residual</option><option value="later">effect on later tokens (Σ KL)</option></optgroup></select>
+<label for="abl" class="effopt">Ablate to</label><select id="abl" class="effopt"><option value="mean">the head's mean output</option><option value="zero">zero</option></select>
 <label for="zoom">Cell width</label><select id="zoom"><option value="4">4 px</option><option value="6" selected>6 px</option><option value="9">9 px</option><option value="14">14 px</option></select>
 <span style="width:8px"></span><span class="muted">Show</span><button id="t-sft" aria-pressed="false">SFT AV</button><button id="t-gold" aria-pressed="false">Gold (Haiku)</button><button id="t-hl" aria-pressed="true">Highlight quotes &amp; markup</button><button id="theme" title="Toggle light/dark">◐</button></div>
 <div class="hm-wrap"><canvas id="hm" tabindex="0" aria-label="Heads by tokens heatmap; arrow keys move the selection"></canvas>
 <div class="legend"><b id="lgname" style="color:var(--ink)"></b><span class="lg"><canvas class="ramp" id="ramp" width="260" height="10"></canvas><span class="ticks"><span id="lo"></span><span id="mid"></span><span id="hi"></span></span></span><span id="lgnote"></span><span class="muted" style="margin-left:12px">← → previous / next token · ↑ ↓ heads (heatmap focused) · rows banded by KV group</span><span id="stat" style="margin-left:auto"></span></div></div>
+<div class="panel ov" id="topp"><h2>Most relevant sites in this document <span class="meta">(token, head) pairs ranked by a counterfactual effect; click one to select it. The heatmap marks each token's top head with a dot when a relevance colour is chosen.</span></h2>
+<div class="bar"><label for="tmetric">Rank by</label><select id="tmetric"><option value="kl">effect on next-token logits (KL)</option><option value="dlogp">helps predict the actual next token (Δ log p)</option><option value="resid">effect on final residual</option><option value="later">effect on later tokens (Σ KL)</option></select>
+<label for="theadf">Head</label><select id="theadf"><option value="-1">all heads</option></select><button id="t-first" aria-pressed="true" title="Ablating the first token (the attention sink) disturbs everything after it">Skip first token</button><span class="muted" id="tnote"></span></div>
+<div class="toplist"><table class="heads" id="toplist"></table></div></div>
 <div class="panel ov"><h2>Heads overview <span class="meta">each thumbnail is the head's attention over this document (rows = query token, top to bottom; columns = key token, left to right; darker = more attention). Click one to select that head.</span></h2>
 <div class="bar"><label for="osort">Sort</label><select id="osort"><option value="h">by head (in KV groups)</option><option value="kv">by KV group, best mean RL FVE first</option><option value="sink">least first-token sink</option><option value="prev">most previous-token</option>
-<option value="self">most self</option><option value="ent">most spread out (non-sink)</option><option value="dist">longest range</option><option value="focus">most focused on specific tokens</option><option value="foc">least spread out (non-sink)</option><option value="fve">highest mean RL FVE</option></select>
+<option value="self">most self</option><option value="ent">most spread out (non-sink)</option><option value="dist">longest range</option><option value="focus">most focused on specific tokens</option><option value="foc">least spread out (non-sink)</option><option value="fve">highest mean RL FVE</option><optgroup label="Counterfactual relevance (mean over tokens)" class="effopt"><option value="e_kl">largest effect on next-token logits</option><option value="e_dlogp">most help predicting next tokens</option><option value="e_resid">largest effect on final residual</option><option value="e_later">largest effect on later tokens</option></optgroup></select>
 <button id="t-sink" aria-pressed="true" title="Remove the first-token column and renormalize each row, so the non-sink pattern is visible">Hide first-token sink</button>
 <span class="muted">No BOS: Qwen's tokenizer adds none, so the first real token is the attention sink. Thumbnail rows are scaled to their own maximum.</span></div>
 <div class="thumbs" id="thumbs"></div></div>
 <div class="cols"><div><div class="panel"><h2 id="ctxh">Text</h2><div class="ctx" id="ctx"></div></div>
-<div class="panel" style="margin-top:14px"><h2 id="colh">Heads at this token</h2><table class="heads" id="heads"></table></div></div>
+<div class="panel" style="margin-top:14px"><h2 id="colh">Heads at this token</h2><div style="overflow-x:auto"><table class="heads" id="heads"></table></div></div></div>
 <div class="panel" id="detail"></div></div>
 </main><div class="tip" id="tip"></div>
 <script id="data" type="application/json">__DATA__</script>
+<script id="escales" type="application/json">__ESCALES__</script>
 <script>
 const DOCS=JSON.parse(document.getElementById('data').textContent),CACHE={};
-const S={doc:0,h:0,pi:0,metric:'rl_fve',zoom:6,show:{sft:false,gold:false,hl:true}};let D=null;
+const S={doc:0,h:0,pi:0,metric:'rl_fve',zoom:6,show:{sft:false,gold:false,hl:true},abl:'mean',hsort:'kl',tmetric:'kl',thead:-1,skipFirst:true};let D=null;
+const ESC=JSON.parse(document.getElementById('escales').textContent);
 const $=id=>document.getElementById(id);
 function el(t,a={},...k){const e=document.createElement(t);for(const[x,v]of Object.entries(a)){if(x==='class')e.className=v;else if(x.startsWith('on'))e.addEventListener(x.slice(2),v);else e.setAttribute(x,v)}for(const c of k)if(c!=null)e.append(c);return e}
 const pct=x=>x==null?'n/a':(x>=0?'+':'−')+Math.abs(Math.round(100*x))+'%',f2=x=>x==null?'n/a':(x>=0?'':'−')+Math.abs(x).toFixed(2);
@@ -167,7 +218,15 @@ const txt=await new Response(new Blob([b]).stream().pipeThrough(new Decompressio
 const idx=(h,pi)=>h*D.pos.length+pi;
 // GQA: query head h reads KV head ⌊h / (n_heads / n_kv)⌋, shared with its group-mates.
 const GS=()=>D.n_heads/D.n_kv,kvOf=h=>Math.floor(h/GS()),sibs=h=>[...Array(GS()).keys()].map(i=>kvOf(h)*GS()+i),kvName=q=>`KV${q} (H${q*GS()}–${(q+1)*GS()-1})`;
-function val(h,pi){const k=idx(h,pi);if(S.metric==='gap'){const a=D.rl_fve[k],b=D.sft_fve[k];return a==null||b==null?null:a-b}return D[S.metric][k]}
+// Counterfactual relevance (heads_ablation_effects.py): <metric>_<mean|zero> arrays, absent for documents without effects.
+const EFF=['kl','dlogp','resid','later'],isEff=m=>EFF.includes(m),hasEff=()=>!!(D&&D.kl_mean);
+const EFFNAME={kl:'logit KL',dlogp:'Δ log p',resid:'residual',later:'later Σ KL'};
+const EFFNOTE={kl:'KL(clean ‖ ablated) of the next-token distribution at this token, nats; log scale',dlogp:'log p(actual next token), clean − ablated: > 0 = the head helps predict it',resid:'‖Δ final-layer residual‖ / ‖residual‖ at this token; log scale',later:'KL summed over all later tokens, nats; log scale'};
+function ev(m,h,pi){const a=D[m+'_'+S.abl];return a?a[idx(h,pi)]:null}
+function fmtE(m,v){if(v==null)return 'n/a';if(m==='resid'){const p=100*v;return(p>=10?p.toFixed(0):p>=1?p.toFixed(1):p.toPrecision(1))+'%'}if(m==='dlogp')return(v>=0?'+':'−')+Math.abs(v).toFixed(Math.abs(v)>=0.1?2:3);
+return v>=10?v.toFixed(0):v>=1?v.toFixed(1):v>=0.01?v.toFixed(3):v===0?'0':v.toExponential(0).replace('e-','e−')}
+function rankAt(m,h,pi){const v=ev(m,h,pi);if(v==null)return null;let r=1;for(let x=0;x<D.n_heads;x++){const w=ev(m,x,pi);if(x!==h&&w!=null&&w>v)r++}return r}
+function val(h,pi){const k=idx(h,pi);if(isEff(S.metric))return ev(S.metric,h,pi);if(S.metric==='gap'){const a=D.rl_fve[k],b=D.sft_fve[k];return a==null||b==null?null:a-b}return D[S.metric][k]}
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
 // Colour scales (dataviz reference palette): FVE metrics and RL−SFT are DIVERGING around 0 (blue below, grey
 // midpoint, red above); attention to the first token is SEQUENTIAL blue. Stops are interpolated in OKLab and
@@ -175,9 +234,14 @@ function css(v){return getComputedStyle(document.documentElement).getPropertyVal
 const SCALES={fve:{kind:'div',lo:-1,hi:1,ticks:['−100%','0','+100%'],note:'FVE is at most +100% (perfect); values below −100% are shown as −100%'},
  gap:{kind:'div',lo:-2,hi:2,ticks:['−200%','0','+200%'],note:'RL − SFT, in FVE points; clamped at ±200%'},
  seq:{kind:'seq',lo:0,hi:1,ticks:['0','0.5','1'],note:'share of the head’s attention on the first token'}};
-const STOPS={light:{div:['#0d366b','#3987e5','#f0efec','#e66767','#9b1c1c'],seq:['#f0efec','#cde2fb','#86b6ef','#3987e5','#1c5cab','#0d366b']},
- dark:{div:['#b7d3f6','#3987e5','#383835','#d24d4d','#ffb4ab'],seq:['#383835','#184f95','#256abf','#3987e5','#86b6ef','#cde2fb']}};
-const scaleOf=m=>m==='gap'?SCALES.gap:m==='first_w'?SCALES.seq:SCALES.fve;
+// Relevance magnitudes use a separate SEQUENTIAL violet ramp on a log scale (ranges shared by all documents, set by
+// the builder); Δ log p uses the diverging ramp (blue = the head hurts the actual next token, red = it helps).
+const STOPS={light:{div:['#0d366b','#3987e5','#f0efec','#e66767','#9b1c1c'],seq:['#f0efec','#cde2fb','#86b6ef','#3987e5','#1c5cab','#0d366b'],mag:['#f0efec','#e2d8f6','#c0a6ec','#9673da','#6c46bd','#432485']},
+ dark:{div:['#b7d3f6','#3987e5','#383835','#d24d4d','#ffb4ab'],seq:['#383835','#184f95','#256abf','#3987e5','#86b6ef','#cde2fb'],mag:['#383835','#3b2964','#593b96','#7b5ac2','#a688df','#d6c6f5']}};
+function scaleOf(m){if(isEff(m)){const e=ESC[m+'_'+S.abl];if(!e)return SCALES.fve;
+ if(e.log)return{kind:'mag',log:true,lo:e.lo,hi:e.hi,ticks:[fmtE(m,10**e.lo),fmtE(m,10**((e.lo+e.hi)/2)),fmtE(m,10**e.hi)],note:EFFNOTE[m]+'; ablated to '+(S.abl==='mean'?'the mean output':'zero')};
+ return{kind:'div',lo:e.lo,hi:e.hi,ticks:[fmtE(m,e.lo),'0',fmtE(m,e.hi)],note:EFFNOTE[m]+'; clamped'}}
+ return m==='gap'?SCALES.gap:m==='first_w'?SCALES.seq:SCALES.fve}
 function toLin(c){c/=255;return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}function toSrgb(c){c=c<=0.0031308?12.92*c:1.055*Math.pow(c,1/2.4)-0.055;return Math.round(255*Math.max(0,Math.min(1,c)))}
 function hex2lab(h){const n=parseInt(h.slice(1),16),r=toLin(n>>16&255),g=toLin(n>>8&255),b=toLin(n&255);
 const l=Math.cbrt(0.4122214708*r+0.5363325363*g+0.0514459929*b),m=Math.cbrt(0.2119034982*r+0.6806995451*g+0.1073969566*b),s=Math.cbrt(0.0883024619*r+0.2817188376*g+0.6299787005*b);
@@ -187,7 +251,7 @@ return[toSrgb(4.0767416621*l-3.3077115913*m+0.2309699292*s),toSrgb(-1.2684380046
 let LUT={};function isDark(){const n=parseInt(css('--surface').slice(1),16);return((n>>16&255)+(n>>8&255)+(n&255))/3<128}
 function lut(kind){const key=kind+(isDark()?'d':'l');if(LUT[key])return LUT[key];const st=STOPS[isDark()?'dark':'light'][kind].map(hex2lab),out=[];
 for(let i=0;i<256;i++){const x=i/255*(st.length-1),k=Math.min(st.length-2,Math.floor(x)),f=x-k,a=st[k],b=st[k+1];const [r,g,bl]=lab2rgb([0,1,2].map(j=>a[j]+(b[j]-a[j])*f));out.push(`rgb(${r},${g},${bl})`)}return LUT[key]=out}
-function color(v,m=S.metric){if(v==null)return null;const sc=scaleOf(m),t=Math.max(0,Math.min(1,(v-sc.lo)/(sc.hi-sc.lo)));return lut(sc.kind)[Math.round(t*255)]}
+function color(v,m=S.metric){if(v==null)return null;const sc=scaleOf(m),x=sc.log?(v>0?Math.log10(v):sc.lo):v,t=Math.max(0,Math.min(1,(x-sc.lo)/(sc.hi-sc.lo)));return lut(sc.kind)[Math.round(t*255)]}
 const LAB=46,TOP=4;
 function drawHM(){LUT={};const c=$('hm'),H=D.n_heads,P=D.pos.length,cw=S.zoom,ch=11,dpr=window.devicePixelRatio||1;
 c.width=(LAB+P*cw)*dpr;c.height=(TOP+H*ch)*dpr;c.style.width=(LAB+P*cw)+'px';c.style.height=(TOP+H*ch)+'px';const g=c.getContext('2d');g.scale(dpr,dpr);
@@ -197,10 +261,13 @@ g.font='10px system-ui';for(let h=0;h<H;h++){if(sib.has(h)){g.fillStyle=css('--a
 g.fillStyle=css('--ink-2');for(let q=1;q<D.n_kv;q++)g.fillRect(0,TOP+q*G*ch-1,LAB+P*cw,1);   // group separators sit in the row gap
 g.strokeStyle=css('--ink');g.lineWidth=2;g.strokeRect(LAB+S.pi*cw-1,TOP+S.h*ch-1,cw+1,ch+1);
 g.strokeStyle=css('--accent');g.lineWidth=1;g.strokeRect(LAB+S.pi*cw-.5,TOP-2,cw,H*ch+3);
-const sc=scaleOf(S.metric),rc=$('ramp'),r=rc.getContext('2d'),RW=rc.width;for(let x=0;x<RW;x++){r.fillStyle=color(sc.lo+(sc.hi-sc.lo)*x/(RW-1));r.fillRect(x,0,1,rc.height)}
+if(isEff(S.metric)&&hasEff()){g.fillStyle=css('--ink');for(let pi=0;pi<P;pi++){let b=-1,bv=-Infinity;for(let h=0;h<H;h++){const v=val(h,pi);if(v!=null&&v>bv){bv=v;b=h}}if(b>=0)g.fillRect(LAB+pi*cw+cw/2-1,TOP+b*ch+ch/2-1.5,2,2)}}
+const sc=scaleOf(S.metric),rc=$('ramp'),r=rc.getContext('2d'),RW=rc.width,LT=lut(sc.kind);for(let x=0;x<RW;x++){r.fillStyle=LT[Math.round(255*x/(RW-1))];r.fillRect(x,0,1,rc.height)}
 $('lo').textContent=sc.ticks[0];$('mid').textContent=sc.ticks[1];$('hi').textContent=sc.ticks[2];$('lgname').textContent=$('metric').selectedOptions[0].text;$('lgnote').textContent=sc.note;
 const vs=[];for(let h=0;h<H;h++)for(let pi=0;pi<P;pi++){const v=D.rl_fve[idx(h,pi)];if(v!=null)vs.push(v)}const m=vs.reduce((a,b)=>a+b,0)/vs.length;
-$('stat').textContent=`${D.pos.length} tokens × ${H} heads · RL FVE mean ${pct(m)} · ${Math.round(100*vs.filter(v=>v>0).length/vs.length)}% of cells > 0`}
+$('stat').textContent=`${D.pos.length} tokens × ${H} heads · RL FVE mean ${pct(m)} · ${Math.round(100*vs.filter(v=>v>0).length/vs.length)}% of cells > 0`;
+if(isEff(S.metric)&&hasEff()){const cnt=new Array(H).fill(0);for(let pi=0;pi<P;pi++){let b=-1,bv=-Infinity;for(let h=0;h<H;h++){const v=val(h,pi);if(v!=null&&v>bv){bv=v;b=h}}if(b>=0)cnt[b]++}
+const tops=[...cnt.keys()].sort((a,b)=>cnt[b]-cnt[a]).slice(0,4).filter(h=>cnt[h]);$('stat').textContent=`top head per token (dots): `+tops.map(h=>`H${h} ×${cnt[h]}`).join(', ')}}
 function cellAt(e){const r=$('hm').getBoundingClientRect(),x=e.clientX-r.left-LAB,y=e.clientY-r.top-TOP,pi=Math.floor(x/S.zoom),h=Math.floor(y/11);
 return(pi>=0&&pi<D.pos.length&&h>=0&&h<D.n_heads)?{h,pi}:null}
 function attRow(h,pi){const s=atob(D.att[h][pi]);const a=new Float32Array(s.length);for(let i=0;i<s.length;i++){const q=s.charCodeAt(i)/255;a[i]=q*q}return a}
@@ -222,14 +289,27 @@ S.show.sft?el('div',{class:'ex sft'},el('div',{class:'lab'},el('b',{},'SFT AV'),
 S.show.gold&&D.gold[k]?el('div',{class:'ex gold'},el('div',{class:'lab'},el('b',{},'Gold (Haiku)'),`  FVE ${pct(D.gold_fve[k])} via RL AR · ${pct(D.gold_fve_sft[k])} via SFT AR${D.gold_ok[k]?'':' · breaks rules'}`),el('div',{class:'txt'},hl(D.gold[k]))):null,
 el('div',{class:'ev'},el('div',{class:'k'},'KV group'),el('div',{class:'chips'},el('span',{class:'w',style:'align-self:center;color:var(--ink-3);font-size:11.5px'},kvName(kvOf(S.h))+' · same keys & values:'),...sibs(S.h).map(s=>{const q=idx(s,S.pi);
 return el('button',{class:'chip kvb'+(s===S.h?' on':''),title:`H${s} at this token: RL FVE · first-token attention`,onclick:()=>{S.h=s;update()}},'H'+s,el('span',{class:'w'},pct(D.rl_fve[q])+' · sink '+(D.first_w[q]??0).toFixed(2)))})),
+hasEff()?el('div',{class:'k'},'Relevance'):null,hasEff()?el('div',{class:'chips'},...EFF.map(m=>el('span',{class:'chip',style:'font-family:system-ui',title:EFFNOTE[m]+' (rank among the '+D.n_heads+' heads at this token)'},EFFNAME[m]+' '+fmtE(m,ev(m,S.h,S.pi)),el('span',{class:'w'},'#'+rankAt(m,S.h,S.pi)))),
+el('span',{class:'w',style:'align-self:center;color:var(--ink-3);font-size:11.5px'},`ablated to ${S.abl==='mean'?'mean output':'zero'} · clean next-token entropy ${D.clean_entropy[D.pos[S.pi]]?.toFixed(2)} nats`)):null,
 el('div',{class:'k'},'Reads'),el('div',{class:'chips'},...top.map(i=>el('span',{class:'chip'},vis(D.tokens[i]),el('span',{class:'w'},(i===P?'self ':i===0?'first ':'')+a[i].toFixed(2))))),
 el('div',{class:'k'},'Promotes'),el('div',{class:'chips'},...D.distinct[k].map(t=>el('span',{class:'chip'},vis(t))),...D.filler[k].map(t=>el('span',{class:'chip f',title:'common filler'},vis(t)))),
 el('div',{class:'k'},'Lens'),el('div',{class:'chips'},...D.lens[k].map(t=>el('span',{class:'chip'},vis(t)))))].filter(Boolean))}
-function renderHeads(){const rows=[...Array(D.n_heads).keys()].map(h=>({h,f:D.rl_fve[idx(h,S.pi)]})).sort((a,b)=>(b.f??-9)-(a.f??-9));
-$('colh').replaceChildren('Heads at this token',el('span',{class:'meta'},'sorted by RL FVE; click to select; blue edge = the selected head\'s KV group'));
-$('heads').replaceChildren(el('tr',{},el('th',{},'head'),el('th',{},'KV'),el('th',{},'RL FVE'),el('th',{},'SFT FVE'),el('th',{},'first-token attn'),el('th',{},'RL explanation')),
-...rows.map(({h,f})=>{const k=idx(h,S.pi);return el('tr',{class:h===S.h?'sel':kvOf(h)===kvOf(S.h)?'sib':'',onclick:()=>{S.h=h;update()}},el('td',{},'H'+h),el('td',{class:'n'},'kv'+kvOf(h)),el('td',{class:'n'},pct(f)),el('td',{class:'n'},pct(D.sft_fve[k])),
-el('td',{class:'n'},(D.first_w[k]??0).toFixed(2)),el('td',{},D.rl[k].split('\n')[0].slice(0,90)+(D.rl[k].length>90?'…':'')))}))}
+function renderHeads(){const E=hasEff(),key=E?S.hsort:'rl_fve',get=(m,h)=>m==='rl_fve'?D.rl_fve[idx(h,S.pi)]:ev(m,h,S.pi);
+const rows=[...Array(D.n_heads).keys()].map(h=>({h,v:get(key,h)})).sort((a,b)=>(b.v??-1e9)-(a.v??-1e9));
+$('colh').replaceChildren('Heads at this token',el('span',{class:'meta'},(E?'click a column to rank by it; ':'')+'sorted by '+(key==='rl_fve'?'RL FVE':EFFNAME[key])+'; click a row to select; blue edge = the selected head\'s KV group'));
+const th=(m,lab,tip)=>E?el('th',{class:'srt'+(key===m?' on':''),title:tip||('rank by '+lab),onclick:()=>{S.hsort=m;renderHeads()}},lab+(key===m?' ▾':'')):el('th',{},lab);
+$('heads').replaceChildren(el('tr',{},el('th',{},'#'),el('th',{},'head'),el('th',{},'KV'),...(E?EFF.map(m=>th(m,EFFNAME[m],EFFNOTE[m])):[]),th('rl_fve','RL FVE'),el('th',{},'sink'),el('th',{},'RL explanation')),
+...rows.map(({h},i)=>{const k=idx(h,S.pi);return el('tr',{class:(h===S.h?'sel':kvOf(h)===kvOf(S.h)?'sib':'')+(i<3&&E?' top3':''),onclick:()=>{S.h=h;update()}},el('td',{class:'rk'},String(i+1)),el('td',{},'H'+h),el('td',{class:'n'},'kv'+kvOf(h)),
+...(E?EFF.map(m=>el('td',{class:'n'},fmtE(m,ev(m,h,S.pi)))):[]),el('td',{class:'n'},pct(D.rl_fve[k])),
+el('td',{class:'n'},(D.first_w[k]??0).toFixed(2)),el('td',{},D.rl[k].split('\n')[0].slice(0,80)+(D.rl[k].length>80?'…':'')))}))}
+// Most relevant (token, head) sites of the document by one effect.
+function renderTop(){const box=$('topp');box.style.display=hasEff()?'':'none';if(!hasEff())return;const m=S.tmetric,P=D.pos.length,c=[];
+for(let h=0;h<D.n_heads;h++){if(S.thead>=0&&h!==S.thead)continue;for(let pi=0;pi<P;pi++){if(S.skipFirst&&D.pos[pi]===0)continue;const v=ev(m,h,pi);if(v!=null)c.push([v,h,pi])}}
+c.sort((a,b)=>b[0]-a[0]);const top=c.slice(0,60);$('tnote').textContent=`${c.length.toLocaleString()} sites · ablated to ${S.abl==='mean'?'mean output':'zero'}`;
+$('toplist').replaceChildren(el('tr',{},el('th',{},'#'),el('th',{},'token'),el('th',{},'head'),...EFF.map(x=>el('th',{class:x===m?'srt on':''},EFFNAME[x])),el('th',{},'rank at token'),el('th',{},'RL FVE'),el('th',{},'RL explanation')),
+...top.map(([v,h,pi],i)=>{const k=idx(h,pi),P0=D.pos[pi];return el('tr',{class:h===S.h&&pi===S.pi?'sel':'',onclick:()=>{S.h=h;S.pi=pi;update();keepVisible()}},el('td',{class:'rk'},String(i+1)),
+el('td',{},`#${P0} “${vis(D.tokens[P0])}” → “${vis(D.tokens[P0+1]??'')}”`),el('td',{},'H'+h),...EFF.map(x=>el('td',{class:'n'},fmtE(x,ev(x,h,pi)))),el('td',{class:'n'},'#'+rankAt(m,h,pi)),el('td',{class:'n'},pct(D.rl_fve[k])),
+el('td',{},D.rl[k].split('\n')[0].slice(0,70)+(D.rl[k].length>70?'…':'')))}))}
 let LUTN={};function lutNum(kind){const key=kind+(isDark()?'d':'l');if(LUTN[key])return LUTN[key];LUTN[key]=lut(kind).map(c=>c.match(/\d+/g).map(Number));return LUTN[key]}
 let HS=null;S.osort='h';S.dropSink=true;
 // Per-head attention summary over the document (query tokens t ≥ 1). "Non-sink" = attention renormalized over
@@ -238,7 +318,8 @@ function headStats(){const H=D.n_heads,P=D.pos.length,T=D.tokens.length,out=[];f
 for(let pi=0;pi<P;pi++){const t=D.pos[pi],a=attRow(h,pi);rows.push(a);if(t<1)continue;n++;sink+=a[0];self+=a[t];prev+=a[t-1];let sm=0;for(let j=1;j<=t;j++)sm+=a[j];
 if(sm>1e-6){let e=0,dd=0;for(let j=1;j<=t;j++){const q=a[j]/sm;col[j]+=q;if(q>1e-9){e-=q*Math.log(q);dd+=q*(t-j)}}ent+=e;dist+=dd}}
 const f=D.rl_fve.slice(h*P,(h+1)*P).filter(x=>x!=null),tot=col.reduce((x,y)=>x+y,0)||1,top=[...col.keys()].sort((x,y)=>col[y]-col[x]).slice(0,5);
-const r={h,sink:sink/n,self:self/n,prev:prev/n,ent:ent/n,dist:dist/n,focus:top.reduce((x,j)=>x+col[j],0)/tot,topKeys:top.filter(j=>col[j]>0),fve:f.reduce((x,y)=>x+y,0)/f.length,rows};
+const r={h,sink:sink/n,self:self/n,prev:prev/n,ent:ent/n,dist:dist/n,focus:top.reduce((x,j)=>x+col[j],0)/tot,topKeys:top.filter(j=>col[j]>0),fve:f.reduce((x,y)=>x+y,0)/f.length,rows,eff:{}};
+if(D.kl_mean)for(const m of EFF)for(const ab of['mean','zero']){const a=D[m+'_'+ab].slice(h*P,(h+1)*P).filter((x,pi)=>x!=null&&D.pos[pi]>0);r.eff[m+'_'+ab]=a.reduce((x,y)=>x+y,0)/a.length}
 const ns=Math.max(1e-6,1-r.sink),sn=r.self/ns,pv=r.prev/ns;
 r.tag=r.sink>=0.85?'sink-dominated':sn>=0.3?'self / current token':pv>=0.4?'previous token':r.dist<=20?'local':r.focus>=0.25?'focused on specific tokens':r.ent<=2.5?'focused':'diffuse / long-range';out.push(r)}return out}
 function drawThumb(cv,st){const P=D.pos.length,img=new ImageData(P,P),L=lutNum('seq');for(let pi=0;pi<P;pi++){const a=st.rows[pi],t=D.pos[pi];
@@ -249,23 +330,27 @@ function thumbBtn(r,kv){const cv=el('canvas',{class:'am','aria-hidden':'true'});
 el('div',{class:'row1'},el('b',{},'H'+r.h,kv?el('span',{class:'kvt'},' · kv'+kvOf(r.h)):null),el('span',{class:'tag'},r.tag)),
 el('div',{class:'row2',title:'sink = attention on the first token; prev/self = on the previous/current token; spread = entropy of non-sink attention; dist = mean tokens back; focus = share of non-sink attention on the 5 most-attended tokens'},
 `sink ${(100*r.sink).toFixed(0)}% · prev ${(100*r.prev).toFixed(0)}% · self ${(100*r.self).toFixed(0)}%`,el('br'),`spread ${r.ent.toFixed(2)} · dist ${r.dist.toFixed(0)} · focus ${(100*r.focus).toFixed(0)}%`,el('br'),
-`top: ${r.topKeys.slice(0,3).map(j=>vis(D.tokens[j]).trim()).join(', ')}`,el('br'),`mean RL FVE ${pct(r.fve)}`))}
+`top: ${r.topKeys.slice(0,3).map(j=>vis(D.tokens[j]).trim()).join(', ')}`,el('br'),`mean RL FVE ${pct(r.fve)}`,
+...(r.eff.kl_mean!=null?[el('br'),`KL ${fmtE('kl',r.eff['kl_'+S.abl])} · Δlogp ${fmtE('dlogp',r.eff['dlogp_'+S.abl])} · resid ${fmtE('resid',r.eff['resid_'+S.abl])}`]:[])))}
 function renderThumbs(){const box=$('thumbs');box.replaceChildren();
 if(S.osort==='h'||S.osort==='kv'){box.className='kvgroups';const G=GS(),gs=[...Array(D.n_kv).keys()].map(q=>({q,hs:HS.slice(q*G,(q+1)*G)}));
 for(const x of gs){x.f=x.hs.reduce((a,r)=>a+r.fve,0)/G;x.sink=x.hs.reduce((a,r)=>a+r.sink,0)/G}if(S.osort==='kv')gs.sort((a,b)=>b.f-a.f);
 for(const x of gs)box.append(el('div',{class:'kvg','data-kv':String(x.q)},el('div',{class:'kvh'},el('b',{style:'color:var(--ink)'},kvName(x.q)),` · shared keys & values · mean RL FVE ${pct(x.f)} · mean sink ${(100*x.sink).toFixed(0)}%`),
 el('div',{class:'thumbs'},...x.hs.map(r=>thumbBtn(r,false)))));selThumbs();return}
-box.className='thumbs';const key={h:r=>r.h,sink:r=>r.sink,prev:r=>-r.prev,self:r=>-r.self,ent:r=>-r.ent,foc:r=>r.ent,dist:r=>-r.dist,focus:r=>-r.focus,fve:r=>-r.fve}[S.osort];
+box.className='thumbs';const key=S.osort.startsWith('e_')?(r=>-(r.eff[S.osort.slice(2)+'_'+S.abl]??-1e9)):{h:r=>r.h,sink:r=>r.sink,prev:r=>-r.prev,self:r=>-r.self,ent:r=>-r.ent,foc:r=>r.ent,dist:r=>-r.dist,focus:r=>-r.focus,fve:r=>-r.fve}[S.osort];
 for(const r of [...HS].sort((a,b)=>key(a)-key(b)))box.append(thumbBtn(r,true));selThumbs()}
 function selThumbs(){const q=kvOf(S.h);document.querySelectorAll('.thumb').forEach(b=>{const h=+b.dataset.h;b.classList.toggle('sel',h===S.h);b.classList.toggle('sib',h!==S.h&&kvOf(h)===q)});
 document.querySelectorAll('.kvg').forEach(b=>b.classList.toggle('sel',+b.dataset.kv===q))}
-function update(){drawHM();renderCtx();renderDetail();renderHeads();selThumbs()}
+function update(){drawHM();renderCtx();renderDetail();renderHeads();selThumbs();if(hasEff())document.querySelectorAll('#toplist tr').forEach(r=>r.classList.remove('sel'))}
 function renderDocs(){$('docs').replaceChildren(el('label',{},'Document'),...DOCS.map((d,i)=>el('button',{'aria-pressed':String(i===S.doc),onclick:()=>openDoc(i)},`${d.name.replace(/_/g,' ')} · ${d.n_pos} tok · RL FVE ${pct(d.rl_fve_mean)}`)))}
 async function openDoc(i){S.doc=i;renderDocs();$('detail').replaceChildren(el('div',{class:'loading'},'Loading…'));D=await load(i);
 let best=[0,0,-9];for(let h=0;h<D.n_heads;h++)for(let pi=0;pi<D.pos.length;pi++){const v=D.rl_fve[idx(h,pi)];if(v!=null&&v>best[2]&&D.first_w[idx(h,pi)]<0.9)best=[h,pi,v]}
-S.h=best[0];S.pi=best[1];HS=headStats();renderThumbs();update()}
+S.h=best[0];S.pi=best[1];HS=headStats();document.querySelectorAll('.effopt').forEach(e=>e.style.display=hasEff()?'':'none');
+if(!hasEff()&&isEff(S.metric)){S.metric='rl_fve';$('metric').value='rl_fve'}$('theadf').replaceChildren(el('option',{value:'-1'},'all heads'),...[...Array(D.n_heads).keys()].map(h=>el('option',{value:String(h)},'H'+h)));$('theadf').value=String(S.thead);
+renderThumbs();update();renderTop()}
 const tip=$('tip');$('hm').addEventListener('mousemove',e=>{const c=cellAt(e);if(!c){tip.style.display='none';return}const k=idx(c.h,c.pi);
-tip.replaceChildren(el('b',{},`H${c.h} · kv${kvOf(c.h)} · #${D.pos[c.pi]} “${vis(D.tokens[D.pos[c.pi]])}”`),el('br'),`RL FVE ${pct(D.rl_fve[k])} · SFT ${pct(D.sft_fve[k])} · first-token ${(D.first_w[k]??0).toFixed(2)}`,el('br'),D.rl[k].split('\n')[0].slice(0,140));
+tip.replaceChildren(el('b',{},`H${c.h} · kv${kvOf(c.h)} · #${D.pos[c.pi]} “${vis(D.tokens[D.pos[c.pi]])}”`),el('br'),`RL FVE ${pct(D.rl_fve[k])} · SFT ${pct(D.sft_fve[k])} · first-token ${(D.first_w[k]??0).toFixed(2)}`,el('br'),
+...(hasEff()?[EFF.map(m=>`${EFFNAME[m]} ${fmtE(m,ev(m,c.h,c.pi))}`).join(' · '),el('br')]:[]),D.rl[k].split('\n')[0].slice(0,140));
 tip.style.display='block';tip.style.left=Math.min(innerWidth-330,e.clientX+14)+'px';tip.style.top=(e.clientY+14)+'px'});
 $('hm').addEventListener('mouseleave',()=>tip.style.display='none');
 $('hm').addEventListener('click',e=>{$('hm').focus({preventScroll:true});const c=cellAt(e);if(c){S.h=c.h;S.pi=c.pi;update()}});
@@ -275,7 +360,8 @@ function keepVisible(){const w=$('hm').parentElement,x=LAB+S.pi*S.zoom;if(x<w.sc
 document.addEventListener('keydown',e=>{if(!D||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey)return;const t=e.target.tagName;if(t==='INPUT'||t==='SELECT'||t==='TEXTAREA')return;
 const lr={ArrowLeft:-1,ArrowRight:1}[e.key],ud=e.target===$('hm')?{ArrowUp:-1,ArrowDown:1}[e.key]:undefined;if(lr==null&&ud==null)return;e.preventDefault();
 if(lr!=null)S.pi=Math.max(0,Math.min(D.pos.length-1,S.pi+lr));if(ud!=null)S.h=Math.max(0,Math.min(D.n_heads-1,S.h+ud));update();keepVisible()});
-$('metric').onchange=e=>{S.metric=e.target.value;drawHM()};$('osort').onchange=e=>{S.osort=e.target.value;renderThumbs()};$('t-sink').onclick=e=>{S.dropSink=!S.dropSink;e.currentTarget.setAttribute('aria-pressed',String(S.dropSink));renderThumbs()};$('zoom').onchange=e=>{S.zoom=+e.target.value;drawHM()};
+$('metric').onchange=e=>{S.metric=e.target.value;drawHM()};$('abl').onchange=e=>{S.abl=e.target.value;renderThumbs();update();renderTop()};
+$('tmetric').onchange=e=>{S.tmetric=e.target.value;renderTop()};$('theadf').onchange=e=>{S.thead=+e.target.value;renderTop()};$('t-first').onclick=e=>{S.skipFirst=!S.skipFirst;e.currentTarget.setAttribute('aria-pressed',String(S.skipFirst));renderTop()};$('osort').onchange=e=>{S.osort=e.target.value;renderThumbs()};$('t-sink').onclick=e=>{S.dropSink=!S.dropSink;e.currentTarget.setAttribute('aria-pressed',String(S.dropSink));renderThumbs()};$('zoom').onchange=e=>{S.zoom=+e.target.value;drawHM()};
 for(const k of['sft','gold','hl'])$('t-'+k).onclick=e=>{S.show[k]=!S.show[k];e.currentTarget.setAttribute('aria-pressed',String(S.show[k]));renderDetail()};
 $('theme').onclick=()=>{const r=document.documentElement,dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;r.dataset.theme=dark?'light':'dark';LUTN={};drawHM();renderThumbs()};
 openDoc(0);

@@ -3,9 +3,11 @@
 Uses the doc-viewer outputs (per-site writes [T,32,4096], full attention [32,T,T], explanations) plus
 three Qwen3-8B weight tensors (o_proj, final norm, lm_head). For the KV group containing --head:
 
-1. z_h,i = pinv(O_h) w_h,i recovers each head's 128-d attention output (exact up to fp16).
+The viewer's writes are deviations, v = O_h (z − z̄)/rms (the head's write minus its corpus-average write).
+1. z_h,i = pinv(O_h) w_h,i recovers each head's 128-d attention output minus z̄ (exact up to fp16).
 2. The heads of a GQA group share value vectors, so stacking their attention rows gives an overdetermined
-   system A V = Z for the per-source values V [T,128]; O_h v_j is then source j's write to head h.
+   system A V = Z for the per-source values V [T,128] (v_j − z̄, as attention rows sum to 1); O_h v_j is then
+   source j's contribution to head h's deviation.
 3. Logit lens (final-norm gain, no RMS scale) of the sink value, of top-contributing sources and of
    the mean non-sink write; a sink + doc-topic 2-direction model of the write; attention selectivity;
    query-side gating; how often each explanation source names the doc's domain.

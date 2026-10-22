@@ -13,7 +13,8 @@ The script needs three Qwen3-8B tensors: L24 `o_proj`, the final norm and `lm_he
 Of all 32 heads, H18 has the best gold (Haiku-explanation) FVE, at +28%.
 
 **Method.**
-- z = pinv(O_h)·write recovers each head's 128-d attention output. The residual is 2e-4.
+- Every "write" here is what the NLA sees: v = O_h(z − z̄)/rms, the head's write minus its average write over a large corpus. So the per-source values below are v_j − z̄. Attention rows sum to 1, so the shift is exact.
+- z = pinv(O_h)·write recovers each head's 128-d attention output, minus z̄. The residual is 2e-4.
 - Q heads 16–19 share one KV head. Stacking their four attention patterns gives an overdetermined system A·V = Z, which yields the per-source values v_j.
 - That gives each source token's write O_h·v_j. The fit's relative error is 5–11%: fp16 attention, and bf16 SDPA in the model.
 
