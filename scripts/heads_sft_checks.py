@@ -74,7 +74,7 @@ def ar_predict(critic, tok, texts: list[str], mse_scale_f, device, batch_size: i
 
 @torch.no_grad()
 def av_generate(actor, vref, tok, cfg, rows: list[dict], vecs: np.ndarray, device, batch_size: int,
-                max_new_tokens: int, temperature: float = 0.0) -> list[str]:
+                max_new_tokens: int, temperature: float = 0.0, fallback_chars: int | None = 300) -> list[str]:
     tok.padding_side = "left"   # batched generation; the injection hook finds the marker by id + neighbors
     out: list[str] = []
     n_fallback = 0
@@ -94,7 +94,7 @@ def av_generate(actor, vref, tok, cfg, rows: list[dict], vecs: np.ndarray, devic
             expl = extract_explanation(g)
             if expl is None:   # cut off before </explanation>: keep what was said, minus the tag
                 n_fallback += 1
-                expl = g.replace("<explanation>", "").strip()[:300]
+                expl = g.replace("<explanation>", "").strip()[:fallback_chars]
             out.append(expl)
     print(f"  AV generations without a closing tag: {n_fallback}/{len(rows)}", flush=True)
     return out
@@ -114,6 +114,9 @@ def main() -> None:
     p.add_argument("--max-new-tokens", type=int, default=96)
     p.add_argument("--max-rows", type=int, default=None)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--no-fallback-cut", action="store_true",
+                   help="keep the whole text of an explanation cut off before its closing tag (default: its "
+                        "first 300 characters; matryoshka AVs are trained on prefixes and may never close)")
     p.add_argument("--temperature", type=float, default=0.0,
                    help="AV decoding: 0 = greedy (default); 1 = sampled like the RL rollouts (seeded)")
     args = p.parse_args()
@@ -165,10 +168,11 @@ def main() -> None:
                            cfg.injection_right_neighbor_id, layer_idx=1,
                            preserve_magnitude=args.inject_preserve_magnitude)
     torch.manual_seed(args.seed)
+    cut = None if args.no_fallback_cut else 300
     av_true = av_generate(actor, vref, tok, cfg, ev, v, args.device, args.batch_size, args.max_new_tokens,
-                          args.temperature)
+                          args.temperature, cut)
     av_shuf = av_generate(actor, vref, tok, cfg, ev, v[perm], args.device, args.batch_size, args.max_new_tokens,
-                          args.temperature)
+                          args.temperature, cut)
     del actor, base
     if args.device.startswith("cuda"):
         torch.cuda.empty_cache()

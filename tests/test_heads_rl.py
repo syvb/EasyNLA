@@ -165,3 +165,59 @@ def test_rollout_batched_injection_matches_unbatched():
     vref[0] = None
     torch.testing.assert_close(batched, torch.stack(singles), atol=1e-4, rtol=1e-4)
     assert not torch.allclose(singles[0], singles[1])        # the injection matters
+
+
+def test_matryoshka_cap_and_open_explanation():
+    opening = [10, 11, 12, 13]
+    resp = opening + list(range(100, 130)) + [2]            # 30 content tokens + a stop id
+    ids, capped = rl.cap_response(resp, opening, 5)
+    assert capped and ids == opening + [100, 101, 102, 103, 104]
+    assert rl.cap_response(resp, opening, 30, {2}) == (resp, False)   # stopped within its cap
+    assert rl.cap_response(resp, opening, 29, {2}) == (resp[:33], True)
+    assert rl.cap_response([7, 8, 9], opening, 2) == ([7, 8], True)   # no opening: count from 0
+    assert rl.open_explanation("<explanation>\nfoo bar</explanation>") == "foo bar"
+    assert rl.open_explanation("<explanation>\nfoo bar baz") == "foo bar baz"
+    assert rl.open_explanation("<explanation>\nfoo bar.\n</expl") == "foo bar."
+    assert rl.open_explanation("<explanation>\n") == ""
+    assert rl.open_explanation("no tag at all") is None
+
+
+def test_kl_taper_weights():
+    w = rl.kl_taper_weights(4 + 130, offset=4, start=16, end=120, floor=0.1)
+    assert torch.allclose(w[: 4 + 17], torch.ones(21))         # opening + content tokens 0..16
+    assert math.isclose(float(w[4 + 68]), 1 - 0.9 * 52 / 104, rel_tol=1e-6)
+    assert torch.allclose(w[4 + 120:], torch.full((10,), 0.1))
+    assert (w[1:] <= w[:-1]).all()
+
+
+def test_rollout_batched_caps():
+    tok = _tokenizer_or_skip()
+    model = _tiny(vocab=len(tok), layers=3)
+    inj = tok.encode("㈎", add_special_tokens=False)[0]
+    pieces = [tok.encode(t, add_special_tokens=False) for t in ("Describe <", "> please")]
+    prompt_text = tok.decode(pieces[0] + [inj] + pieces[1])
+    vref = [None]
+    register_karvonen_hook(model, vref, inj, pieces[0][-1], pieces[1][0], layer_idx=1, preserve_magnitude=True)
+    opening = tok.encode("<explanation>\n", add_special_tokens=False)
+    caps = [9, 2, 5]
+    acts = [torch.randn(64) for _ in caps]
+    res = rl.rollout_batched(model, tok, [prompt_text] * 3, acts, vref, 2, 20, 1.0, "cpu",
+                             {tok.eos_token_id}, chunk_rows=2, caps=caps, opening_ids=opening)
+    assert sorted(r["prompt_idx"] for r in res) == [0, 0, 1, 1, 2, 2]
+    assert [r["prompt_idx"] for r in res] == [1, 1, 2, 2, 0, 0]   # generated in cap order
+    for r in res:
+        resp = r["full_ids"][r["prompt_len"]:].tolist()
+        off = rl.content_offset(resp, opening)
+        n_content = len(resp) - off - (resp[-1] == tok.eos_token_id)
+        assert n_content <= caps[r["prompt_idx"]] and r["n_resp"] == len(resp)
+        if r["capped"]:
+            assert len(resp) - off == caps[r["prompt_idx"]] and tok.eos_token_id not in resp
+
+
+def test_kl_weight_fn_scales_kl_term():
+    new_lp = torch.zeros(6, requires_grad=True)
+    ref_lp = torch.full((6,), -1.0)
+    w = torch.tensor([1, 1, 1, 0.5, 0.1, 0.1])
+    loss_w, _ = rl.grpo_token_loss(new_lp, ref_lp, torch.tensor(0.0), kl_beta=0.03 * w)
+    loss_1, _ = rl.grpo_token_loss(new_lp, ref_lp, torch.tensor(0.0), kl_beta=0.03)
+    assert math.isclose(float(loss_w) / float(loss_1), float(w.mean()), rel_tol=1e-5)

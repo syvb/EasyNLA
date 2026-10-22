@@ -59,6 +59,8 @@ from nla.config import load_nla_config
 from nla.injection import karvonen_inject_in_residual, marker_well_formed
 from nla.models import NLACriticModel
 from nla.schema import (
+    EXPLANATION_CLOSE,
+    EXPLANATION_OPEN,
     compute_predict_mean_baselines,
     extract_explanation,
     normalize_activation,
@@ -184,19 +186,29 @@ def rollout_one_prompt(
 def rollout_batched(
     actor, tokenizer, prompt_texts, activations, vectors_ref,
     group_size, max_new_tokens, temperature, device, eos_ids, chunk_rows,
+    caps=None, opening_ids=None,
 ):
     """`group_size` samples for EVERY prompt, `chunk_rows` rollouts per generate() call
     (left-padded; the injection hook finds each row's marker itself, as in the batched
     eval). Same sampler settings and the same per-sample dict as rollout_one_prompt, plus
     `prompt_idx`; `full_ids` is the unpadded prompt + the EOS-trimmed response. One call per
-    prompt (rollout_one_prompt) leaves the GPU mostly idle when explanations are short."""
+    prompt (rollout_one_prompt) leaves the GPU mostly idle when explanations are short.
+
+    `caps` (matryoshka truncation): per prompt, the most explanation-content tokens a sample
+    keeps (cap_response); rows are generated in cap order so each generate() call only runs
+    to its chunk's largest cap, and each sample carries `capped` (cut by its cap)."""
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     ids = [tokenizer.encode(t, add_special_tokens=False) for t in prompt_texts]
     flat = [pi for pi in range(len(ids)) for _ in range(group_size)]
+    if caps is not None:
+        flat.sort(key=lambda pi: caps[pi])
     out = []
     for s in range(0, len(flat), chunk_rows):
         part = flat[s:s + chunk_rows]
+        n_new = max_new_tokens
+        if caps is not None:
+            n_new = min(max_new_tokens, len(opening_ids) + max(caps[pi] for pi in part))
         width = max(len(ids[pi]) for pi in part)
         inp = torch.full((len(part), width), tokenizer.pad_token_id, dtype=torch.long, device=device)
         attn = torch.zeros((len(part), width), dtype=torch.long, device=device)
@@ -206,7 +218,7 @@ def rollout_batched(
         vectors_ref[0] = torch.stack([activations[pi] for pi in part]).to(device).float()
         try:
             gen = actor.generate(
-                input_ids=inp, attention_mask=attn, max_new_tokens=max_new_tokens,
+                input_ids=inp, attention_mask=attn, max_new_tokens=n_new,
                 do_sample=True, temperature=temperature, top_p=1.0, top_k=0,
                 repetition_penalty=1.0, pad_token_id=tokenizer.eos_token_id,
                 return_dict_in_generate=True,
@@ -217,14 +229,68 @@ def rollout_batched(
             resp_ids = gen.sequences[r, width:].tolist()
             n_real = next((i + 1 for i, t in enumerate(resp_ids) if t in eos_ids), len(resp_ids))
             resp_ids = resp_ids[:n_real]
+            capped = False
+            if caps is not None:
+                resp_ids, capped = cap_response(resp_ids, opening_ids, caps[pi], eos_ids)
+                n_real = len(resp_ids)
             out.append({
                 "text": tokenizer.decode(resp_ids, skip_special_tokens=True),
                 "full_ids": torch.tensor(ids[pi] + resp_ids, dtype=torch.long),
                 "prompt_len": len(ids[pi]),
                 "n_resp": n_real,
                 "prompt_idx": pi,
+                "capped": capped,
             })
     return out
+
+
+def content_offset(resp_ids, opening_ids):
+    """Index of the first explanation-content token: just past the "<explanation>\n" opening
+    when the response starts with it, else 0."""
+    k = len(opening_ids)
+    return k if list(resp_ids[:k]) == list(opening_ids) else 0
+
+
+def cap_response(resp_ids, opening_ids, cap, eos_ids=()):
+    """Matryoshka truncation: keep the opening + at most `cap` explanation-content tokens.
+    Returns (ids, capped); a response that stopped within its cap (its final stop id not
+    counted) is returned unchanged."""
+    lim = content_offset(resp_ids, opening_ids) + cap
+    n = len(resp_ids) - (1 if resp_ids and resp_ids[-1] in eos_ids else 0)
+    return (resp_ids[:lim], True) if n > lim else (resp_ids, False)
+
+
+def open_explanation(text):
+    """The explanation of a response cut off by its truncation cap: the closed explanation if
+    there is one, else everything after the opening tag minus a partial closing tag at the end
+    (None if the opening tag is missing too)."""
+    e = extract_explanation(text)
+    if e is not None:
+        return e
+    if EXPLANATION_OPEN not in text:
+        return None
+    e = text.split(EXPLANATION_OPEN, 1)[1]
+    for j in range(len(EXPLANATION_CLOSE), 1, -1):
+        if e.endswith(EXPLANATION_CLOSE[:j]):
+            e = e[:-j]
+            break
+    return e.strip()
+
+
+def kl_taper_weights(n_resp, offset, start, end, floor):
+    """Per-token multiplier of the KL coefficient: 1 for the first `start` content tokens, then
+    linear down to `floor` at content token `end`, `floor` after. Content token t sits at
+    response position offset + t (offset = the opening tag's length)."""
+    t = torch.arange(n_resp, dtype=torch.float32) - offset
+    frac = ((t - start) / max(end - start, 1)).clamp(0.0, 1.0)
+    return 1.0 - (1.0 - floor) * frac
+
+
+def prefix_explanations(tokenizer, explanations, lengths):
+    """{L: [first L tokens of each explanation, decoded]} (None stays None) — the eval's
+    truncation sweep."""
+    ids = [None if e is None else tokenizer.encode(e, add_special_tokens=False) for e in explanations]
+    return {L: [None if x is None else tokenizer.decode(x[:L]).strip() for x in ids] for L in lengths}
 
 
 _QUOTE_CHARS = re.compile(r"[\"“”]")
@@ -324,7 +390,7 @@ def grpo_update_microbatched(
     actor, optim, tokenizer, full_ids_list, prompt_lens, activations,
     advantages, vectors_ref, device,
     micro_batch=2, kl_beta=0.04, max_grad_norm=1.0,
-    kl_estimator="k3", n_total=None,
+    kl_estimator="k3", n_total=None, kl_weight_fn=None,
 ):
     """Fused micro-batched forward+loss+backward for GRPO.
 
@@ -332,6 +398,9 @@ def grpo_update_microbatched(
     → per-chunk GRPO loss → backward → release graph → next chunk. Single
     optim.step() at the end. Peak memory = one micro-batch graph instead of
     N retained graphs (which is what OOMs at B*G=256).
+
+    `kl_weight_fn(i, n_resp)` (optional): per-token multiplier of kl_beta for sample i (the
+    matryoshka KL taper); the logged KL stays unweighted.
 
     Returns (mean_loss, grad_norm, metrics_dict).
     """
@@ -411,8 +480,11 @@ def grpo_update_microbatched(
                 ref_row_logp = ref_resp_logits - ref_lse.unsqueeze(-1)
                 kl_tok = (resp_logp.exp() * (resp_logp - ref_row_logp)).sum(-1)
             # Pure on-policy surrogate (advantage * new_lp) + KL to ref.
+            beta = kl_beta
+            if kl_weight_fn is not None:
+                beta = kl_beta * kl_weight_fn(i, new_lp.numel()).to(device)
             sample_loss, sample_kl = grpo_token_loss(
-                new_lp, ref_lp, advantages[i], kl_beta=kl_beta, kl_tok=kl_tok,
+                new_lp, ref_lp, advantages[i], kl_beta=beta, kl_tok=kl_tok,
             )
             chunk_losses.append(sample_loss)
             sample_kls_log.append(sample_kl.item())
@@ -482,6 +554,24 @@ def main():
     p.add_argument("--stop-file", default=None,
                    help="if this path exists at the end of a step, save a checkpoint there and stop "
                         "(a clean, operator-requested stop; resume with --resume-from-lora)")
+    p.add_argument("--trunc-min-tokens", type=int, default=0,
+                   help="matryoshka objective: each prompt's group keeps only its first L explanation-content "
+                        "tokens, L ~ U[--trunc-min-tokens, --trunc-max-tokens] shared by the group, and the AR "
+                        "scores (and co-trains on) that prefix. 0 = off. Needs --rollout-batch > 0.")
+    p.add_argument("--trunc-max-tokens", type=int, default=120)
+    p.add_argument("--kl-taper-start", type=int, default=0,
+                   help="KL taper: full --kl-beta for the first N explanation-content tokens, then linear down "
+                        "to --kl-taper-floor × beta at --kl-taper-end (so later tokens still learn from the "
+                        "reconstruction reward). 0 = no taper.")
+    p.add_argument("--kl-taper-end", type=int, default=120)
+    p.add_argument("--kl-taper-floor", type=float, default=0.1)
+    p.add_argument("--av-freeze-steps", type=int, default=0,
+                   help="first N steps of this launch: roll out and co-train the AR only (no AV update), so the "
+                        "AR adapts to the current AV's (truncated) text before the AV moves; saves a checkpoint "
+                        "when they end")
+    p.add_argument("--eval-trunc-lengths", type=int, nargs="*", default=[],
+                   help="also score each held-out eval explanation's first L tokens, logged as "
+                        "eval/fve_pct_t<L>")
     p.add_argument("--rollout-batch", type=int, default=0,
                    help="rollouts per batched generate() call across prompts (0 = one call per prompt)")
     p.add_argument("--device-map", choices=["single", "auto"], default="single")
@@ -652,6 +742,17 @@ def main():
         args.length_threshold = max(1, args.max_new_tokens - 64)
     print(f"[len] hinged penalty {args.length_penalty}/token past "
           f"{args.length_threshold} tokens (cap {args.max_new_tokens})", flush=True)
+
+    trunc = args.trunc_min_tokens > 0
+    if trunc:
+        assert 1 <= args.trunc_min_tokens <= args.trunc_max_tokens, "need 1 <= --trunc-min-tokens <= --trunc-max-tokens"
+        assert args.rollout_batch > 0, "--trunc-min-tokens needs the batched rollout path (--rollout-batch > 0)"
+        print(f"[trunc] matryoshka: content tokens ~ U[{args.trunc_min_tokens}, {args.trunc_max_tokens}] "
+              f"per group", flush=True)
+    if args.kl_taper_start > 0:
+        assert args.kl_taper_end > args.kl_taper_start and 0 <= args.kl_taper_floor <= 1
+        print(f"[kl] taper: x1 for content tokens < {args.kl_taper_start}, linear to "
+              f"x{args.kl_taper_floor} at {args.kl_taper_end}", flush=True)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -890,6 +991,7 @@ def main():
         eos_ids.update(_gc_eos if isinstance(_gc_eos, (list, tuple)) else [_gc_eos])
     eos_ids.discard(None)
     print(f"[rollout] EOS-trim ids: {sorted(eos_ids)}")
+    opening_ids = tokenizer.encode(EXPLANATION_OPEN + "\n", add_special_tokens=False)
 
     # ---- dataset ----
     print(f"[data] loading {args.rl_parquet} (max_rows={args.max_rows}, "
@@ -1133,13 +1235,19 @@ def main():
         all_prompt_group = []
         all_resp_lens = []  # response token count per sample (for length/throughput logging)
         all_prefixes = []   # per-sample AR prefix (--critic-prefix-column), else None
+        all_capped = []     # cut by its matryoshka cap
         _acts_b = [torch.tensor(rows[ri]["activation"], dtype=torch.float32) for ri in batch_idxs]
+        # matryoshka caps: one per prompt group, from an RNG keyed on (seed, step) so a resume
+        # draws the same caps the original run would have
+        caps = (np.random.default_rng([args.seed, step]).integers(
+                    args.trunc_min_tokens, args.trunc_max_tokens + 1, size=len(batch_idxs)).tolist()
+                if trunc else None)
         if args.rollout_batch > 0:
             _responses = rollout_batched(
                 actor, tokenizer,
                 [build_prompt_text(rows[ri]["prompt"], inject_char, tokenizer) for ri in batch_idxs],
                 _acts_b, vectors_ref, args.group_size, args.max_new_tokens, args.temperature,
-                device, eos_ids, args.rollout_batch,
+                device, eos_ids, args.rollout_batch, caps=caps, opening_ids=opening_ids,
             )
         else:
             _responses = []
@@ -1153,7 +1261,9 @@ def main():
                     _responses.append({**r, "prompt_idx": gi})
         for r in _responses:
             gi = r["prompt_idx"]
-            expl = extract_explanation(r["text"])
+            capped = bool(r.get("capped", False))
+            expl = open_explanation(r["text"]) if capped else extract_explanation(r["text"])
+            all_capped.append(capped)
             all_full_ids.append(r["full_ids"])
             all_prompt_lens.append(r["prompt_len"])
             all_activations.append(_acts_b[gi])
@@ -1193,7 +1303,7 @@ def main():
         # cap-length rollouts that never emitted a stop id count as truncated.
         truncated = [
             (all_full_ids[i].numel() - all_prompt_lens[i] >= args.max_new_tokens)
-            and (int(all_full_ids[i][-1]) not in eos_ids)
+            and (int(all_full_ids[i][-1]) not in eos_ids) and not all_capped[i]
             for i in range(len(all_full_ids))
         ]
         n_truncated = int(sum(truncated))
@@ -1250,6 +1360,9 @@ def main():
         group_t = torch.tensor(all_prompt_group, dtype=torch.long, device=device)
         adv = torch.zeros_like(rewards_t)
         shape_terms["av/truncated_count"] = n_truncated
+        if trunc:
+            shape_terms["trunc/cap_mean"] = float(np.mean(caps))
+            shape_terms["trunc/capped_frac"] = float(np.mean(all_capped))
         for gi in range(args.batch_prompts):
             # exclude injection-failed rollouts from the group baseline; truncated
             # participate with the -2 failure reward.
@@ -1275,17 +1388,29 @@ def main():
         upd_prompt_lens = [all_prompt_lens[i] for i in keep]
         upd_activations = [all_activations[i] for i in keep]
         upd_adv = adv.index_select(0, torch.tensor(keep, device=device))
-        actor.train()
-        mean_loss_val, grad_norm_val, grpo_metrics = grpo_update_microbatched(
-            actor, optim, tokenizer,
-            upd_full_ids, upd_prompt_lens, upd_activations,
-            upd_adv, vectors_ref, device,
-            micro_batch=args.logp_micro_batch,
-            kl_beta=args.kl_beta,
-            max_grad_norm=args.max_grad_norm,
-            kl_estimator=args.kl_estimator,
-            n_total=len(inject_ok),   # fixed budget: dropped rollouts act as zeros
-        )
+        kl_weight_fn = None
+        if args.kl_taper_start > 0:
+            _offs = [content_offset(upd_full_ids[j][upd_prompt_lens[j]:].tolist(), opening_ids)
+                     for j in range(len(keep))]
+            def kl_weight_fn(j, n, _offs=_offs):
+                return kl_taper_weights(n, _offs[j], args.kl_taper_start, args.kl_taper_end, args.kl_taper_floor)
+        av_frozen = step < args.start_step + args.av_freeze_steps
+        if av_frozen:
+            # AR-only warm-up: no AV forward/backward at all
+            mean_loss_val, grad_norm_val, grpo_metrics = 0.0, 0.0, {"kl_mean": float("nan")}
+        else:
+            actor.train()
+            mean_loss_val, grad_norm_val, grpo_metrics = grpo_update_microbatched(
+                actor, optim, tokenizer,
+                upd_full_ids, upd_prompt_lens, upd_activations,
+                upd_adv, vectors_ref, device,
+                micro_batch=args.logp_micro_batch,
+                kl_beta=args.kl_beta,
+                max_grad_norm=args.max_grad_norm,
+                kl_estimator=args.kl_estimator,
+                n_total=len(inject_ok),   # fixed budget: dropped rollouts act as zeros
+                kl_weight_fn=kl_weight_fn,
+            )
         # Build a scalar-tensor stand-in for the existing logging path that
         # expects a `loss` tensor with .item().
         loss = torch.tensor(mean_loss_val, device=device)
@@ -1424,6 +1549,7 @@ def main():
         # toward listing tokens (reconstruction reward favours it; KL to the SFT adapter resists)
         _ext = [e for e in all_explanations if e is not None]
         log["av/quote_rate"] = (sum(bool(_QUOTE_CHARS.search(e)) for e in _ext) / len(_ext)) if _ext else 0.0
+        log["av/frozen"] = float(av_frozen)
         print(rl_logging.format_console_line(step, log, train_ar=args.train_critic), flush=True)
 
         # ---- per-step eval: every N steps, run actor (current weights) on a
@@ -1483,7 +1609,8 @@ def main():
             for ei, row in enumerate(eval_rows):
                 activation = _eval_acts[ei]
                 resp = _all_resp[ei]
-                expl = extract_explanation(resp)
+                # trunc runs train only prefixes, so their AV may run on past the cap without closing
+                expl = open_explanation(resp) if trunc else extract_explanation(resp)
                 # failed extraction: the training floor (-2, or -2 × predict-zero MSE under --ar-raw-loss)
                 e_reward = (-2.0 * float(((activation * target_scale) ** 2).mean())) if raw else -2.0
                 e_valid = False   # a raw-loss reward can sit below -2, so validity is tracked, not inferred
@@ -1508,6 +1635,18 @@ def main():
                     "extracted": expl is not None,
                     "explanation": expl if expl is not None else "<extraction failed>",
                 })
+            if args.eval_trunc_lengths:
+                _ex = [r["explanation"] if r["extracted"] else None for r in eval_records]
+                for _L, _px in prefix_explanations(tokenizer, _ex, args.eval_trunc_lengths).items():
+                    _rw = score_with_critic(
+                        critic, tokenizer, _px, _eval_acts, template, mse_scale_f, device,
+                        prefixes=[r.get(prefix_col) for r in eval_rows] if prefix_col else None,
+                        raw=raw, target_scale=target_scale)
+                    _v = [x for x in _rw if x is not None]
+                    log[f"eval/fve_pct_t{_L}"] = ((1.0 + float(np.mean(_v)) / eval_fve_baseline) * 100.0
+                                                  if _v else float("nan"))
+                print(f"  [eval@{step}] prefix FVE " + " ".join(
+                    f"t{_L} {log[f'eval/fve_pct_t{_L}']:.1f}%" for _L in args.eval_trunc_lengths), flush=True)
             # Aggregate eval scalars
             valid_e = [r for r, ok in zip(eval_rewards_s, eval_valid_s) if ok]
             log["eval/reward_mean"] = (
@@ -1588,7 +1727,8 @@ def main():
         if stop_req:
             print(f"[stop] {args.stop_file} exists: saving and stopping after step {step}", flush=True)
         time_up = time_up or stop_req
-        if (step + 1) % args.save_every == 0 or step + 1 == args.num_steps or time_up:
+        freeze_end = args.av_freeze_steps > 0 and step + 1 == args.start_step + args.av_freeze_steps
+        if (step + 1) % args.save_every == 0 or step + 1 == args.num_steps or time_up or freeze_end:
             out_dir = save_dir / f"iter_{step + 1:06d}"
             out_dir.mkdir(parents=True, exist_ok=True)
             # Critic FIRST: resume keys off the actor's adapter_config.json,
