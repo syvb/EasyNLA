@@ -1383,6 +1383,7 @@ def main():
         # ---- GRPO group-relative advantage (per-prompt mean & std) ----
         group_t = torch.tensor(all_prompt_group, dtype=torch.long, device=device)
         adv = torch.zeros_like(rewards_t)
+        _cap_sd = ([], [], [])
         shape_terms["av/truncated_count"] = n_truncated
         if trunc:
             shape_terms["trunc/cap_mean"] = float(np.mean(caps))
@@ -1398,6 +1399,13 @@ def main():
             mu = group_r.mean()
             sd = group_r.std() if group_r.numel() > 1 else torch.tensor(1.0, device=device)
             adv[mask] = (group_r - mu) / (sd + 1e-6)
+            if trunc and group_r.numel() > 1:
+                _cap_sd[0 if caps[gi] <= 8 else 1 if caps[gi] <= 32 else 2].append(float(sd))
+        if trunc:
+            # within-group reward spread by cap: unit-variance advantages amplify tiny gaps at small caps
+            for _k, _name in enumerate(("le8", "9to32", "33to120")):
+                if _cap_sd[_k]:
+                    shape_terms[f"trunc/group_std_cap_{_name}"] = float(np.mean(_cap_sd[_k]))
 
         # ---- GRPO update: fused forward+loss+backward per micro-batch ----
         # Previous code did all forwards then all backwards, which retained
@@ -1670,6 +1678,8 @@ def main():
                     _v = [x for x in _rw if x is not None]
                     log[f"eval/fve_pct_t{_L}"] = ((1.0 + float(np.mean(_v)) / eval_fve_baseline) * 100.0
                                                   if _v else float("nan"))
+                    if not raw:   # direction space: −MSE = 2·cos − 2
+                        log[f"eval/cos_t{_L}"] = 1.0 + float(np.mean(_v)) / 2.0 if _v else float("nan")
                 print(f"  [eval@{step}] prefix FVE " + " ".join(
                     f"t{_L} {log[f'eval/fve_pct_t{_L}']:.1f}%" for _L in args.eval_trunc_lengths), flush=True)
             # Aggregate eval scalars
@@ -1691,6 +1701,10 @@ def main():
                 sum(1 for r in eval_records if r["extracted"]) / len(eval_records)
                 if eval_records else 0.0
             )
+            # whole-explanation behaviour, which matryoshka training (prefixes only) leaves untrained
+            log["eval/closed_frac"] = float(np.mean([EXPLANATION_CLOSE in t for t in _all_resp])) if _all_resp else 0.0
+            log["eval/len_mean"] = (float(np.mean([len(tokenizer.encode(t, add_special_tokens=False))
+                                                   for t in _all_resp])) if _all_resp else 0.0)
             log["time/eval_base_fve_s"] = time.time() - _t_eval_fve  # FVE eval cost (gen+scoring)
             # Persistent table — accumulates example generations across the whole
             # run (scrub by step to watch explanations evolve).

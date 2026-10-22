@@ -24,8 +24,15 @@ by continuing training from the std pair's step-400 checkpoint
 - Everything else is the std run's recipe (`configs/rl_sgpu.yaml`: AV lr 1e-4, AR lr 8e-5, 64 × 8,
   256-token cap, hinged length penalty, direction-only reward).
 
-Context: the step-400 AV writes about 147 tokens at T=1 (p10–p90 137–158) and the gold texts about 42,
-so U[1, 120] covers most of what the AV says.
+Context: the step-400 AV writes about 147 tokens at T=1 (p10–p90 137–158) and the gold texts about 42.
+98% of its explanations are longer than 120 tokens, so nearly every rollout is cut (`trunc/capped_frac`
+≈ 1), with these consequences:
+- The run trains only the first 120 content tokens; the AV is never again trained on how it ends.
+- The 256-token failure reward and the hinged length penalty (past 192 tokens) are inactive by
+  construction (`av/truncated_count`, `av/len_pen_mean` stay 0).
+- Whole-explanation behaviour (up to 256 tokens) is untrained; it is reported (`eval/closed_frac`,
+  `eval/len_mean`, the checks, the sweep's "full" column) but is not what the objective optimizes.
+This matches the post's setup.
 
 ## Run
 
@@ -35,7 +42,10 @@ the AR-only warm-up; 440 → 840 use the matryoshka objective. The script:
   matryoshka steps);
 - mirrors checkpoints every 50 steps, plus the warm-up's last step, to
   `syvb/head-nla-qwen3-8b-l24-mtry-rl-ckpts`;
-- logs held-out prefix FVE (`eval/fve_pct_t{4,16,64}`) next to the usual `eval/fve_pct`;
+- logs held-out prefix FVE and cosine (`eval/fve_pct_t{4,16,64}`, `eval/cos_t{4,16,64}`) next to the
+  usual `eval/fve_pct`, plus `eval/closed_frac`, `eval/len_mean`, `trunc/noncanon_opening_frac` and
+  the within-group reward spread by cap (`trunc/group_std_cap_*`). Under truncation `eval/fve_pct` also
+  counts unclosed explanations, so it shifts at step 400 for a metric reason, not a model one;
 - ends with the standard T=1 checks on all 6,360 eval rows (`--no-fallback-cut`, because a matryoshka
   AV may not close its explanation).
 
@@ -48,15 +58,23 @@ T=1 explanation; the gold texts are included too. Every AR (step 400, end of war
 every AV's first L ∈ {0, 1, 2, 4, 8, 16, 32, 64, 120} tokens and the whole explanation. Metrics are mean
 direction cosine and FVE against the head's mean write. The questions:
 
-1. Does the matryoshka pair beat the warm-up baseline (step-400 AV + prefix AR) at short prefixes?
-2. What does it cost at full length relative to the step-400 pair?
-3. With the AR held fixed (cross-reads), is the gain in the AV's ordering or only in the AR?
+1. **Ordering (primary).** With the matryoshka AR fixed, do the matryoshka AV's prefixes score
+   higher than the same explanations with their sentences reversed (the post's reversal check, a
+   re-scoring of the same text)? The same check on the step-400 AV shows how much it already
+   frontloads.
+2. Does the matryoshka pair beat the warm-up baseline (step-400 AV + warm-up AR) at short prefixes?
+   Reading rule, fixed before the run: if `eval/cos_t16` rises by more than 0.01 between steps 430
+   and 440, the warm-up AR had not converged; then question 2 is inconclusive and only question 1
+   counts.
+3. Cost at length: at L = 120 (the longest trained prefix), and separately at the whole 256-token
+   output, read by the step-400 AR (the matryoshka AR never saw text past 120 tokens).
 
 ## Time and cost (secure H100, $3.99/hr)
 
 The aborted first launch measured about 18–20 s per AV-frozen step and about 45 s per matryoshka
 step. Estimate:
-- run: setup + smoke 0.6 h, warm-up 0.2 h, 400 steps ≈ 5 h, checks ≈ 0.7 h; ≈ 6.5 h, ≈ $26;
+- run: setup + smoke 0.4 h, warm-up 0.2 h, 400 steps ≈ 5 h, held-out evals every 10 steps ≈ 0.8 h,
+  checks ≈ 1 h; ≈ 7.5–8 h, ≈ $31;
 - sweep: ≈ 1 h, ≈ $4.
 
 ## History
