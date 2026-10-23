@@ -4,7 +4,7 @@
 #   AVs: rl400 (std step 400), mtry (matryoshka final), + the gold descriptions
 #   ARs: rl400, mtry_w (end of the AR-only warm-up: the rl400 AV's prefixes, AV untouched), mtry
 #   (+ each AV's sentence-reversed text, "<av>_rev")
-# WARM_ITER / MTRY_ITER default to the run's FREEZE=40 / EXTRA_STEPS=400 (iter_000440 / iter_000840); pass
+# WARM_ITER / MTRY_ITER default to the run's FREEZE=40 / EXTRA_STEPS=200 (iter_000440 / iter_000640); pass
 # matching values in the environment if those change.
 # Launch with:
 #   scripts/runpod/launch_with_retry.sh <out dir> heads-l24-mtry-sweep \
@@ -18,7 +18,7 @@ CK=/workspace/ckpt
 RES=/workspace/results
 BASE=Qwen/Qwen3-8B
 export STD_ITER=${STD_ITER:-iter_000400} WARM_ITER=${WARM_ITER:-iter_000440}
-export MTRY_ITER=${MTRY_ITER:-iter_000840}
+export MTRY_ITER=${MTRY_ITER:-iter_000640}
 mkdir -p "$RES"
 exec > >(tee -a "$RES/run.log") 2>&1
 cd "$REPO"

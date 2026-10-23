@@ -37,7 +37,8 @@ This matches the post's setup.
 ## Run
 
 `scripts/runpod/heads_l24_mtry_remote.sh` (wandb `l24-mtry` / `l24-mtry-rl`). Steps 400 → 440 are
-the AR-only warm-up; 440 → 840 use the matryoshka objective. The script:
+the AR-only warm-up; 440 → 640 use the matryoshka objective (200 steps, half the post's 400, to save
+time; resumable from any 50-step checkpoint if the curves are still rising). The script:
 - runs a three-step smoke test first (one AV-frozen step with the held-out eval, then two
   matryoshka steps);
 - mirrors checkpoints every 50 steps, plus the warm-up's last step, to
@@ -73,8 +74,8 @@ direction cosine and FVE against the head's mean write. The questions:
 
 The aborted first launch measured about 18–20 s per AV-frozen step and about 45 s per matryoshka
 step. Estimate:
-- run: setup + smoke 0.4 h, warm-up 0.2 h, 400 steps ≈ 5 h, held-out evals every 10 steps ≈ 0.8 h,
-  checks ≈ 1–1.5 h; ≈ 8 h, ≈ $32;
+- run: setup + smoke 0.4 h, warm-up 0.2 h, 200 steps ≈ 2.5 h, held-out evals every 10 steps ≈ 0.45 h,
+  checks ≈ 1–1.5 h; ≈ 5 h, ≈ $20;
 - sweep: ≈ 1 h, ≈ $4.
 
 ## History

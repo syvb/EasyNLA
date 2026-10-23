@@ -17,7 +17,7 @@ RES=/workspace/results
 BASE=Qwen/Qwen3-8B
 SRC_PREFIX=syvb/head-nla-qwen3-8b-l24-std
 FROM_ITER=${FROM_ITER:-iter_000400}
-EXTRA_STEPS=${EXTRA_STEPS:-400}     # matryoshka steps after the AR-only warm-up
+EXTRA_STEPS=${EXTRA_STEPS:-200}     # matryoshka steps after the AR-only warm-up
 FREEZE=${FREEZE:-40}
 OBJ=(--trunc-min-tokens 1 --trunc-max-tokens 120 --kl-beta 0.03
      --kl-taper-start 16 --kl-taper-end 120 --kl-taper-floor 0.1 --av-freeze-steps "$FREEZE")
