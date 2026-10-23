@@ -127,7 +127,7 @@ def main() -> None:
         ax.errorbar([xfull * (1 + 0.05 * (j - 1.5))], [fv], yerr=[[fv - 100 * r["full"]["ci"][0]], [100 * r["full"]["ci"][1] - fv]],
                     fmt="o", color=col, ms=6, mec=surf, mew=1.5, elinewidth=1.5, capsize=0, zorder=4)
     ax.axhline(0, color=ink2, lw=1, zorder=0)
-    ax.text(1.05, 1.5, "0% = as good as predicting the head's mean write", color=ink2, fontsize=7.8, va="bottom")
+    ax.text(1.05, 1.5, "0% = as good as predicting\nthe head's mean write", color=ink2, fontsize=7.8, va="bottom")
     ax.axvline(xs[-1] * 1.48, color=grid, lw=1, zorder=0)
     ax.set_xscale("log", base=2)
     ax.set_xticks(xs + [xfull])
