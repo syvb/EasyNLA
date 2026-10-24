@@ -463,21 +463,22 @@ regen, the 32-position viewer and the private-code scoring. The user topped up R
   - this file.
 - **HF** (`syvb/`):
   - dataset `head-nla-qwen3-8b` (public; `l24/`, `l24/std_rl/{results,viewer,doc_viewer,private_code}`,
-    `l24/mtry/`, `l24/blind_study/`, `soft_token/`, `explanations/`, `quick_sft_run1/`). The last two `l24/` folders were added on 10-24 after a secret scan; the wandb host and entity are redacted in the logs.
+    `l24/mtry/`, `l24/blind_study/`, `l24/review_2026-10-24/`, `soft_token/`, `explanations/`, `quick_sft_run1/`). The `l24/mtry/`, `l24/blind_study/` and review folders were added on 10-24 after a secret scan; the wandb host and entity are redacted in the logs.
   - models `head-nla-qwen3-8b-l24-{av,ar}` (raw contract) and `-l24-std-{av,ar,rl-ckpts}` (public);
   - `-l24-mtry-rl-ckpts` (public since 10-24: text files, safetensors headers and optimizer pickles scanned; model card added);
   - `-l24-mtry-{av,ar}`: the step-640 pair with tokenizer and `nla_meta.yaml`, but no optimizer state (10-24).
   - The empty private `-l24-rl-ckpts` (raw run, nothing ever uploaded) was deleted on 10-24 at the user's request.
 - **wandb** project `head-nla-qwen3-8b`: groups `l24-std` and `l24-mtry`. The raw run is `oscgpslq`.
-- **Local results** (this VM):
-  - `~/l24_std` (std run checks, examples);
-  - `~/l24_docs` (doc viewer data and HTMLs);
-  - `~/l24_ablate` (fp32 effects);
-  - `~/l24_privcode`;
-  - `~/l24_mtry` (matryoshka training results, checkpoints 440 and 640);
-  - `~/l24_mtry_sweep` (sweep, report, doc-viewer `mtry.parquet`, quote analysis);
-  - `~/l24_docs_mtry` (viewer docs including the matryoshka data);
-  - `~/blind_study` (bundles, summaries, judge key).
+- **Nothing lives only on the VM** (audited 10-24). Every file in the `~/l24_*`, `~/blind_study`, `~/rl_cpu`,
+  `~/soft_token` etc. folders was hashed and checked against HF and git. The VM-only results were then archived
+  to the dataset:
+  - `l24/std_rl/sibling_match/`, `effects_bf16_superseded/`, `effects_fp32_run.log`, `ckpt_verify/`;
+  - `l24/mtry/peek_samples.json`;
+  - `l24/review_2026-10-24/`.
+
+  What remains only locally is scratch: pod SSH notes, launcher logs, HF cache metadata, CPU smoke-test
+  checkpoints, weight slices that can be regenerated, the doc-viewer half files, and unredacted copies of logs
+  whose redacted versions are on HF. The wandb runs are on the private instance, not the VM.
 - **Open items:**
   - the multi-epoch AR retrain (prepared, never run);
   - an AV that says "nothing here" / a structured warm start;
