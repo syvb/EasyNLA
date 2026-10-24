@@ -177,17 +177,21 @@ under every KL, so "later tokens" just tracked how many later tokens there were 
 - within a token, ranking heads by logit effect and by residual effect agrees (ρ = 0.93).
 
 **Findings.**
-- **Most relevant heads.** H27 is the top head by KL at 27% of tokens (16–49% per document), then H25, H11, H15, H10
-  and H16/H19. The top 5 heads carry 39% of all KL.
-- **KV6 (H24–27), the locale group.** It matters most when an English place name comes next:
+- **Most relevant heads** (next-token KL, mean ablation). H27 is the top head by KL at 27% of tokens (16–49% per
+  document), then H25, H11, H15, H10 and H16/H19. The top 5 heads carry 39% of all KL. Ranked by effect on later
+  tokens instead, H0 tops (18% of tokens; H27 15%).
+- **KV6 (H24–27) at two English place names.** At the first mention of each, in the law document, it is the top head:
   - "the owners of the Br" → "igg" (Brigg): H25 +0.50 nats;
   - "North" → "Lincoln": H26 +0.46 nats.
 
   The RL explanations there say "Yorkshire countryside", "rural English countryside", "northern English cities".
-- **H10** drives ", such [as]" (+0.30 nats) in two documents.
+  At the repeat of "North Lincoln" (#213) H25/H26 do nothing (H26 ranks 11th). This rests on two sites, so a
+  "locale group" is a hypothesis, not a finding.
+- **H10** is the top head at both ", such as" list openers, both in the CS document (+0.32 and +0.30 nats); at other
+  "such" tokens it does nothing.
 - **H16** gives "-being" after "during a well" +0.55 nats; this is the largest effect in the data (KL 0.25).
 - **Relevance vs explanation quality: unrelated.** ρ(KL, RL FVE) = −0.04 over sites (−0.16 within head). Each token's
-  most relevant head has the average FVE (+22% vs +23%).
+  most relevant head has about the average FVE (+20% vs +23%).
 - **When heads matter.** Relevance falls with attention to the first token (ρ = −0.67) and rises with write norm (ρ = 0.68).
 - **The viewer** has these as heatmap colours (log scale; a dot marks each token's top head), a sortable per-token head
   table with ranks, overview sorts, and a "most relevant sites" list.

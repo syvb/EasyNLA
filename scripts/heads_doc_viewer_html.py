@@ -127,8 +127,9 @@ def main() -> None:
             for k in ("mtry_fve", "mtry_cos", "mtry_t16_fve", "mtry_t16_cos", "rl_t16_fve", "rl_t16_cos"):
                 d[k] = r3(mt[k])
 
-            def p16(t: str) -> int:   # characters of t covered by its first 16 tokens (the scored prefix)
-                return min(len(t), len(tok.decode(tok.encode(t, add_special_tokens=False)[:16]).rstrip()))
+            def p16(t: str) -> int:   # UTF-16 units of t covered by its first 16 tokens (the scored prefix; JS slices in UTF-16)
+                n = min(len(t), len(tok.decode(tok.encode(t, add_special_tokens=False)[:16]).rstrip()))
+                return len(t[:n].encode("utf-16-le")) // 2
             d["mtry_p16"] = [p16(t) for t in d["mtry"]]
             d["rl_p16"] = [p16(t) for t in d["rl"]]
             mtry_mean = round(float(np.nanmean(mt.mtry_fve)), 3)
@@ -195,16 +196,17 @@ table.heads tr.top3 td.rk{color:var(--ink);font-weight:700}.toplist{max-height:3
 .tag{font-size:10.5px;border:1px solid var(--border);border-radius:999px;padding:0 6px;color:var(--ink-2);background:var(--surface-2)}
 </style></head><body>
 <header><h1>__TITLE__</h1>
-<p>Rows are the layer's 32 attention heads, columns are every token of a held-out document. Each cell is one head's write at one token, explained by the <b>AV</b> (it sees only the write vector) and reconstructed from that explanation by the <b>AR</b>. Colour = <b>FVE</b> (1 − error / error of predicting the head's mean write): orange above 0, blue below, grey ≈ 0; it is negative below cos ≈ 0.5 by construction. Click a cell for its explanation, scores and evidence; the text then shows that head's full attention from the token (evidence only, never used for any explanation).</p>
+<p>Rows are the layer's 32 attention heads, columns are every token of a held-out document. Each cell is one head's write at one token, explained by the <b>AV</b> (it sees only the write vector) and reconstructed from that explanation by the <b>AR</b>. Colour = <b>FVE</b> (1 − error / error of predicting the head's mean write): red above 0, blue below, grey ≈ 0; it is negative below cos ≈ 0.5 by construction (the crossover is 0.41–0.66, depending on the site). Click a cell for its explanation, scores and evidence; the text then shows that head's full attention from the token (evidence only, never used for any explanation).</p>
+<p>Every AV explanation (RL, SFT, matryoshka) is <b>one sample at temperature 1</b>, so any single cell is noisy: read patterns across cells, not one cell. Explanations the AV never closed (under 0.1% of RL and SFT texts, about 1.5% of matryoshka texts) are scored on what it wrote: RL and SFT texts cut to their first 300 characters, matryoshka texts whole (as the matryoshka trainer reads them). <b>Gold</b> = Claude Haiku's explanation written from the write's vocabulary readouts only (the SFT teacher, not ground truth). <b>Promotes</b> = the 16 tokens whose log-probability the write raises most when injected into short prompts (avg16; tokens in at least 8% of all writes' readouts are greyed as filler). <b>Lens</b> = the 8 top tokens of the write's direct unembedding.</p>
 <p>Heads come in <b>GQA groups</b>: Qwen3-8B has 8 key/value heads, each shared by 4 query heads (KV0 = H0–3, KV1 = H4–7, …). Heads in a group read the same keys and values and differ only in their query and output projections, so they often share a theme. Groups are banded in the heatmap and boxed in the overview; the selected head's group-mates are marked.</p>
-<p id="effintro"><b>Counterfactual relevance</b>: for every token and head, that head's output at that token alone was replaced (by the head's mean output, or by zero) and the rest of the model re-run. <b>Logit effect</b> = KL between the clean and ablated next-token distributions at that token; <b>Δ log p</b> = how much the head raises the log-probability of the actual next token (positive = it helps); <b>residual effect</b> = relative change of the final-layer residual at that token; <b>later tokens</b> = summed KL over all later tokens (the write is read by later positions). Pick one under <i>Colour</i>, sort the <i>Heads at this token</i> table or the overview by it, or use <i>Most relevant sites</i>.</p>
-<p class="mtopt"><b>Matryoshka</b>: the std RL pair (step 400) trained 240 more steps with the matryoshka objective. Each training explanation was cut to its first 1–120 tokens before the AR read it, so the AV learned to say the most informative thing first. Its explanation of each site is shown under the RL one. “First 16 tokens” scores only the shaded prefix, read for matryoshka by the matryoshka AR and for RL by the AR at the end of a 40-step AR-only warm-up on RL prefixes (the fair baseline). Colour by them under <i>Matryoshka</i>.</p></header>
+<p id="effintro"><b>Counterfactual relevance</b>: for every token and head, that head's output at that token alone was replaced (by the head's mean output over these 4 documents, or by zero) and the rest of the model re-run. <b>Logit effect</b> = KL between the clean and ablated next-token distributions at that token; <b>Δ log p</b> = how much the head raises the log-probability of the actual next token (positive = it helps); <b>residual effect</b> = relative change of the final-layer residual at that token; <b>later tokens</b> = summed KL over all later tokens (the write is read by later positions). Pick one under <i>Colour</i>, sort the <i>Heads at this token</i> table or the overview by it, or use <i>Most relevant sites</i>.</p>
+<p class="mtopt"><b>Matryoshka</b>: the std RL pair (step 400) after 40 AR-only warm-up steps (AV frozen) and 200 GRPO steps with the matryoshka objective. Each training explanation was cut to its first 1–120 tokens before the AR read it, so the AV learned to say the most informative thing first. Its explanation of each site is shown under the RL one. “First 16 tokens” scores only the shaded prefix, read for matryoshka by the matryoshka AR and for RL by the AR at the end of a 40-step AR-only warm-up on RL prefixes (the fair baseline). Colour by them under <i>Matryoshka</i>. Each text is read by its own AR, so “Matryoshka − RL” compares pairs. On 2,000 held-out writes, the fixed step-400 AR reads whole matryoshka texts at cos 0.605 vs 0.594 for std texts, but the matryoshka AR reads them at 0.650: most of the whole-text gap is the reader. The 16-token gap is mostly the AV: the same fixed AR reads matryoshka prefixes at 0.493 vs 0.309.</p></header>
 <main>
 <div class="bar" id="docs" role="group" aria-label="Document"></div>
 <div class="bar"><label for="metric">Colour</label><select id="metric"><optgroup label="Explanations and attention"><option value="rl_fve">RL FVE</option><option value="sft_fve">SFT FVE</option><option value="gold_fve">Gold FVE (RL AR)</option><option value="gap">RL − SFT FVE</option><option value="first_w">attention to first token</option></optgroup><optgroup label="Matryoshka (continued RL that rewards the first tokens)" class="mtopt"><option value="mtry_fve">Matryoshka FVE</option><option value="mgap">Matryoshka − RL FVE</option><option value="mtry_t16_fve">Matryoshka FVE, first 16 tokens</option><option value="rl_t16_fve">RL FVE, first 16 tokens (warm-up AR)</option><option value="mgap16">Matryoshka − RL, first 16 tokens</option></optgroup><optgroup label="Counterfactual relevance (ablate the head at the token)" class="effopt"><option value="kl">effect on next-token logits (KL)</option><option value="dlogp">helps predict the actual next token (Δ log p)</option><option value="resid">effect on final residual</option><option value="later">effect on later tokens (Σ KL)</option></optgroup></select>
 <label for="abl" class="effopt">Ablate to</label><select id="abl" class="effopt"><option value="mean">the head's mean output</option><option value="zero">zero</option></select>
 <label for="zoom">Cell width</label><select id="zoom"><option value="4">4 px</option><option value="6" selected>6 px</option><option value="9">9 px</option><option value="14">14 px</option></select>
-<span style="width:8px"></span><span class="muted">Show</span><button id="t-mtry" aria-pressed="true" class="mtopt">Matryoshka AV</button><button id="t-sft" aria-pressed="false">SFT AV</button><button id="t-gold" aria-pressed="false">Gold (Haiku)</button><button id="t-hl" aria-pressed="true">Highlight quotes &amp; markup</button><button id="theme" title="Toggle light/dark">◐</button></div>
+<span style="width:8px"></span><span class="muted">Show</span><button id="t-mtry" aria-pressed="true" class="mtopt">Matryoshka AV</button><button id="t-sft" aria-pressed="false">SFT AV</button><button id="t-gold" aria-pressed="false" title="Claude Haiku's explanation from the write's vocabulary readouts only (the SFT teacher, not ground truth)">Gold (Haiku)</button><button id="t-hl" aria-pressed="true">Highlight quotes &amp; markup</button><button id="theme" title="Toggle light/dark">◐</button></div>
 <div class="hm-wrap"><canvas id="hm" tabindex="0" aria-label="Heads by tokens heatmap; arrow keys move the selection"></canvas>
 <div class="legend"><b id="lgname" style="color:var(--ink)"></b><span class="lg"><canvas class="ramp" id="ramp" width="260" height="10"></canvas><span class="ticks"><span id="lo"></span><span id="mid"></span><span id="hi"></span></span></span><span id="lgnote"></span><span class="muted" style="margin-left:12px">← → previous / next token · ↑ ↓ heads (heatmap focused) · rows banded by KV group</span><span id="stat" style="margin-left:auto"></span></div></div>
 <div class="panel ov" id="topp"><h2>Most relevant sites in this document <span class="meta">(token, head) pairs ranked by a counterfactual effect; click one to select it. The heatmap marks each token's top head with a dot when a relevance colour is chosen.</span></h2>
@@ -230,6 +232,7 @@ const ESC=JSON.parse(document.getElementById('escales').textContent);
 const $=id=>document.getElementById(id);
 function el(t,a={},...k){const e=document.createElement(t);for(const[x,v]of Object.entries(a)){if(x==='class')e.className=v;else if(x.startsWith('on'))e.addEventListener(x.slice(2),v);else e.setAttribute(x,v)}for(const c of k)if(c!=null)e.append(c);return e}
 const pct=x=>x==null?'n/a':(x>=0?'+':'−')+Math.abs(Math.round(100*x))+'%',f2=x=>x==null?'n/a':(x>=0?'':'−')+Math.abs(x).toFixed(2);
+const cut=(s,n)=>{const a=[...s];return a.length>n?a.slice(0,n).join('')+'…':s};
 const vis=s=>s.replace(/\n/g,'⏎').replace(/ /g,'·').replace(/\t/g,'⇥')||'∅',fveCls=f=>f>=0.5?'fve h':f>=0.25?'fve m':f>0?'fve p':'fve';
 async function load(i){if(CACHE[i])return CACHE[i];const b=Uint8Array.from(atob(DOCS[i].blob),c=>c.charCodeAt(0));
 const txt=await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).text();return CACHE[i]=JSON.parse(txt)}
@@ -257,8 +260,8 @@ const SCALES={fve:{kind:'div',lo:-1,hi:1,ticks:['−100%','0','+100%'],note:'FVE
  gap:{kind:'div',lo:-2,hi:2,ticks:['−200%','0','+200%'],note:'RL − SFT, in FVE points; clamped at ±200%'},
  mgap:{kind:'div',lo:-2,hi:2,ticks:['−200%','0','+200%'],note:'matryoshka − std RL (each read by its own AR; the 16-token RL prefix by the warm-up AR), in FVE points; clamped at ±200%'},
  seq:{kind:'seq',lo:0,hi:1,ticks:['0','0.5','1'],note:'share of the head’s attention on the first token'}};
-// Relevance magnitudes use a separate SEQUENTIAL violet ramp on a log scale (ranges shared by all documents, set by
-// the builder); Δ log p uses the diverging ramp (blue = the head hurts the actual next token, red = it helps).
+// Relevance magnitudes use a separate SEQUENTIAL violet ramp on a log scale (ranges shared by all documents in this
+// file, set by the builder); Δ log p uses the diverging ramp (blue = the head hurts the actual next token, red = it helps).
 const STOPS={light:{div:['#0d366b','#3987e5','#f0efec','#e66767','#9b1c1c'],seq:['#f0efec','#cde2fb','#86b6ef','#3987e5','#1c5cab','#0d366b'],mag:['#f0efec','#e2d8f6','#c0a6ec','#9673da','#6c46bd','#432485']},
  dark:{div:['#b7d3f6','#3987e5','#383835','#d24d4d','#ffb4ab'],seq:['#383835','#184f95','#256abf','#3987e5','#86b6ef','#cde2fb'],mag:['#383835','#3b2964','#593b96','#7b5ac2','#a688df','#d6c6f5']}};
 function scaleOf(m){if(isEff(m)){const e=ESC[m+'_'+S.abl];if(!e)return SCALES.fve;
@@ -318,8 +321,8 @@ return el('button',{class:'chip kvb'+(s===S.h?' on':''),title:`H${s} at this tok
 hasEff()?el('div',{class:'k'},'Relevance'):null,hasEff()?el('div',{class:'chips'},...EFF.map(m=>el('span',{class:'chip',style:'font-family:system-ui',title:EFFNOTE[m]+' (rank among the '+D.n_heads+' heads at this token)'},EFFNAME[m]+' '+fmtE(m,ev(m,S.h,S.pi)),el('span',{class:'w'},'#'+rankAt(m,S.h,S.pi)))),
 el('span',{class:'w',style:'align-self:center;color:var(--ink-3);font-size:11.5px'},`ablated to ${S.abl==='mean'?'mean output':'zero'} · clean next-token entropy ${D.clean_entropy[D.pos[S.pi]]?.toFixed(2)} nats`)):null,
 el('div',{class:'k'},'Reads'),el('div',{class:'chips'},...top.map(i=>el('span',{class:'chip'},vis(D.tokens[i]),el('span',{class:'w'},(i===P?'self ':i===0?'first ':'')+a[i].toFixed(2))))),
-el('div',{class:'k'},'Promotes'),el('div',{class:'chips'},...D.distinct[k].map(t=>el('span',{class:'chip'},vis(t))),...D.filler[k].map(t=>el('span',{class:'chip f',title:'common filler'},vis(t)))),
-el('div',{class:'k'},'Lens'),el('div',{class:'chips'},...D.lens[k].map(t=>el('span',{class:'chip'},vis(t)))))].filter(Boolean))}
+el('div',{class:'k',title:'avg16: the 16 tokens whose log-probability the write raises most when injected into short prompts; greyed = common filler (in ≥ 8% of all writes’ readouts)'},'Promotes'),el('div',{class:'chips'},...D.distinct[k].map(t=>el('span',{class:'chip'},vis(t))),...D.filler[k].map(t=>el('span',{class:'chip f',title:'common filler'},vis(t)))),
+el('div',{class:'k',title:'top 8 tokens of the write’s direct unembedding'},'Lens'),el('div',{class:'chips'},...D.lens[k].map(t=>el('span',{class:'chip'},vis(t)))))].filter(Boolean))}
 function renderHeads(){const E=hasEff(),key=E?S.hsort:'rl_fve',get=(m,h)=>m==='rl_fve'?D.rl_fve[idx(h,S.pi)]:ev(m,h,S.pi);
 const rows=[...Array(D.n_heads).keys()].map(h=>({h,v:get(key,h)})).sort((a,b)=>(b.v??-1e9)-(a.v??-1e9));
 $('colh').replaceChildren('Heads at this token',el('span',{class:'meta'},(E?'click a column to rank by it; ':'')+'sorted by '+(key==='rl_fve'?'RL FVE':EFFNAME[key])+'; click a row to select; blue edge = the selected head\'s KV group'));
@@ -327,15 +330,15 @@ const th=(m,lab,tip)=>E?el('th',{class:'srt'+(key===m?' on':''),title:tip||('ran
 $('heads').replaceChildren(el('tr',{},el('th',{},'#'),el('th',{},'head'),el('th',{},'KV'),...(E?EFF.map(m=>th(m,EFFNAME[m],EFFNOTE[m])):[]),th('rl_fve','RL FVE'),el('th',{},'sink'),el('th',{},'RL explanation')),
 ...rows.map(({h},i)=>{const k=idx(h,S.pi);return el('tr',{class:(h===S.h?'sel':kvOf(h)===kvOf(S.h)?'sib':'')+(i<3&&E?' top3':''),onclick:()=>{S.h=h;update()}},el('td',{class:'rk'},String(i+1)),el('td',{},'H'+h),el('td',{class:'n'},'kv'+kvOf(h)),
 ...(E?EFF.map(m=>el('td',{class:'n'},fmtE(m,ev(m,h,S.pi)))):[]),el('td',{class:'n'},pct(D.rl_fve[k])),
-el('td',{class:'n'},(D.first_w[k]??0).toFixed(2)),el('td',{},D.rl[k].split('\n')[0].slice(0,80)+(D.rl[k].length>80?'…':'')))}))}
+el('td',{class:'n'},(D.first_w[k]??0).toFixed(2)),el('td',{},cut(D.rl[k].split('\n')[0],80)))}))}
 // Most relevant (token, head) sites of the document by one effect.
 function renderTop(){const box=$('topp');box.style.display=hasEff()?'':'none';if(!hasEff())return;const m=S.tmetric,P=D.pos.length,c=[];
 for(let h=0;h<D.n_heads;h++){if(S.thead>=0&&h!==S.thead)continue;for(let pi=0;pi<P;pi++){if(S.skipFirst&&D.pos[pi]===0)continue;const v=ev(m,h,pi);if(v!=null)c.push([v,h,pi])}}
 c.sort((a,b)=>b[0]-a[0]);const top=c.slice(0,60);$('tnote').textContent=`${c.length.toLocaleString()} sites · ablated to ${S.abl==='mean'?'mean output':'zero'}`;
 $('toplist').replaceChildren(el('tr',{},el('th',{},'#'),el('th',{},'token'),el('th',{},'head'),...EFF.map(x=>el('th',{class:x===m?'srt on':''},EFFNAME[x])),el('th',{},'rank at token'),el('th',{},'RL FVE'),el('th',{},'RL explanation')),
-...top.map(([v,h,pi],i)=>{const k=idx(h,pi),P0=D.pos[pi];return el('tr',{class:h===S.h&&pi===S.pi?'sel':'',onclick:()=>{S.h=h;S.pi=pi;update();keepVisible()}},el('td',{class:'rk'},String(i+1)),
+...top.map(([v,h,pi],i)=>{const k=idx(h,pi),P0=D.pos[pi];return el('tr',{class:h===S.h&&pi===S.pi?'sel':'','data-h':String(h),'data-pi':String(pi),onclick:()=>{S.h=h;S.pi=pi;update();keepVisible()}},el('td',{class:'rk'},String(i+1)),
 el('td',{},`#${P0} “${vis(D.tokens[P0])}” → “${vis(D.tokens[P0+1]??'')}”`),el('td',{},'H'+h),...EFF.map(x=>el('td',{class:'n'},fmtE(x,ev(x,h,pi)))),el('td',{class:'n'},'#'+rankAt(m,h,pi)),el('td',{class:'n'},pct(D.rl_fve[k])),
-el('td',{},D.rl[k].split('\n')[0].slice(0,70)+(D.rl[k].length>70?'…':'')))}))}
+el('td',{},cut(D.rl[k].split('\n')[0],70)))}))}
 let LUTN={};function lutNum(kind){const key=kind+(isDark()?'d':'l');if(LUTN[key])return LUTN[key];LUTN[key]=lut(kind).map(c=>c.match(/\d+/g).map(Number));return LUTN[key]}
 let HS=null;S.osort='h';S.dropSink=true;
 // Per-head attention summary over the document (query tokens t ≥ 1). "Non-sink" = attention renormalized over
@@ -367,7 +370,7 @@ box.className='thumbs';const key=S.osort.startsWith('e_')?(r=>-(r.eff[S.osort.sl
 for(const r of [...HS].sort((a,b)=>key(a)-key(b)))box.append(thumbBtn(r,true));selThumbs()}
 function selThumbs(){const q=kvOf(S.h);document.querySelectorAll('.thumb').forEach(b=>{const h=+b.dataset.h;b.classList.toggle('sel',h===S.h);b.classList.toggle('sib',h!==S.h&&kvOf(h)===q)});
 document.querySelectorAll('.kvg').forEach(b=>b.classList.toggle('sel',+b.dataset.kv===q))}
-function update(){drawHM();renderCtx();renderDetail();renderHeads();selThumbs();if(hasEff())document.querySelectorAll('#toplist tr').forEach(r=>r.classList.remove('sel'))}
+function update(){drawHM();renderCtx();renderDetail();renderHeads();selThumbs();if(hasEff())document.querySelectorAll('#toplist tr[data-h]').forEach(r=>r.classList.toggle('sel',+r.dataset.h===S.h&&+r.dataset.pi===S.pi))}
 function renderDocs(){$('docs').replaceChildren(el('label',{},'Document'),...DOCS.map((d,i)=>el('button',{'aria-pressed':String(i===S.doc),onclick:()=>openDoc(i)},`${d.name.replace(/_/g,' ')} · ${d.n_pos} tok · RL FVE ${pct(d.rl_fve_mean)}`+(d.mtry_fve_mean!=null?` · matryoshka ${pct(d.mtry_fve_mean)}`:''))))}
 async function openDoc(i){S.doc=i;renderDocs();$('detail').replaceChildren(el('div',{class:'loading'},'Loading…'));D=await load(i);
 let best=[0,0,-9];for(let h=0;h<D.n_heads;h++)for(let pi=0;pi<D.pos.length;pi++){const v=D.rl_fve[idx(h,pi)];if(v!=null&&v>best[2]&&D.first_w[idx(h,pi)]<0.9)best=[h,pi,v]}
@@ -377,7 +380,7 @@ document.querySelectorAll('.mtopt').forEach(e=>e.style.display=hasM()?'':'none')
 renderThumbs();update();renderTop()}
 const tip=$('tip');$('hm').addEventListener('mousemove',e=>{const c=cellAt(e);if(!c){tip.style.display='none';return}const k=idx(c.h,c.pi);
 tip.replaceChildren(el('b',{},`H${c.h} · kv${kvOf(c.h)} · #${D.pos[c.pi]} “${vis(D.tokens[D.pos[c.pi]])}”`),el('br'),`RL FVE ${pct(D.rl_fve[k])} · SFT ${pct(D.sft_fve[k])}`+(hasM()?` · matryoshka ${pct(D.mtry_fve[k])} (16 tok ${pct(D.mtry_t16_fve[k])} vs RL ${pct(D.rl_t16_fve[k])})`:'')+` · first-token ${(D.first_w[k]??0).toFixed(2)}`,el('br'),
-...(hasEff()?[EFF.map(m=>`${EFFNAME[m]} ${fmtE(m,ev(m,c.h,c.pi))}`).join(' · '),el('br')]:[]),D.rl[k].split('\n')[0].slice(0,140));
+...(hasEff()?[EFF.map(m=>`${EFFNAME[m]} ${fmtE(m,ev(m,c.h,c.pi))}`).join(' · '),el('br')]:[]),cut(D.rl[k].split('\n')[0],140));
 tip.style.display='block';tip.style.left=Math.min(innerWidth-330,e.clientX+14)+'px';tip.style.top=(e.clientY+14)+'px'});
 $('hm').addEventListener('mouseleave',()=>tip.style.display='none');
 $('hm').addEventListener('click',e=>{$('hm').focus({preventScroll:true});const c=cellAt(e);if(c){S.h=c.h;S.pi=c.pi;update()}});

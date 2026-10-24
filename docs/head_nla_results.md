@@ -27,9 +27,9 @@ large corpus, normalized per head and capped at norm 4.
 - **Skill** = (cos − 0.06) / 0.94. 0.06 is what pointing at the head's mean write direction gets, so
   0% = "knows only which head".
 - **Direction-space FVE** = 1 − error / error of the head's mean write.
-  - The prediction is renormalized but the mean is not, so FVE > 0 needs cos > 0.5. FVE is negative
-    whenever cos is below 0.5; that is a property of the metric, not a sign the model is worse than
-    guessing.
+  - The prediction is renormalized but the mean is not, so FVE > 0 needs cos above about 0.5. The
+    crossover is 1 − e/2, where e is the mean write's error; it is 0.41–0.66 per site (0.50–0.57 per head).
+    FVE below 0 at a moderate cos is a property of the metric, not a sign the model is worse than guessing.
   - A random direction scores about −100%, and the best possible is +100%.
 - **Held-out data:** 6,360 eval rows of L24 (32 heads, documents no model trained on) for the standard
   checks; 2,000 of them for the matryoshka sweep.
@@ -111,7 +111,8 @@ stopped at step 44: its reward was dominated by batch noise.
   1-epoch SFT AR reads any text poorly: 0.15 for both gold and RL text.
 - **Side effects:**
   - At T=1, 93% of explanations quote tokens (SFT: 0%). They grow from 34 to 114 words, 79% contain stray
-    markup (`</p>`), and openings are templated (66% start "Statements about…").
+    markup (`</p>`), and openings are templated: 66% of greedy outputs start "Statements about…" (10% of
+    T=1 doc-viewer outputs).
   - KL to the SFT AV settled at 1.1–1.4 nats per token. The β = 0.01 term was about 1% of the signal.
   - Greedy outputs run to the 256-token cap 74% of the time at step 400. T=1 is the reliable decoding.
 - **The quotes and markup are not what earns the reward.** Within a head, explanations without quotes score
@@ -185,6 +186,17 @@ the same token.
 | Attention mass on in-context quoted tokens: this head vs other heads' mean | 0.067 vs 0.021 (**3.2×**) | 0.144 vs 0.030 (**4.8×**) | — |
 | This head beats the median other head | 68% | 76% (first 16 tokens: 86%) | — |
 
+The matching rule is loose: a quote matches a context token when any non-stopword word of the quote equals
+it, or one contains the other (≥ 4 characters). The attention-mass rows are robust to that choice; the
+"current token" and "not in context" rows are not. With strict matching (the whole quote equals 1–4
+consecutive context tokens):
+- quote = current token: 2.0% (std) / 3.6% (matryoshka);
+- not in the context: 88% / 92%;
+- mass ratio: 3.0× / 4.8×;
+- beats the median other head: 70% / 86%.
+
+The first-16-token figure rests on about 1,100–1,500 quotes, because short prefixes rarely quote.
+
 - **The write carries the identity of the tokens the head attends to, and the AV reads it out.** The AV
   never sees the document, so this has to come from the write. The effect is strongest on H0, H7, H22, H5,
   H13, H15 and H6 (3–4× other heads); H0 and H7 quote the current token most (self-attending heads). For
@@ -212,8 +224,12 @@ the same token.
 **Counterfactual relevance does not track explanation quality** (`scripts/heads_ablation_effects.py`).
 Ablate one head at one token and re-run layers 24–35 in fp32 (bf16 noise of about 7e-4 nats swamps the
 effects).
-- H27 is the most relevant head at 27% of tokens. The top 5 heads carry 39% of all KL. KV6 (H24–27) drives
-  English place names: "Br" → "igg" +0.50 nats from H25, "North" → "Lincoln" +0.46 from H26.
+- "Relevant" here means next-token KL with the head ablated to its mean output. By that measure H27 is the
+  most relevant head at 27% of tokens, and the top 5 heads carry 39% of all KL. By effect on later tokens,
+  H0 tops instead (18% of tokens; H27 15%).
+- H25/H26 help at the first mention of two English place names in the law document: "Br" → "igg" +0.50 nats
+  from H25, "North" → "Lincoln" +0.46 from H26. At the repeat of "North Lincoln" they do nothing, so this is
+  two sites, not a general place-name role.
 - **ρ(relevance, RL FVE) = −0.04.** The heads the NLA explains best are not the ones that matter most for
   the output. Relevance falls with first-token attention (ρ −0.67) and rises with write norm (+0.68).
 
@@ -276,9 +292,13 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
     1.199 → 1.302, and a text-only probe 0.134 → 0.174.
 - **It is real frontloading.** Reversing the matryoshka text's sentences costs 34 points at 16 tokens but
   only 2 at whole. For std text, reversal costs 6.
-- **The gain is in the AV, not just the AR.** The unchanged step-400 AR, which never saw prefixes or
-  matryoshka text, reads matryoshka prefixes far better: cos 0.176 vs 0.036 at 1 token, 0.493 vs 0.309 at
-  16. The AR improved little after its warm-up: it reads std text at 16 tokens with cos 0.367 vs 0.373.
+- **At short prefixes the gain is in the AV, not just the AR.** The unchanged step-400 AR, which never saw
+  prefixes or matryoshka text, reads matryoshka prefixes far better: cos 0.176 vs 0.036 at 1 token, 0.493 vs
+  0.309 at 16.
+- **For whole explanations it is mostly the AR.** The same fixed step-400 AR reads whole matryoshka texts at
+  cos 0.605 vs 0.594 for std texts; the matryoshka AR reads them at 0.650. So most of the whole-text gain
+  (0.596 → 0.650 above) comes from the co-trained reader. Every whole-text comparison in this section
+  (and "Matryoshka − RL" in the doc viewer) compares pairs, each text read by its own AR. The AR improved little after its warm-up: it reads std text at 16 tokens with cos 0.367 vs 0.373.
 - **What the text looks like.** Openings became "Topic: …" headlines ("Negation and uncertainty:",
   "American federal institutions:").
   - Explanations still close properly: 98.3% end with the closing tag, even though endings were never
@@ -293,7 +313,8 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
 
 **What works:**
 - **A write-only head NLA can be trained.** After RL its reconstructions reach held-out cosine 0.60 with the
-  true write (skill 57%), and 0.65 after matryoshka (skill 63%).
+  true write (skill 57%), and 0.65 after matryoshka (skill 63%). Most of that last step is the matryoshka AR:
+  read by the step-400 AR, the matryoshka text scores 0.605.
 - **The information is in the words.** It survives paraphrase, it lets anyone tell the heads (and GQA
   siblings) apart, and its in-context quotes point at what the head actually reads, 3–5× above other heads.
 - **Matryoshka frontloading works and is cheap** (about $17). The first 16 tokens carry what used to need
@@ -304,8 +325,9 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
 **What doesn't:**
 - **It does not supply mechanism.** The explanations never say which tokens are read, when the head fires,
   or what it changes downstream. That came from attention, weights and ablations.
-- **Cheap baselines are strong.** The previous token's write beats the RL NLA on 27/32 heads, and the doc
-  mean on 10/32. Relevance to the output is unrelated to FVE.
+- **Cheap baselines are strong.** The previous token's write beats the RL NLA on 27/32 heads (the
+  matryoshka NLA on 21/32), and the doc mean beats the RL NLA on 10/32. Relevance to the output is
+  unrelated to FVE.
 - **Faithfulness, as judged against the write's readouts, did not improve with RL.** The text drifts into
   quotes, markup and templates. The KL penalty was too weak to stop it.
 - **The "nothing here" failure mode.** Near-empty, sink-parked writes get a stock "conditional doubt"

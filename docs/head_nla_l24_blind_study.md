@@ -1,6 +1,6 @@
 # Blind study: do matryoshka explanations and mechanistic analysis agree about a head?
 
-**Heads:** Qwen3-8B layer 24, heads **H29**, **H30** and **H13**. They were chosen for high to moderate matryoshka FVE (0.63, 0.57, 0.40), and none had been analysed before. H29 and H30 share a KV head (H28–31), and H13 shares one with H12–15.
+**Heads:** Qwen3-8B layer 24, heads **H29**, **H30** and **H13**. They were chosen for high to moderate matryoshka FVE (0.63, 0.57, 0.40), and none had been analysed before. The FVE overstates how informative their explanations are: for H29 and H30 it is highest where the head is parked on the sink (0.87 and 0.83 in the most sink-parked quartile vs 0.48 and 0.45 in the least), because the stock "doubt" reading of a near-empty write reconstructs well (see below). H29 and H30 share a KV head (H28–31), and H13 shares one with H12–15.
 
 **Setup** (2026-10-23; data in `~/blind_study/`, public on HF in `syvb/head-nla-qwen3-8b` under `l24/blind_study/`). Two agents worked independently, each with its own data bundle, and neither could read the repo docs, earlier results or memory.
 

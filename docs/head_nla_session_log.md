@@ -385,6 +385,31 @@ Each step below was approved by the user and preceded by the same secret scan (`
 - **Deleted** (the user asked): the empty private repo `-l24-rl-ckpts`, after confirming it held only `.gitattributes` and its initial commit.
 - **Left alone:** private repos from other projects; wandb, which is on a private instance.
 
+### 11. Review of the doc viewer's presentation (10-24)
+
+Four Fable reviewers checked the matryoshka doc viewer:
+- **Embedded data vs source:** every field at all 37,760 sites;
+- **Metric semantics:** each label traced to the code that computed it;
+- **Rendered page:** 296 checks in headless Chromium, plus pixel-level colour checks;
+- **Claims vs data:** every write-up claim recomputed.
+
+**Verdict:** every number, text and colour matches its source and label. The published file was byte-identical to a rebuild from the committed code. Fixed after the review:
+- **Viewer** (`heads_doc_viewer_html.py`):
+  - the 16-token shading is now counted in UTF-16 units; 18 emoji sites were off by one character;
+  - the intro wording is corrected: "240 matryoshka steps" is now 40 AR-only + 200 matryoshka, "orange" is now "red", and the ablation mean is the 4-document mean;
+  - added notes on T=1 sampling and unclosed explanations, and definitions of Gold, Promotes and Lens;
+  - previews no longer split emoji, and the selected top-site row stays highlighted.
+  - Both viewers were rebuilt and republished. The data is unchanged apart from the 18 prefix lengths.
+- **Write-ups:**
+  - Most of the whole-text matryoshka gain is the co-trained AR: the fixed step-400 AR scores cos 0.605 vs 0.594, against 0.650 with the matryoshka AR. The 16-token gain is mostly the AV.
+  - "66% Statements about" is a greedy figure (T=1: 10%).
+  - The FVE crossover is about 0.5 (0.41–0.66 per site), not exactly 0.5.
+  - The §6 quote rates depend on the matching rule (strict: 2.0/3.6% current token, 88/92% not in context; mass ratios unchanged).
+  - The H25/H26 place-name claim rests on two sites; H10's ", such as" sites are both in one document; +22% is now +20%; relevance is next-token KL (by later-token KL, H0 tops).
+  - The blind study's H29/H30 FVE is highest at sink-parked sites.
+  - The previous-token baseline beats matryoshka on 21/32 heads.
+- **HF READMEs and model cards** updated to match.
+
 ## Costs (recorded ones)
 
 | Item | Cost |
