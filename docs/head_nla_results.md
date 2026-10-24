@@ -309,7 +309,45 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
   **37 / 28 / 32 / 43%**, and matryoshka's first 16 tokens beat the std text's first 16 tokens on every
   document (cos 0.59–0.67 vs 0.40–0.49).
 
-## 10. Overall assessment
+## 10. Which heads can it explain? (per-head FVE)
+
+Figure `docs/head_nla_l24_fve_per_head.png`; values in `head_nla_l24_fve_per_head.{csv,json}`. Made by
+`scripts/heads_per_head_fve.py`, which reads only the public HF dataset (no GPU).
+
+![FVE per head](head_nla_l24_fve_per_head.png)
+
+The figure has two views. The held-out eval rows (about 199 per head, T=1) were sampled with more weight on
+larger-than-typical writes; the doc viewer covers every token of 4 held-out documents. They rank the heads
+almost identically (ρ = 0.96).
+
+- **Heads differ a lot.** Matryoshka FVE runs from −46% (H3) to +69% (H18), and the ranking is stable across
+  SFT, RL and matryoshka.
+- **KV4 (H16–19) is the best group** (+58 to +69%). Before RL, only H16, H19 and H26 were above −50%.
+- **H1, H3, H4 and H24 stay negative even after matryoshka.** All of them are among the heads where the
+  document-average write beats the NLA (§7), i.e. per-document topic broadcasts.
+- **Matryoshka beats RL on all 32 heads**, both whole-text and at 16 tokens; part of the whole-text gain is
+  the matryoshka AR (§9). The largest 16-token gains are H0 (−77% → +59%), H18, H7 and H22. H0 and H7 attend
+  to themselves, so their content (the current token) is short to say.
+- **Per head, attention to the first token barely predicts FVE** (ρ −0.27 on eval rows, −0.17 on the doc
+  viewer). The sink failure mode (§8) is a within-head effect. The KV group predicts more: it explains 42–44%
+  of the between-head variance in FVE (chance 23%), and 77% of sink attention and 73% of write norm.
+- **Caveat: high FVE is not always an informative explanation.** H18 and H25–27 score high, but the
+  document-average write also beats the NLA on them, so part of their FVE comes from writes that are nearly
+  constant within a document.
+
+**GQA siblings** (heads sharing a KV head). Compared at the same token, over every token of the 4 doc-viewer
+documents, sibling vs non-sibling pairs:
+
+| | Siblings | Non-siblings |
+|---|---|---|
+| \|cos\| between the two writes | 0.21 | 0.036 |
+| Correlation of non-sink attention rows | 0.52 | 0.37 |
+| Word-bag cosine of the matryoshka explanations | 0.36 | 0.34 |
+
+Shared keys and values show up strongly in the writes and attention, but the explanations barely reflect
+them.
+
+## 11. Overall assessment
 
 **What works:**
 - **A write-only head NLA can be trained.** After RL its reconstructions reach held-out cosine 0.60 with the
@@ -355,4 +393,5 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
   - the dataset `syvb/head-nla-qwen3-8b` under `l24/mtry/`: T=1 checks, raw sweep data, report, quotes vs attention, the matryoshka doc viewer and redacted logs;
   - the step-640 pair `syvb/head-nla-qwen3-8b-l24-mtry-{av,ar}`;
   - every checkpoint in `-l24-mtry-rl-ckpts`.
+- **Per head:** `docs/head_nla_l24_fve_per_head.{png,csv,json}` (`scripts/heads_per_head_fve.py`).
 - **Process:** `docs/head_nla_session_log.md`.

@@ -1,0 +1,35 @@
+{
+ "kv_group_r2_between_heads": {
+  "chance": 0.22580645161290322,
+  "RL (step 400)": 0.44112375378608704,
+  "Matryoshka (step 640)": 0.4237687289714813,
+  "sink": 0.7727415481036229,
+  "write_norm": 0.7325047850608826
+ },
+ "sibling_vs_nonsibling_same_token": {
+  "write_abs_cos": {
+   "sibling": 0.2057819366455078,
+   "non_sibling": 0.03551360219717026
+  },
+  "attn_corr": {
+   "sibling": 0.5222388442877782,
+   "non_sibling": 0.3659714537721166
+  },
+  "expl_word_cos": {
+   "sibling": 0.3648786847661024,
+   "non_sibling": 0.33871444579371784
+  }
+ },
+ "spearman": {
+  "eval_vs_docviewer_mtry": 0.9637096774193546,
+  "sink_vs_eval_mtry": -0.27419354838709675,
+  "sink_vs_docviewer_mtry": -0.16972140762463342
+ },
+ "heads_mtry_beats_rl_whole": 32,
+ "heads_mtry_beats_baseline_16": 32,
+ "per_head_mean_fve": {
+  "SFT": -0.8672696352005005,
+  "RL (step 400)": 0.18778333067893982,
+  "Matryoshka (step 640)": 0.29637688398361206
+ }
+}
