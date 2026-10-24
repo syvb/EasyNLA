@@ -382,7 +382,8 @@ Each step below was approved by the user and preceded by the same secret scan (`
 - **Step-640 pair:** exported as `-l24-mtry-{av,ar}`. These are the same weights as `iter_000640` (sha256-checked), plus tokenizer and `nla_meta.yaml`.
 - **Dataset `l24/mtry/`:** checks, sweep, report, quotes vs attention, doc viewer, and logs with the wandb host and entity replaced by `<wandb-url>` / `<wandb-entity>`, as in the std logs.
 - **Dataset `l24/blind_study/`:** the arms' inputs and accounts, the judge's view and the key. The 1.4 GB of weight slices and cached solves were left out.
-- **Left alone:** the empty private repo `-l24-rl-ckpts`; private repos from other projects; wandb, which is on a private instance.
+- **Deleted** (the user asked): the empty private repo `-l24-rl-ckpts`, after confirming it held only `.gitattributes` and its initial commit.
+- **Left alone:** private repos from other projects; wandb, which is on a private instance.
 
 ## Costs (recorded ones)
 
@@ -441,7 +442,7 @@ regen, the 32-position viewer and the private-code scoring. The user topped up R
   - models `head-nla-qwen3-8b-l24-{av,ar}` (raw contract) and `-l24-std-{av,ar,rl-ckpts}` (public);
   - `-l24-mtry-rl-ckpts` (public since 10-24: text files, safetensors headers and optimizer pickles scanned; model card added);
   - `-l24-mtry-{av,ar}`: the step-640 pair with tokenizer and `nla_meta.yaml`, but no optimizer state (10-24).
-  - The empty private `-l24-rl-ckpts` (raw run, nothing ever uploaded) remains.
+  - The empty private `-l24-rl-ckpts` (raw run, nothing ever uploaded) was deleted on 10-24 at the user's request.
 - **wandb** project `head-nla-qwen3-8b`: groups `l24-std` and `l24-mtry`. The raw run is `oscgpslq`.
 - **Local results** (this VM):
   - `~/l24_std` (std run checks, examples);
