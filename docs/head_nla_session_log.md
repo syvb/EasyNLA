@@ -291,7 +291,7 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; based on the user's
   - pod `17n9g5zpleywi1`, about 4.3 h, about $17;
   - about 19 s per frozen step, about 43 s per matryoshka step;
   - wandb `l24-mtry` / `l24-mtry-rl`;
-  - checkpoints `syvb/head-nla-qwen3-8b-l24-mtry-rl-ckpts` (private; 440, 450, 500, 550, 600, 640).
+  - checkpoints `syvb/head-nla-qwen3-8b-l24-mtry-rl-ckpts` (public since 10-24 after a secret scan; 440, 450, 500, 550, 600, 640).
 - **Training eval** (128 held-out prompts, FVE):
 
   | First N tokens | Step 400 | Step 440 | Steps 600–630 |
@@ -430,7 +430,7 @@ regen, the 32-position viewer and the private-code scoring. The user topped up R
   - dataset `head-nla-qwen3-8b` (public; `l24/`, `l24/std_rl/{results,viewer,doc_viewer,private_code}`,
     `soft_token/`, `explanations/`, `quick_sft_run1/`);
   - models `head-nla-qwen3-8b-l24-{av,ar}` (raw contract) and `-l24-std-{av,ar,rl-ckpts}` (public);
-  - `-l24-mtry-rl-ckpts` (private).
+  - `-l24-mtry-rl-ckpts` (public since 10-24: text files, safetensors headers and optimizer pickles scanned; model card added).
 - **wandb** project `head-nla-qwen3-8b`: groups `l24-std` and `l24-mtry`. The raw run is `oscgpslq`.
 - **Local results** (this VM):
   - `~/l24_std` (std run checks, examples);

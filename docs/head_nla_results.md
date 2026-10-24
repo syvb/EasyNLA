@@ -330,6 +330,6 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
 - **Mechanism:** `docs/head_nla_l24_h18_case_study.md`, `docs/head_nla_l24_blind_study.md`.
 - **Matryoshka:** `docs/head_nla_l24_matryoshka_plan.md`, `docs/head_nla_l24_mtry_fve_by_prefix.png`,
   `docs/head_nla_l24_mtry_examples.md`. Raw sweep data and the matryoshka doc viewer are local only, in
-  `~/l24_mtry_sweep/` and `~/l24_docs/head_nla_doc_viewer_mtry*.html`; checkpoints are in the private HF
-  repo `syvb/head-nla-qwen3-8b-l24-mtry-rl-ckpts`.
+  `~/l24_mtry_sweep/` and `~/l24_docs/head_nla_doc_viewer_mtry*.html`; checkpoints are public on HF in
+  `syvb/head-nla-qwen3-8b-l24-mtry-rl-ckpts` (with a model card).
 - **Process:** `docs/head_nla_session_log.md`.
