@@ -327,9 +327,10 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
   - examples `docs/head_nla_l24_std_examples.md`;
   - HF `syvb/head-nla-qwen3-8b` under `l24/std_rl/` (results, faithfulness, viewers, private_code).
 - **Earlier stages:** `docs/head_nla_data.md`, `docs/head_nla_l24_plan.md`, `docs/head_nla_l24_rl_plan.md`.
-- **Mechanism:** `docs/head_nla_l24_h18_case_study.md`, `docs/head_nla_l24_blind_study.md`.
+- **Mechanism:** `docs/head_nla_l24_h18_case_study.md` and `docs/head_nla_l24_blind_study.md`. The blind study's bundles and accounts are on HF under `l24/blind_study/`.
 - **Matryoshka:** `docs/head_nla_l24_matryoshka_plan.md`, `docs/head_nla_l24_mtry_fve_by_prefix.png`,
-  `docs/head_nla_l24_mtry_examples.md`. Raw sweep data and the matryoshka doc viewer are local only, in
-  `~/l24_mtry_sweep/` and `~/l24_docs/head_nla_doc_viewer_mtry*.html`; checkpoints are public on HF in
-  `syvb/head-nla-qwen3-8b-l24-mtry-rl-ckpts` (with a model card).
+  `docs/head_nla_l24_mtry_examples.md`. All public on HF:
+  - the dataset `syvb/head-nla-qwen3-8b` under `l24/mtry/`: T=1 checks, raw sweep data, report, quotes vs attention, the matryoshka doc viewer and redacted logs;
+  - the step-640 pair `syvb/head-nla-qwen3-8b-l24-mtry-{av,ar}`;
+  - every checkpoint in `-l24-mtry-rl-ckpts`.
 - **Process:** `docs/head_nla_session_log.md`.

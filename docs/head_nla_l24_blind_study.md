@@ -2,7 +2,7 @@
 
 **Heads:** Qwen3-8B layer 24, heads **H29**, **H30** and **H13**. They were chosen for high to moderate matryoshka FVE (0.63, 0.57, 0.40), and none had been analysed before. H29 and H30 share a KV head (H28–31), and H13 shares one with H12–15.
 
-**Setup** (2026-10-23; data in `~/blind_study/`). Two agents worked independently, each with its own data bundle, and neither could read the repo docs, earlier results or memory.
+**Setup** (2026-10-23; data in `~/blind_study/`, public on HF in `syvb/head-nla-qwen3-8b` under `l24/blind_study/`). Two agents worked independently, each with its own data bundle, and neither could read the repo docs, earlier results or memory.
 
 - **Explanations arm.** It had only the matryoshka AV's explanations, shuffled: about 1,240 per head, from every token of the 4 doc-viewer documents plus about 60 held-out tokens per head from the 2,000-row sweep. It also had 60 explanations from each of the other 29 heads for contrast. It saw no tokens, positions, attention, scores or weights.
 - **Mechanistic arm.** It had the 4 documents' tokens, full layer-24 attention, the heads' writes, per-token ablation effects and vocabulary readouts of the writes (lens, avg16), plus the layer-24, final-norm and unembedding weights (CPU only). It saw no explanations.

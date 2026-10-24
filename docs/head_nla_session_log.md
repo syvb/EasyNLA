@@ -375,6 +375,15 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; based on the user's
     - evaluate faithfulness with something other than the co-trained AR;
     - a higher KL plus a structured warm-start format.
 
+### 10. Publishing (10-24)
+
+Each step below was approved by the user and preceded by the same secret scan (`scripts/hf_secret_scan.py`, plus safetensors headers and optimizer pickles for checkpoints):
+- **Checkpoints:** `-l24-mtry-rl-ckpts` made public, with a model card. The std checkpoint card's stale "AV↔AR code" claim was corrected.
+- **Step-640 pair:** exported as `-l24-mtry-{av,ar}`. These are the same weights as `iter_000640` (sha256-checked), plus tokenizer and `nla_meta.yaml`.
+- **Dataset `l24/mtry/`:** checks, sweep, report, quotes vs attention, doc viewer, and logs with the wandb host and entity replaced by `<wandb-url>` / `<wandb-entity>`, as in the std logs.
+- **Dataset `l24/blind_study/`:** the arms' inputs and accounts, the judge's view and the key. The 1.4 GB of weight slices and cached solves were left out.
+- **Left alone:** the empty private repo `-l24-rl-ckpts`; private repos from other projects; wandb, which is on a private instance.
+
 ## Costs (recorded ones)
 
 | Item | Cost |
@@ -428,9 +437,11 @@ regen, the 32-position viewer and the private-code scoring. The user topped up R
   - this file.
 - **HF** (`syvb/`):
   - dataset `head-nla-qwen3-8b` (public; `l24/`, `l24/std_rl/{results,viewer,doc_viewer,private_code}`,
-    `soft_token/`, `explanations/`, `quick_sft_run1/`);
+    `l24/mtry/`, `l24/blind_study/`, `soft_token/`, `explanations/`, `quick_sft_run1/`). The last two `l24/` folders were added on 10-24 after a secret scan; the wandb host and entity are redacted in the logs.
   - models `head-nla-qwen3-8b-l24-{av,ar}` (raw contract) and `-l24-std-{av,ar,rl-ckpts}` (public);
-  - `-l24-mtry-rl-ckpts` (public since 10-24: text files, safetensors headers and optimizer pickles scanned; model card added).
+  - `-l24-mtry-rl-ckpts` (public since 10-24: text files, safetensors headers and optimizer pickles scanned; model card added);
+  - `-l24-mtry-{av,ar}`: the step-640 pair with tokenizer and `nla_meta.yaml`, but no optimizer state (10-24).
+  - The empty private `-l24-rl-ckpts` (raw run, nothing ever uploaded) remains.
 - **wandb** project `head-nla-qwen3-8b`: groups `l24-std` and `l24-mtry`. The raw run is `oscgpslq`.
 - **Local results** (this VM):
   - `~/l24_std` (std run checks, examples);
@@ -442,7 +453,6 @@ regen, the 32-position viewer and the private-code scoring. The user topped up R
   - `~/l24_docs_mtry` (viewer docs including the matryoshka data);
   - `~/blind_study` (bundles, summaries, judge key).
 - **Open items:**
-  - upload the matryoshka results and viewer to HF if wanted;
   - the multi-epoch AR retrain (prepared, never run);
   - an AV that says "nothing here" / a structured warm start;
   - a layer scan;
