@@ -410,21 +410,55 @@ Four Fable reviewers checked the matryoshka doc viewer:
   - The previous-token baseline beats matryoshka on 21/32 heads.
 - **HF READMEs and model cards** updated to match.
 
-## Costs (recorded ones)
+## Costs (audited 2026-10-27)
 
-| Item | Cost |
-|---|---|
-| Prompt lab | $6.88 |
-| L24 probe + SFT | pods $15.50, Haiku ≤ $17 |
-| Std SFT + RL run | about $51 (12.7 h) |
-| Every-token doc viewer | about $9 |
-| Counterfactual ablations | about $5 |
-| Aborted matryoshka launch | about $0.85 |
-| Matryoshka training | about $17 |
-| Sweep + matryoshka viewer pod | about $6.5 |
+**GPU** comes from RunPod's billing API (`/v1/billing/pods`, per pod, including disk). There were 27 pods from
+10-18 to 10-23, every one of them in this session's transcript. Total **$131.74**, 33.3 pod-hours, mostly 1×H100
+secure at $3.99/h. "Lineage" means what the final matryoshka checkpoint was built from.
 
-Other pods were not totalled here: the quick SFT, the raw-contract RL, checkpoint verification,
-regen, the 32-position viewer and the private-code scoring. The user topped up RunPod several times.
+| Item | Pods | GPU | Matryoshka relevance |
+|---|---|---|---|
+| Matryoshka training (steps 400 → 640) | `17n9g5zpleywi1` | $17.52 | the run |
+| Aborted matryoshka launch + unrequested control | 3 | $1.27 | the run (waste) |
+| Prefix sweep + matryoshka doc viewer | `y1v8cdsr4usol8` | $6.24 | downstream |
+| Std SFT + 400 RL steps | `v2xudlsul9ka52` | $51.02 | lineage |
+| L24 datagen, readouts, Haiku explanations, probe (run 1) | `pk3fwpvavchzf1` | $10.64 | lineage |
+| L24 run 2: regenerated data, SFT-data export (+ raw-contract SFT) | `n6g1crsxnvqpty` | $4.91 | lineage |
+| Soft-token readout diagnostics on 8B (chose avg16) | `4z42s1c6orue0e` | $12.11 | lineage (design) |
+| Mid-run checkpoint verification | `o3fv3fr4d2k5n1` | $0.74 | lineage (support) |
+| Every-token doc-viewer data | 2 | $8.92 | reused by the matryoshka viewer |
+| Ablation effects (fp32 $3.19, bf16 $0.63, 3 failed launches $0.79) | 5 | $4.61 | reused by the matryoshka viewer |
+| Quick SFT on attention-based descriptions (superseded) | 4 | $5.55 | no |
+| Raw-contract RL (aborted + run) | 2 | $3.54 | no |
+| Raw-contract SFT checks re-run | `92enqfnhdvg3m7` | $1.77 | no |
+| 32-position viewer (H100 + failed A100) | 2 | $2.32 | no |
+| Private-code scoring | `8xvg4wagj64tw6` | $0.56 | no |
+
+**Anthropic API, from our scripts.** Only two figures were metered: the quick-SFT Haiku descriptions ($5.03, plus
+$0.61 for comparisons) and the prompt lab ($6.88). The rest are in-session estimates at list price:
+- L24 Haiku explanations: at most $17;
+- SFT faithfulness judge: about $8;
+- RL faithfulness judge (about 3,840 Sonnet calls): about $14;
+- doc-viewer gold: about $13;
+- sibling matching (640 Sonnet calls): about $8;
+- paraphrases: under $1.
+
+In total about $74. The exact figure is in the Anthropic console.
+
+**Claude Code** (this session's transcript plus 26 subagents, each message counted once):
+
+| Model | Cache write | Cache read | Output |
+|---|---|---|---|
+| Opus 5.5 | 8.6M | 804M | 2.25M |
+| Fable 5.1 | 2.75M | 26.5M | 0.67M |
+
+That is about $370 at API list prices with 1-hour cache writes ($323 with 5-minute writes). From the
+matryoshka request (10-22 19:46 UTC) on, it is about $111, but that window also includes unrelated work.
+
+**Matryoshka subtotals:**
+- the run itself + downstream: $25.03 GPU, $0 API;
+- + its lineage: $104.45 GPU, about $24 API (prompt lab + L24 explanations);
+- + inputs reused by the downstream viewer: $117.98 GPU, about $37 API.
 
 ## Operational lessons
 
