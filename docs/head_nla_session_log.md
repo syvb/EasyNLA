@@ -503,6 +503,11 @@ matryoshka request (10-22 19:46 UTC) on, it is about $111, but that window also 
   - `-l24-mtry-{av,ar}`: the step-640 pair with tokenizer and `nla_meta.yaml`, but no optimizer state (10-24).
   - The empty private `-l24-rl-ckpts` (raw run, nothing ever uploaded) was deleted on 10-24 at the user's request.
 - **wandb** project `head-nla-qwen3-8b`: groups `l24-std` and `l24-mtry`. The raw run is `oscgpslq`.
+  - It is in team `octahedral-systems` on the CoreWeave-hosted instance:
+    https://forge.coreweave.com/wandb/octahedral-systems/head-nla-qwen3-8b
+  - **Public read-only (`USER_READ`) since 10-27**, at the user's request.
+  - Before that, all 11 runs' files (logs, configs, metadata, tables, histories, artifacts) were scanned:
+    no secrets. They do expose the username, hostnames, an email address and command lines.
 - **Nothing lives only on the VM** (audited 10-24). Every file in the `~/l24_*`, `~/blind_study`, `~/rl_cpu`,
   `~/soft_token` etc. folders was hashed and checked against HF and git. The VM-only results were then archived
   to the dataset:
