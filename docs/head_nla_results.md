@@ -31,6 +31,19 @@ large corpus, normalized per head and capped at norm 4.
     crossover is 1 − e/2, where e is the mean write's error; it is 0.41–0.66 per site (0.50–0.57 per head).
     FVE below 0 at a moderate cos is a property of the metric, not a sign the model is worse than guessing.
   - A random direction scores about −100%, and the best possible is +100%.
+  - **Why training starts far below 0%.** 0% means predicting the mean of the unit targets, and a reader with
+    normalized output can't reach it. Its best constant output is the mean direction, which scores (ρ−1)/(1+ρ),
+    where ρ is the length of the mean.
+    - On our head targets, ρ is 0.076 (median per head), so the floor is −89% (−100% to −67% per head). The
+      SFT pair (−87%) sits barely above it.
+    - The raw head writes, before subtracting each head's mean write, are no more clustered: ρ is 0.074 and the
+      floor −100%. So the spread is not an artifact of our centering.
+    - For the standard NLA's input (Qwen3-8B layer-24 residual), ρ is 0.66 and the floor only −20%. Much of
+      that clustering is two outlier dimensions (mean |x| about 115, against a median of 1.7). Without them, ρ is
+      0.34 and the floor −49%. Centered, the residual is even more spread out than the head writes (ρ 0.022).
+    - The floor depends on sampling. Over every token of the 4 doc-viewer documents, where writes share a
+      per-document part, ρ is 0.39 and the floor −44%. The NLA data has one site per document per head.
+    - Source: `scripts/heads_mean_direction_floor.py` → `docs/head_nla_mean_direction_floor.json`.
 - **Held-out data:** 6,360 eval rows of L24 (32 heads, documents no model trained on) for the standard
   checks; 2,000 of them for the matryoshka sweep.
 - **Shuffled control:** the AV describes a different write of the same head, scored against the true
