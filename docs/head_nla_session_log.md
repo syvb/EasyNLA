@@ -433,6 +433,21 @@ The user asked for a viewer like the doc viewer, but for chats. They chose Qwen3
 - **Results:** results doc §11. Position-matched assistant tokens score RL +6.8% and matryoshka +17.1%, against web
   +20.3% / +32.1%. H27 has a second sink after `</think>`. Pages and data are on HF under `l24/chat_viewer/`.
 
+### 13. Standard NLA per token, and the chat paraphrase test (10-28)
+
+- **Viewer feedback:** the matryoshka explanation now comes first, the detail panel is sticky, and the chat pages
+  have no intro text (`--no-intro`). On the user's question about the missing system prompt: Qwen's docs confirm Qwen3
+  has no default system prompt, and our formatting matches the official template.
+- **Standard (residual-stream) NLA at every token:**
+  - the model is nanoNLA L24 with the p0.0 LoRA, chosen by the user (the other LoRAs are length-penalty experiments),
+    with a 1024-token cap so that no explanation ends on the cap;
+  - one pod, about $3; a first launch with a 256 cap was stopped before doing any work, about 2 minutes;
+  - the held-out check scored FVE 0.480 against our baseline, which is about 0.565 against nanoNLA's fixed baseline
+    (reported: 0.585);
+  - the chat pages show it per token.
+- **Paraphrase test on 1,000 chat sites:** Haiku 5.5 paraphrases cost $0.97, with 4.4% refused. One scoring pod
+  (about $1.50). Retention is 96% (RL) and 98% (matryoshka), the skeleton keeps 0%, the same as on web text.
+
 ## Costs (audited 2026-10-27)
 
 **GPU** comes from RunPod's billing API (`/v1/billing/pods`, per pod, including disk). There were 27 pods from

@@ -447,6 +447,14 @@ The per-chat viewers and the data are on HF under `l24/chat_viewer/`; the number
   doubt" default shows at parked sites as on web text (matryoshka 60% vs 7%).
 - **New in chats:** H27 uses the blank line after `</think>` as a second sink, taking 16–24% of later tokens'
   attention. No web document has a secondary sink.
+- **The standard (residual-stream) NLA shows the same pattern.** This is nanoNLA L24 with the p0.0 RL LoRA, explaining
+  every token; its FVE is against the mean residual direction. It scores +49 to +60% on the web documents, but code
+  +11%, maths +21%, story +39% and Ada +42% on the chats. The viewer shows its explanation under each token. Data is
+  in `l24/resid_nla/` and `l24/chat_viewer/<chat>/resid.parquet`.
+- **Still no private code on chats.** On 916 random chat sites, a Haiku 5.5 paraphrase keeps 96% (RL) and 98%
+  (matryoshka) of the gain over an empty explanation, and the form-only skeleton keeps 0%; the web result was 97% and
+  2%. In FVE, the paraphrase costs 3.9 points (RL) and 2.7 points (matryoshka). Details:
+  `l24/chat_viewer/paraphrase_test/`.
 - **Caveats:** every component and the baseline are web-text-based; there are only 4 low-temperature chats; there is
   no gold and no ablation relevance.
 
