@@ -3,15 +3,15 @@
     python scripts/resid_nla_viewer_job.py --docs <dir>=<hf path prefix> [--docs ...] --out <dir> \
         --av-base <nanonla AV dir> --av-lora <RL LoRA dir> --ar <nanonla AR dir> --rl-data <rl_full.parquet> [--hf-repo ...]
 
-The NLA is the from-scratch nanoNLA on Qwen3-8B layer 24 (syvb/nanonla-qwen3-8b-L24-av + the RL LoRA at length penalty
-0.001, read by the frozen syvb/nanonla-qwen3-8b-L24-ar; held-out FVE 0.592 in its own evaluation). It explains the
+The NLA is the from-scratch nanoNLA on Qwen3-8B layer 24 (syvb/nanonla-qwen3-8b-L24-av + the RL LoRA with no length penalty,
+p0.0, read by the frozen syvb/nanonla-qwen3-8b-L24-ar; held-out FVE 0.585 in its own evaluation). It explains the
 residual stream: the output of decoder block 24 (HF hidden_states[25]) at a token, raw, the way its training data was
 extracted (nla/datagen/extractors.py).
 
 1. Each document's token ids (<doc>/token_ids.npy, the exact ids the viewer shows) go through Qwen3-8B once; the block-24
    output at every token is kept.
 2. Check on the NLA's own held-out rows (rl_full.parquet rows 25000+, document-disjoint from its RL training): the
-   pipeline must reproduce its reported FVE (about 0.59), else stop before explaining anything.
+   pipeline must reproduce its reported FVE (about 0.585), else stop before explaining anything.
 3. Every token: one explanation (T=1, as in RL), read by the AR. Scores, like the training loss, compare directions:
    prediction and target both scaled to mse_scale; FVE = 1 − err / err of the mean target of the NLA's RL rows 0–24k.
 Writes <out>/<doc>/resid.parquet (pos, resid_text, resid_cos, resid_fve, resid_err, resid_base, resid_norm) and uploads
@@ -60,7 +60,7 @@ def main() -> None:
     p.add_argument("--layer", type=int, default=24)
     p.add_argument("--gen-batch", type=int, default=128)
     p.add_argument("--ar-batch", type=int, default=64)
-    p.add_argument("--max-new-tokens", type=int, default=200)
+    p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--check-rows", type=int, default=256)
     p.add_argument("--min-check-fve", type=float, default=0.45)
@@ -121,7 +121,7 @@ def main() -> None:
     chk = vec[25000 : 25000 + a.check_rows]
     _, cos, err, base_err = explain_and_score(chk)
     fve = 1 - err.sum() / base_err.sum()
-    log(f"held-out check ({len(chk)} rows): FVE {fve:.3f} (reported 0.592), mean cos {cos.mean():.3f}")
+    log(f"held-out check ({len(chk)} rows): FVE {fve:.3f} (reported 0.585 for p0.0), mean cos {cos.mean():.3f}")
     assert fve >= a.min_check_fve, f"held-out FVE {fve:.3f} < {a.min_check_fve}: prompt / injection / scoring mismatch"
     (out).mkdir(parents=True, exist_ok=True)
     (out / "check.json").write_text(json.dumps({"rows": len(chk), "fve": float(fve), "mean_cos": float(cos.mean())}))

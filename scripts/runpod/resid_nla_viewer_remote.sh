@@ -4,7 +4,8 @@
 #   GPUS="NVIDIA H100 80GB HBM3|3.5|4.5" scripts/runpod/launch_with_retry.sh <out dir> resid-nla-viewer \
 #       --remote-script scripts/runpod/resid_nla_viewer_remote.sh --secrets hf --fetch results --no-checkpoints \
 #       --max-hours 2 --avoid-machine bdh8atjj57i7
-# The NLA: nanoNLA Qwen3-8B L24 (syvb/nanonla-qwen3-8b-L24-av + RL LoRA p0.001, frozen AR syvb/nanonla-qwen3-8b-L24-ar).
+# The NLA: nanoNLA Qwen3-8B L24 (syvb/nanonla-qwen3-8b-L24-av + RL LoRA p0.0 = no length penalty, frozen AR
+# syvb/nanonla-qwen3-8b-L24-ar).
 # Outputs go to the HF dataset next to each document: l24/chat_viewer/<chat>/resid.parquet and
 # l24/resid_nla/doc_viewer/<doc>/resid.parquet.
 set -eEuo pipefail
@@ -40,7 +41,7 @@ snapshot_download("syvb/nanonla-qwen3-8b-L24-data-full", repo_type="dataset", lo
                   allow_patterns=["rl_full.parquet", "rl_full.parquet.nla_meta.yaml"])
 snapshot_download("syvb/nanonla-qwen3-8b-L24-av", local_dir="/workspace/ckpt/av", token=tok)
 snapshot_download("syvb/nanonla-qwen3-8b-L24-ar", local_dir="/workspace/ckpt/ar", token=tok)
-snapshot_download("syvb/nanonla-qwen3-8b-L24-rl-lora", allow_patterns=["p0.001/*"], local_dir="/workspace/ckpt/rl", token=tok)
+snapshot_download("syvb/nanonla-qwen3-8b-L24-rl-lora", allow_patterns=["p0.0/*"], local_dir="/workspace/ckpt/rl", token=tok)
 snapshot_download("Qwen/Qwen3-8B", allow_patterns=["*.json", "*.safetensors", "*.txt"], token=tok)
 PY
 ls /workspace/hfdata/l24/chat_viewer /workspace/hfdata/l24/std_rl/doc_viewer /workspace/ckpt/*
@@ -49,8 +50,8 @@ stage resid
 python scripts/resid_nla_viewer_job.py \
     --docs /workspace/hfdata/l24/chat_viewer=l24/chat_viewer \
     --docs /workspace/hfdata/l24/std_rl/doc_viewer=l24/resid_nla/doc_viewer \
-    --out "$RES/resid" --av-base /workspace/ckpt/av --av-lora /workspace/ckpt/rl/p0.001 --ar /workspace/ckpt/ar \
-    --rl-data /workspace/nanonla_data/rl_full.parquet --hf-repo syvb/head-nla-qwen3-8b
+    --out "$RES/resid" --av-base /workspace/ckpt/av --av-lora /workspace/ckpt/rl/p0.0 --ar /workspace/ckpt/ar \
+    --rl-data /workspace/nanonla_data/rl_full.parquet --max-new-tokens 256 --hf-repo syvb/head-nla-qwen3-8b
 
 date -u > "$RES/DONE"
 echo "=== all stages done ==="
