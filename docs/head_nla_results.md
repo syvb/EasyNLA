@@ -375,7 +375,21 @@ perfect (median 65%). `scripts/heads_head_identity_controls.py` → `docs/head_n
 **How much is driven by attention sinks?** Figure `docs/head_nla_l24_sink_fve.png`; values in
 `head_nla_sink_analysis.json` (`scripts/heads_sink_analysis.py`, public data, attention used only to evaluate).
 
+![How much attention sinks matter](head_nla_l24_sink_overview.png)
+
 ![FVE vs sink weight](head_nla_l24_sink_fve.png)
+
+**Ignoring sinks** (eval rows, matryoshka / RL):
+
+| Sites kept | Share of sites | Matryoshka | RL |
+|---|---|---|---|
+| sink weight < 0.25 | 27% | +37% | +27% |
+| sink weight < 0.5 | 54% | +33% | +23% |
+| sink weight < 0.9 | 92% | +28% | +17.5% |
+| all | 100% | +30% | +19% |
+
+Scored against a reader given the head and its sink weight (instead of the head's mean), the NLA still explains
+55% (matryoshka) and 48% (RL) of what that reader leaves unexplained.
 
 Sites are binned by the head's attention to the first token. The comparison is a sink-only reader that knows the
 head and its sink weight and nothing else (fit per head, leaving documents out). On the doc viewer there is also
@@ -456,5 +470,5 @@ them.
   - the step-640 pair `syvb/head-nla-qwen3-8b-l24-mtry-{av,ar}`;
   - every checkpoint in `-l24-mtry-rl-ckpts`.
 - **Per head:** `docs/head_nla_l24_fve_per_head.{png,csv,json}` (`scripts/heads_per_head_fve.py`); head-only controls
-  `head_nla_head_identity_controls.json`; sinks `head_nla_l24_sink_fve.png`, `head_nla_sink_analysis.json`.
+  `head_nla_head_identity_controls.json`; sinks `head_nla_l24_sink_overview.png`, `head_nla_l24_sink_fve.png`, `head_nla_sink_analysis.json`.
 - **Process:** `docs/head_nla_session_log.md`.

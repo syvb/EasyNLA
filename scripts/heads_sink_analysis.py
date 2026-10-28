@@ -19,7 +19,8 @@ its sink weight and nothing else (fit per head, leaving each document out in tur
 and, on the doc viewer only, an exact one, sink_exact: the write the head would make if its non-sink attention
 wrote exactly its average, a_t0 · write(first token) − mean write (the first token's write is its value write,
 since the first token attends only to itself).
-Writes summary.json and sink_fve.png.
+Writes summary.json, sink_fve.png (FVE by sink-weight bin) and sink_overview.png (how often heads park on the sink,
+quality vs sink weight, and quality when sink-heavy sites are ignored).
 """
 import argparse
 import json
@@ -177,6 +178,59 @@ def main() -> None:
     fig.suptitle("Head NLA, Qwen3-8B L24: reconstruction quality vs attention-sink weight", x=0.06, ha="left", fontsize=13)
     fig.tight_layout()
     fig.savefig(out_dir / "sink_fve.png", dpi=150, bbox_inches="tight")
+
+    # ---- overview: how common sinks are, quality vs sink weight, and quality ignoring sink-heavy sites ----
+    a_d = D.first_w.values
+    for key, (aa, ee, bb) in {"eval": (a, errs, base), "doc": (a_d, errs_d, base_d)}.items():
+        summary[key]["fve_vs_sink_reader"] = {k: fve(ee[k], ee["sink_binned"]) for k in ("RL", "Matryoshka")}
+        summary[key]["fve_below_threshold"] = {f"{t:g}": {k: fve(ee[k][aa < t], bb[aa < t]) for k in ("RL", "Matryoshka")} | {"share": float((aa < t).mean())}
+                                               for t in (0.25, 0.5, 0.75, 0.9)}
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=1))
+    fig, ax = plt.subplots(1, 3, figsize=(17, 4.8))
+    hb = np.linspace(0, 1, 21)
+    for aa, lab, col in [(a, "held-out eval rows", "#2a9d8f"), (a_d, "every token of 4 docs", "#8a8a8a")]:
+        ax[0].hist(aa, bins=hb, weights=np.full(len(aa), 1 / len(aa)), histtype="step", lw=2, color=col,
+                   label=f"{lab}: {np.mean(aa >= 0.9):.0%} at ≥ 0.9")
+    ax[0].axvspan(0.9, 1.0, color="#f2d0a9", alpha=0.5, lw=0)
+    ax[0].set_xlabel("the head's attention to the first token (sink weight)")
+    ax[0].set_ylabel("share of sites")
+    ax[0].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
+    ax[0].set_title("How often heads park on the sink", loc="left", fontsize=11)
+    ax[0].legend(fontsize=8.5, frameon=False, loc="upper left")
+    fb = np.linspace(0, 1.0001, 11)
+    mid = (fb[:-1] + fb[1:]) / 2
+    def binned(aa, e, bb):
+        k = np.digitize(aa, fb) - 1
+        return [fve(e[k == i], bb[k == i]) if (k == i).sum() >= 50 else np.nan for i in range(10)]
+    for name, lab, col, ls in [("RL", "RL NLA", "#d9822b", "-"), ("Matryoshka", "Matryoshka NLA", "#2a9d8f", "-"),
+                               ("sink_binned", "reader given only head + sink weight", "#7a5195", "--")]:
+        ax[1].plot(mid, binned(a, errs[name], base), "o" + ls, color=col, lw=2 if ls == "-" else 1.5, ms=4, label=lab)
+    ax[1].plot(mid, binned(a_d, errs_d["Matryoshka"], base_d), ":", color="#2a9d8f", lw=1.5, label="Matryoshka NLA, every token of 4 docs")
+    ax[1].axhline(0, color="#555555", lw=0.8)
+    ax[1].axvspan(0.9, 1.0, color="#f2d0a9", alpha=0.5, lw=0)
+    ax[1].set_xlabel("sink weight")
+    ax[1].set_ylabel("direction FVE (pooled within bin)")
+    ax[1].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
+    ax[1].set_title("Quality vs sink weight (held-out eval rows)", loc="left", fontsize=11)
+    ax[1].legend(fontsize=8.5, frameon=False, loc="center left", bbox_to_anchor=(0.0, 0.6))
+    ts = np.linspace(0.1, 1.0001, 46)
+    for (aa, ee, bb), ls, tag in [((a, errs, base), "-", "eval rows"), ((a_d, errs_d, base_d), ":", "every token")]:
+        for name, col in [("RL", "#d9822b"), ("Matryoshka", "#2a9d8f")]:
+            ax[2].plot(ts, [fve(ee[name][aa < t], bb[aa < t]) for t in ts], ls, color=col, lw=2 if ls == "-" else 1.5,
+                       label=f"{'RL' if name == 'RL' else 'Matryoshka'}, {tag}")
+    for t in (0.5, 0.9):
+        v = fve(errs["Matryoshka"][a < t], base[a < t])
+        ax[2].annotate(f"sink < {t}: {v:+.0%}\n({np.mean(a < t):.0%} of sites)", (t, v), xytext=(-14, 22), textcoords="offset points",
+                       fontsize=8.5, color="#2a9d8f", arrowprops=dict(arrowstyle="-", color="#2a9d8f", lw=0.8), ha="right")
+    ax[2].axhline(0, color="#555555", lw=0.8)
+    ax[2].set_xlabel("keep only sites with sink weight below this")
+    ax[2].set_ylabel("direction FVE over the kept sites")
+    ax[2].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
+    ax[2].set_title("Ignoring sink-heavy sites", loc="left", fontsize=11)
+    ax[2].legend(fontsize=8.5, frameon=False, loc="lower right")
+    fig.suptitle("Head NLA, Qwen3-8B L24: how much do attention sinks matter?", x=0.05, ha="left", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(out_dir / "sink_overview.png", dpi=150, bbox_inches="tight")
     print(json.dumps(summary, indent=1))
 
 
