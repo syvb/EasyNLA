@@ -98,6 +98,7 @@ def main() -> None:
     p.add_argument("--common-threshold", type=float, default=0.08)
     p.add_argument("--title", default="Head NLA — every token × every head (Qwen3-8B layer 24)")
     p.add_argument("--n-kv-heads", type=int, default=None, help="GQA KV heads (default: from the base model's config)")
+    p.add_argument("--no-intro", action="store_true", help="drop the explanation paragraphs under the title")
     args = p.parse_args()
     from transformers import AutoConfig, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(args.base_model)
@@ -170,7 +171,11 @@ def main() -> None:
     assert docs, "no finished documents"
     data = json.dumps(docs).replace("</", "<\\/")
     escales = json.dumps(effect_scales(eff_frames) if eff_frames else {})
-    Path(args.out).write_text(TEMPLATE.replace("__TITLE__", html.escape(args.title)).replace("__DATA__", data)
+    template = TEMPLATE
+    if args.no_intro:
+        a, b = template.index("</h1>") + len("</h1>"), template.index("</header>")
+        template = template[:a] + template[b:]
+    Path(args.out).write_text(template.replace("__TITLE__", html.escape(args.title)).replace("__DATA__", data)
                               .replace("__ESCALES__", escales))
     print(f"wrote {args.out}: {len(docs)} documents, {Path(args.out).stat().st_size / 1e6:.1f} MB")
 
@@ -196,6 +201,7 @@ canvas{display:block;image-rendering:pixelated;cursor:crosshair}
 .ramp{width:260px;height:10px;border-radius:3px;display:block}.ticks{display:flex;justify-content:space-between;width:260px;font-variant-numeric:tabular-nums}
 .tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:12.5px;box-shadow:0 2px 10px rgba(0,0,0,.12);display:none;z-index:5;max-width:320px}
 .cols>*{min-width:0}.cols{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px;margin-top:14px}@media (max-width:980px){.cols{grid-template-columns:1fr}}
+@media (min-width:981px){#detail{position:sticky;top:10px;align-self:start;max-height:calc(100vh - 20px);overflow-y:auto}}
 .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
 .ctx{line-height:1.8;white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;font-size:13.5px}
 .ctx .t{border-radius:3px;cursor:pointer}.ctx .t.r-user{box-shadow:inset 0 -2px 0 var(--user)}.ctx .t.r-assistant{box-shadow:inset 0 -2px 0 var(--asst)}.ctx .t.r-system{box-shadow:inset 0 -2px 0 var(--ink-3)}
@@ -350,10 +356,10 @@ function hl(text){const f=document.createDocumentFragment();if(!S.show.hl){f.app
 while((m=re.exec(text))){f.append(text.slice(l,m.index));f.append(el('mark',{class:m[1]?'m':'q'},m[0]));l=re.lastIndex}f.append(text.slice(l));return f}
 function pre(text,n){if(n==null||!n)return hl(text);return[el('span',{class:'p16',title:'first 16 tokens: the prefix scored as “first 16 tokens”'},hl(text.slice(0,n))),hl(text.slice(n))]}
 function renderDetail(){const k=idx(S.h,S.pi),P=D.pos[S.pi],a=attRow(S.h,S.pi),top=[...a.keys()].sort((x,y)=>a[y]-a[x]).slice(0,10).filter(i=>a[i]>=0.005);
-$('detail').replaceChildren(...[el('h2',{},`L${D.layer}H${S.h} at #${P} “${vis(D.tokens[P])}”`,el('span',{class:fveCls(D.rl_fve[k]??-9)},'RL FVE '+pct(D.rl_fve[k])),
+$('detail').replaceChildren(...[el('h2',{},`L${D.layer}H${S.h} at #${P} “${vis(D.tokens[P])}”`,hasM()?el('span',{class:fveCls(D.mtry_fve[k]??-9)},'Matryoshka FVE '+pct(D.mtry_fve[k])):null,el('span',{class:fveCls(D.rl_fve[k]??-9)},'RL FVE '+pct(D.rl_fve[k])),
 el('span',{class:'meta'},`${kvName(kvOf(S.h))} · cos ${f2(D.rl_cos[k])} · ‖v‖ ${D.v_norm[k]?.toFixed(2)} · first-token attn ${D.first_w[k]?.toFixed(2)} · entropy ${D.entropy[k]?.toFixed(2)}`)),
-el('div',{class:'ex rl'},el('div',{class:'lab'},el('b',{},'RL AV'),`  FVE ${pct(D.rl_fve[k])} · cos ${f2(D.rl_cos[k])}`+(hasM()?` · first 16 tokens ${pct(D.rl_t16_fve[k])} (warm-up AR)`:'')),el('div',{class:'txt'},...[].concat(hasM()&&S.show.mtry?pre(D.rl[k],D.rl_p16[k]):hl(D.rl[k])))),
 hasM()&&S.show.mtry?el('div',{class:'ex mtry'},el('div',{class:'lab'},el('b',{},'Matryoshka AV'),`  FVE ${pct(D.mtry_fve[k])} · cos ${f2(D.mtry_cos[k])} · first 16 tokens ${pct(D.mtry_t16_fve[k])}`),el('div',{class:'txt'},...[].concat(pre(D.mtry[k],D.mtry_p16[k])))):null,
+el('div',{class:'ex rl'},el('div',{class:'lab'},el('b',{},'RL AV'),`  FVE ${pct(D.rl_fve[k])} · cos ${f2(D.rl_cos[k])}`+(hasM()?` · first 16 tokens ${pct(D.rl_t16_fve[k])} (warm-up AR)`:'')),el('div',{class:'txt'},...[].concat(hasM()&&S.show.mtry?pre(D.rl[k],D.rl_p16[k]):hl(D.rl[k])))),
 S.show.sft?el('div',{class:'ex sft'},el('div',{class:'lab'},el('b',{},'SFT AV'),`  FVE ${pct(D.sft_fve[k])} · cos ${f2(D.sft_cos[k])}`),el('div',{class:'txt'},hl(D.sft[k]))):null,
 S.show.gold&&D.gold[k]?el('div',{class:'ex gold'},el('div',{class:'lab'},el('b',{},'Gold (Haiku)'),`  FVE ${pct(D.gold_fve[k])} via RL AR · ${pct(D.gold_fve_sft[k])} via SFT AR${D.gold_ok[k]?'':' · breaks rules'}`),el('div',{class:'txt'},hl(D.gold[k]))):null,
 el('div',{class:'ev'},el('div',{class:'k'},'KV group'),el('div',{class:'chips'},el('span',{class:'w',style:'align-self:center;color:var(--ink-3);font-size:11.5px'},kvName(kvOf(S.h))+' · same keys & values:'),...sibs(S.h).map(s=>{const q=idx(s,S.pi);
