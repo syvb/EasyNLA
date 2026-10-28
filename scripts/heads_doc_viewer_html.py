@@ -63,6 +63,31 @@ def effect_scales(frames: list) -> dict:
     return out
 
 
+def chat_roles(tokens: list[str]) -> list[str] | None:
+    """Per-token chat role ("user" / "assistant" / "system") for chat-template text, "~"-prefixed for template tokens
+    (<|im_start|>, the role name and its newline, <|im_end|> and the newline after it, the <think>…</think> block);
+    None for plain text."""
+    if "<|im_start|>" not in tokens:
+        return None
+    roles, role, i, think = [], "", 0, False
+    while i < len(tokens):
+        tk = tokens[i]
+        if tk == "<|im_start|>":
+            role = tokens[i + 1].strip() if i + 1 < len(tokens) else ""
+            n = 3 if i + 2 < len(tokens) and tokens[i + 2] == "\n" else 2
+            roles += ["~" + role] * min(n, len(tokens) - i)
+            i += n
+            continue
+        if tk == "<think>":
+            think = True
+        tpl = think or tk == "<|im_end|>" or (tk.strip() == "" and i > 0 and tokens[i - 1] in ("<|im_end|>", "</think>"))
+        if tk == "</think>":
+            think = False
+        roles.append(("~" if tpl else "") + role)
+        i += 1
+    return roles
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--docs", required=True)
@@ -133,9 +158,13 @@ def main() -> None:
             d["mtry_p16"] = [p16(t) for t in d["mtry"]]
             d["rl_p16"] = [p16(t) for t in d["rl"]]
             mtry_mean = round(float(np.nanmean(mt.mtry_fve)), 3)
+        roles = chat_roles(d["tokens"])
+        if roles:
+            d["roles"] = roles
         blob = base64.b64encode(gzip.compress(json.dumps(d, ensure_ascii=False).encode(), 9)).decode()
         docs.append({"name": meta["name"], "domain": meta.get("domain", ""), "n_tokens": T, "n_pos": len(pos),
-                     "rl_fve_mean": round(float(np.nanmean(s.rl_fve)), 3), "mtry_fve_mean": mtry_mean, "blob": blob})
+                     "rl_fve_mean": round(float(np.nanmean(s.rl_fve)), 3), "mtry_fve_mean": mtry_mean, "chat": bool(roles),
+                     "has_gold": bool(has_gold.any()), "blob": blob})
         print(f"{dd.name}: {T} tokens × {H} heads, {len(blob) / 1e6:.1f} MB embedded")
     assert docs, "no finished documents"
     data = json.dumps(docs).replace("</", "<\\/")
@@ -150,11 +179,11 @@ TEMPLATE = r"""<!doctype html>
 <title>__TITLE__</title>
 <style>
 :root{--surface:#fcfcfb;--surface-2:#f3f2ef;--card:#fff;--border:#e3e2dd;--ink:#0b0b0b;--ink-2:#52514e;--ink-3:#7d7c77;--accent:#2a78d6;--accent-soft:#e3eefb;
---rl:#eb6834;--sft:#2a78d6;--gold:#8a6d00;--mtry:#1a8a7a;--p16:#dff1ed;--att:42,120,214;--hit:#fff1c2;--hit-ink:#5c4400;--bad:#b3261e;--neg:42,120,214;--pos:235,104,52;--mid:228,227,223}
+--user:#7a5195;--asst:#2a9d8f;--rl:#eb6834;--sft:#2a78d6;--gold:#8a6d00;--mtry:#1a8a7a;--p16:#dff1ed;--att:42,120,214;--hit:#fff1c2;--hit-ink:#5c4400;--bad:#b3261e;--neg:42,120,214;--pos:235,104,52;--mid:228,227,223}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--surface:#1a1a19;--surface-2:#232321;--card:#20201e;--border:#3a3a37;--ink:#f0efec;--ink-2:#c3c2b7;--ink-3:#97968e;
---accent:#3987e5;--accent-soft:#1f3349;--rl:#e2723f;--sft:#5b9ae8;--gold:#d8b54a;--mtry:#4cc3b0;--p16:#173a34;--att:90,160,240;--hit:#4a3b0a;--hit-ink:#f3d98a;--bad:#ff8a80;--neg:70,140,230;--pos:226,114,63;--mid:58,58,55}}
+--accent:#3987e5;--accent-soft:#1f3349;--user:#b48ad6;--asst:#4cc3b0;--rl:#e2723f;--sft:#5b9ae8;--gold:#d8b54a;--mtry:#4cc3b0;--p16:#173a34;--att:90,160,240;--hit:#4a3b0a;--hit-ink:#f3d98a;--bad:#ff8a80;--neg:70,140,230;--pos:226,114,63;--mid:58,58,55}}
 :root[data-theme="dark"]{--surface:#1a1a19;--surface-2:#232321;--card:#20201e;--border:#3a3a37;--ink:#f0efec;--ink-2:#c3c2b7;--ink-3:#97968e;
---accent:#3987e5;--accent-soft:#1f3349;--rl:#e2723f;--sft:#5b9ae8;--gold:#d8b54a;--mtry:#4cc3b0;--p16:#173a34;--att:90,160,240;--hit:#4a3b0a;--hit-ink:#f3d98a;--bad:#ff8a80;--neg:70,140,230;--pos:226,114,63;--mid:58,58,55}
+--accent:#3987e5;--accent-soft:#1f3349;--user:#b48ad6;--asst:#4cc3b0;--rl:#e2723f;--sft:#5b9ae8;--gold:#d8b54a;--mtry:#4cc3b0;--p16:#173a34;--att:90,160,240;--hit:#4a3b0a;--hit-ink:#f3d98a;--bad:#ff8a80;--neg:70,140,230;--pos:226,114,63;--mid:58,58,55}
 *{box-sizing:border-box}body{margin:0;background:var(--surface);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 header,main{max-width:1500px;margin:0 auto;padding:0 20px}header{padding-top:16px}h1{font-size:19px;margin:0 0 4px}header p{margin:4px 0;color:var(--ink-2);max-width:1000px}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}.bar label,.muted{color:var(--ink-2);font-size:12.5px}
@@ -168,7 +197,9 @@ canvas{display:block;image-rendering:pixelated;cursor:crosshair}
 .cols>*{min-width:0}.cols{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px;margin-top:14px}@media (max-width:980px){.cols{grid-template-columns:1fr}}
 .panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
 .ctx{line-height:1.8;white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;font-size:13.5px}
-.ctx .t{border-radius:3px;cursor:pointer}.ctx .cur{outline:2px solid var(--rl);font-weight:600}.ctx .after{color:var(--ink-3)}
+.ctx .t{border-radius:3px;cursor:pointer}.ctx .t.r-user{box-shadow:inset 0 -2px 0 var(--user)}.ctx .t.r-assistant{box-shadow:inset 0 -2px 0 var(--asst)}
+.ctx .t.tpl{color:var(--ink-3);font-family:ui-monospace,Menlo,monospace;font-size:.82em}.ctx .turn{display:inline-block;margin:6px 6px 2px 0;padding:0 7px;border-radius:999px;font:600 10.5px system-ui;letter-spacing:.04em;color:#fff}
+.ctx .turn.user{background:var(--user)}.ctx .turn.assistant{background:var(--asst)}.ctx .turn.system{background:var(--ink-3)}.ctx .cur{outline:2px solid var(--rl);font-weight:600}.ctx .after{color:var(--ink-3)}
 h2{font-size:15px;margin:0 0 6px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.meta{font-weight:400;color:var(--ink-3);font-size:12px}
 .fve{font-weight:700;font-size:15px;padding:2px 9px;border-radius:999px;font-variant-numeric:tabular-nums;border:1px solid var(--border);background:var(--surface-2);color:var(--ink-2)}
 .fve.p{background:#fde3d6;color:#5a2410;border-color:#f6b99c}.fve.m{background:#f6a77f;color:#3b1406;border-color:#ee8a58}.fve.h{background:#c4471a;color:#fff;border-color:#a8380f}
@@ -200,6 +231,7 @@ table.heads tr.top3 td.rk{color:var(--ink);font-weight:700}.toplist{max-height:3
 <p>Every AV explanation (RL, SFT, matryoshka) is <b>one sample at temperature 1</b>, so any single cell is noisy: read patterns across cells, not one cell. Explanations the AV never closed (under 0.1% of RL and SFT texts, about 1.5% of matryoshka texts) are scored on what it wrote: RL and SFT texts cut to their first 300 characters, matryoshka texts whole (as the matryoshka trainer reads them). <b>Gold</b> = Claude Haiku's explanation written from the write's vocabulary readouts only (the SFT teacher, not ground truth). <b>Promotes</b> = the 16 tokens whose log-probability the write raises most when injected into short prompts (avg16; tokens in at least 8% of all writes' readouts are greyed as filler). <b>Lens</b> = the 8 top tokens of the write's direct unembedding.</p>
 <p>Heads come in <b>GQA groups</b>: Qwen3-8B has 8 key/value heads, each shared by 4 query heads (KV0 = H0–3, KV1 = H4–7, …). Heads in a group read the same keys and values and differ only in their query and output projections, so they often share a theme. Groups are banded in the heatmap and boxed in the overview; the selected head's group-mates are marked.</p>
 <p id="effintro"><b>Counterfactual relevance</b>: for every token and head, that head's output at that token alone was replaced (by the head's mean output over these 4 documents, or by zero) and the rest of the model re-run. <b>Logit effect</b> = KL between the clean and ablated next-token distributions at that token; <b>Δ log p</b> = how much the head raises the log-probability of the actual next token (positive = it helps); <b>residual effect</b> = relative change of the final-layer residual at that token; <b>later tokens</b> = summed KL over all later tokens (the write is read by later positions). Pick one under <i>Colour</i>, sort the <i>Heads at this token</i> table or the overview by it, or use <i>Most relevant sites</i>.</p>
+<p class="chatopt"><b>Chats</b>: each document is a chat in which Qwen3-8B wrote the assistant replies itself (thinking off: the template's empty <code>&lt;think&gt;&lt;/think&gt;</code> block, then the answer). The heads are read on exactly the tokens the model processed, chat-template tokens included (shown muted; user turns underlined purple, assistant turns green). Every AV and AR was trained on web text, so chat formatting and assistant-style prose are out of distribution, and the FVE baseline is each head's mean write on web text.</p>
 <p class="mtopt"><b>Matryoshka</b>: the std RL pair (step 400) after 40 AR-only warm-up steps (AV frozen) and 200 GRPO steps with the matryoshka objective. Each training explanation was cut to its first 1–120 tokens before the AR read it, so the AV learned to say the most informative thing first. Its explanation of each site is shown under the RL one. “First 16 tokens” scores only the shaded prefix, read for matryoshka by the matryoshka AR and for RL by the AR at the end of a 40-step AR-only warm-up on RL prefixes (the fair baseline). Colour by them under <i>Matryoshka</i>. Each text is read by its own AR, so “Matryoshka − RL” compares pairs. On 2,000 held-out writes, the fixed step-400 AR reads whole matryoshka texts at cos 0.605 vs 0.594 for std texts, but the matryoshka AR reads them at 0.650: most of the whole-text gap is the reader. The 16-token gap is mostly the AV: the same fixed AR reads matryoshka prefixes at 0.493 vs 0.309.</p></header>
 <main>
 <div class="bar" id="docs" role="group" aria-label="Document"></div>
@@ -301,6 +333,8 @@ function attRow(h,pi){const s=atob(D.att[h][pi]);const a=new Float32Array(s.leng
 function renderCtx(){const P=D.pos[S.pi],a=attRow(S.h,S.pi),box=$('ctx');box.replaceChildren();const end=Math.min(D.tokens.length,P+30);
 let mx=0;for(let i=0;i<a.length;i++)if(i!==0&&a[i]>mx)mx=a[i];
 for(let i=0;i<end;i++){const s=el('span',{class:'t'});s.textContent=D.tokens[i];if(i===P)s.classList.add('cur');else if(i>P)s.classList.add('after');
+if(D.roles){const r=D.roles[i],tpl=r.startsWith('~'),role=tpl?r.slice(1):r;if(tpl)s.classList.add('tpl');else if(role)s.classList.add('r-'+role);
+if(D.tokens[i]==='<|im_start|>'&&role)box.append(el('span',{class:'turn '+role},role))}
 if(i<=P){const w=a[i];if(w>0.003){s.style.background=`rgba(var(--att),${(0.12+0.88*Math.min(1,w/Math.max(mx,0.05))).toFixed(2)})`}s.title=`attention ${w.toFixed(3)}`}
 const pi=D.pos.indexOf(i);if(pi>=0)s.onclick=()=>{S.pi=pi;update()};box.append(s)}
 if(end<D.tokens.length)box.append(el('span',{class:'after'},' …'));
@@ -376,7 +410,9 @@ async function openDoc(i){S.doc=i;renderDocs();$('detail').replaceChildren(el('d
 let best=[0,0,-9];for(let h=0;h<D.n_heads;h++)for(let pi=0;pi<D.pos.length;pi++){const v=D.rl_fve[idx(h,pi)];if(v!=null&&v>best[2]&&D.first_w[idx(h,pi)]<0.9)best=[h,pi,v]}
 S.h=best[0];S.pi=best[1];HS=headStats();document.querySelectorAll('.effopt').forEach(e=>e.style.display=hasEff()?'':'none');
 if(!hasEff()&&isEff(S.metric)){S.metric='rl_fve';$('metric').value='rl_fve'}
-document.querySelectorAll('.mtopt').forEach(e=>e.style.display=hasM()?'':'none');if(!hasM()&&isMt(S.metric)){S.metric='rl_fve';$('metric').value='rl_fve'}$('theadf').replaceChildren(el('option',{value:'-1'},'all heads'),...[...Array(D.n_heads).keys()].map(h=>el('option',{value:String(h)},'H'+h)));$('theadf').value=String(S.thead);
+document.querySelectorAll('.mtopt').forEach(e=>e.style.display=hasM()?'':'none');
+const hasG=D.gold.some(Boolean);$('t-gold').style.display=hasG?'':'none';$('metric').querySelector('option[value=gold_fve]').style.display=hasG?'':'none';if(!hasG&&S.metric==='gold_fve'){S.metric='rl_fve';$('metric').value='rl_fve'}
+document.querySelectorAll('.chatopt').forEach(e=>e.style.display=DOCS.some(d=>d.chat)?'':'none');if(!hasM()&&isMt(S.metric)){S.metric='rl_fve';$('metric').value='rl_fve'}$('theadf').replaceChildren(el('option',{value:'-1'},'all heads'),...[...Array(D.n_heads).keys()].map(h=>el('option',{value:String(h)},'H'+h)));$('theadf').value=String(S.thead);
 renderThumbs();update();renderTop()}
 const tip=$('tip');$('hm').addEventListener('mousemove',e=>{const c=cellAt(e);if(!c){tip.style.display='none';return}const k=idx(c.h,c.pi);
 tip.replaceChildren(el('b',{},`H${c.h} · kv${kvOf(c.h)} · #${D.pos[c.pi]} “${vis(D.tokens[D.pos[c.pi]])}”`),el('br'),`RL FVE ${pct(D.rl_fve[k])} · SFT ${pct(D.sft_fve[k])}`+(hasM()?` · matryoshka ${pct(D.mtry_fve[k])} (16 tok ${pct(D.mtry_t16_fve[k])} vs RL ${pct(D.rl_t16_fve[k])})`:'')+` · first-token ${(D.first_w[k]??0).toFixed(2)}`,el('br'),
