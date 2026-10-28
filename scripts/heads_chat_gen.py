@@ -35,7 +35,7 @@ def main() -> None:
     a = p.parse_args()
     tok = AutoTokenizer.from_pretrained(a.base)
     model = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16).to(a.device).eval()
-    end_ids = {tok.convert_tokens_to_ids("<|im_end|>"), tok.eos_token_id}
+    end_ids = {tok.convert_tokens_to_ids("<|im_end|>"), tok.convert_tokens_to_ids("<|endoftext|>"), tok.eos_token_id}
     queue = Path(a.queue)
     queue.mkdir(parents=True, exist_ok=True)
     record = []
@@ -65,8 +65,12 @@ def main() -> None:
                 msgs.append({"role": "assistant", "content": reply})
                 full = ids[0].tolist() + gen                      # what the model processed + its reply
             n = len(full)
-            ok = finished and a.min_tokens <= n <= a.max_tokens and all(r.strip() for r in replies)
-            print(f"[chat] {chat['name']} seed {seed}: {n} tokens, finished={finished}, kept={ok}", flush=True)
+            text = tok.decode(full, skip_special_tokens=False)
+            round_trip = tok(text, add_special_tokens=True).input_ids == full     # the job re-tokenizes the text
+            ok = round_trip and finished and a.min_tokens <= n <= a.max_tokens and all(r.strip() for r in replies)
+            print(f"[chat] {chat['name']} seed {seed}: {n} tokens, finished={finished}, round_trip={round_trip}, kept={ok}", flush=True)
+            if not round_trip:        # e.g. a reply starting with a newline merges with the prompt's: try the next seed
+                continue
             cand = {"seed": seed, "ids": full, "replies": replies, "n": n, "finished": finished}
             if finished and (best is None or abs(n - target) < abs(best["n"] - target)):
                 best = cand

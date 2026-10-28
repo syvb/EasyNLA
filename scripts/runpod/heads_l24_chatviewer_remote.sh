@@ -5,7 +5,7 @@
 # (scripts/heads_doc_viewer_mtry.py). Launch with:
 #   scripts/runpod/launch_with_retry.sh <out dir> heads-l24-chatviewer \
 #       --remote-script scripts/runpod/heads_l24_chatviewer_remote.sh --secrets hf \
-#       --fetch results --no-checkpoints --max-hours 9 --avoid-machine bdh8atjj57i7
+#       --fetch results --no-checkpoints --max-hours 6 --avoid-machine bdh8atjj57i7
 # CHATS=name1,name2 (passed through the launcher's environment) limits the pod to those chats, to split the work
 # across pods. Each chat's job output is uploaded to the HF dataset (<HF_PATH>/<chat>/) as soon as it finishes;
 # the matryoshka parquets and chats.json once the last stage is done.
@@ -72,8 +72,11 @@ ls /workspace/queue
 stage smoke          # the whole path on 2 positions of the first chat, before the long stages
 cp "$(ls /workspace/queue/*.json | head -1)" /workspace/smoke_queue/
 touch /workspace/smoke_queue/CLOSE
-python scripts/heads_doc_viewer_job.py --queue /workspace/smoke_queue --out "$RES/smoke" "${JOB_ARGS[@]}" --debug-positions 2
-python scripts/heads_doc_viewer_mtry.py --viewer-dir "$RES/smoke" "${MTRY_ARGS[@]}" --max-sites 64
+# output outside $RES so the fetch doesn't pull a second copy of the first chat's writes
+python scripts/heads_doc_viewer_job.py --queue /workspace/smoke_queue --out /workspace/smoke "${JOB_ARGS[@]}" --debug-positions 2
+ls /workspace/smoke/*/sites.parquet          # the job catches per-document errors: fail here if it produced nothing
+python scripts/heads_doc_viewer_mtry.py --viewer-dir /workspace/smoke "${MTRY_ARGS[@]}" --max-sites 64
+ls /workspace/smoke/*/mtry.parquet
 
 stage explain_rl_sft
 python scripts/heads_doc_viewer_job.py --queue /workspace/queue --out "$RES/chats" "${JOB_ARGS[@]}" \
@@ -101,5 +104,8 @@ name = "chats" + ("_" + e["CHATS"].replace(",", "_") if e.get("CHATS") else "") 
 up(res / "chats.json", f"{e['HF_PATH']}/{name}", "chat viewer: prompts, Qwen3-8B replies, seeds")
 PY
 
+if ls "$RES"/chats/*.FAILED >/dev/null 2>&1; then     # finished chats are uploaded; report the failed ones
+    echo "!!! chats failed: $(ls "$RES"/chats/*.FAILED | xargs -n1 basename)"; false
+fi
 date -u > "$RES/DONE"
 echo "=== all stages done ==="
