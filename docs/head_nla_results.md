@@ -348,6 +348,21 @@ almost identically (ρ = 0.96).
   document-average write also beats the NLA on them, so part of their FVE comes from writes that are nearly
   constant within a document.
 
+**Beyond knowing which head.** Head identity is nearly free: the AV can read it off the write, and the AR is
+told it. It is also worth almost nothing on its own. FVE's 0% is already each head's mean write, and every
+head-only control scores far below that:
+- the best constant a normalized reader can output knowing the head: −89%;
+- the AR given only the head tag: −100%;
+- the AR given an explanation of a different write from the same head: −101% (RL) / −100% (matryoshka).
+
+Re-scored against one mean over all heads, which ignores head identity, the head-only floor is still −88%.
+Writes are deviations spread across each head's 128-d output space, so knowing the subspace says almost nothing
+about the direction.
+
+The NLA beats the best head-only control on all 32 heads: by +26 to +155 points (RL) and +40 to +159
+(matryoshka), with a median of +124. Per head, matryoshka closes 21–84% of the gap from the head-only floor to
+perfect (median 65%). `scripts/heads_head_identity_controls.py` → `docs/head_nla_head_identity_controls.json`.
+
 **GQA siblings** (heads sharing a KV head). Compared at the same token, over every token of the 4 doc-viewer
 documents, sibling vs non-sibling pairs:
 
