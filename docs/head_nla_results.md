@@ -423,7 +423,34 @@ documents, sibling vs non-sibling pairs:
 Shared keys and values show up strongly in the writes and attention, but the explanations barely reflect
 them.
 
-## 11. Overall assessment
+## 11. On the model's own chats
+
+Qwen3-8B wrote the replies of 4 chats itself: code, a story, a maths problem, and a 2-turn factual chat, 424–507
+tokens each, thinking off. Every token × head was explained by the RL, SFT and matryoshka AVs (2 pods, about $19).
+The per-chat viewers and the data are on HF under `l24/chat_viewer/`; the numbers come from
+`scripts/heads_chat_analysis.py` → `chat_analysis.json`.
+
+| Sites | RL | Matryoshka |
+|---|---|---|
+| Web text, position ≥ 50 | +20.3% | +32.1% |
+| **Chat assistant tokens, position ≥ 50** (position-matched) | **+6.8%** | **+17.1%** |
+| Chat user turn / template tokens | +25% / +26% | +36% / +37% |
+
+- **Much weaker on the model's own replies, and it depends on genre.** Matryoshka on assistant tokens: story +28%,
+  Ada +20%, maths +12%, code +8%. Matryoshka beats RL by about 10 points on every chat.
+- **User and template tokens score high only because they are early.** Web text scores high at positions 1–49 too
+  (RL +27%), because heads park on the first token there. A chat-specific baseline (each head's mean write on the
+  other chats) barely changes anything: assistant tokens score RL +3.6% and matryoshka +14.2% against it.
+- **Explanation-free guesses are even stronger.** The previous token's write scores +49% and beats the NLA on 30/32
+  heads (RL) and 25/32 (matryoshka); on web text the figures are 27/32 and 23/32.
+- **The sink transfers.** `<|im_start|>` gets the same first-token write as web text (cos 0.999). The "conditional
+  doubt" default shows at parked sites as on web text (matryoshka 60% vs 7%).
+- **New in chats:** H27 uses the blank line after `</think>` as a second sink, taking 16–24% of later tokens'
+  attention. No web document has a secondary sink.
+- **Caveats:** every component and the baseline are web-text-based; there are only 4 low-temperature chats; there is
+  no gold and no ablation relevance.
+
+## 12. Overall assessment
 
 **What works:**
 - **A write-only head NLA can be trained.** After RL its reconstructions reach held-out cosine 0.60 with the
@@ -471,4 +498,5 @@ them.
   - every checkpoint in `-l24-mtry-rl-ckpts`.
 - **Per head:** `docs/head_nla_l24_fve_per_head.{png,csv,json}` (`scripts/heads_per_head_fve.py`); head-only controls
   `head_nla_head_identity_controls.json`; sinks `head_nla_l24_sink_overview.png`, `head_nla_l24_sink_fve.png`, `head_nla_sink_analysis.json`.
+- **Chats:** HF `l24/chat_viewer/` (4 viewer pages, data, `chat_analysis.json`); `scripts/heads_chat_analysis.py`.
 - **Process:** `docs/head_nla_session_log.md`.

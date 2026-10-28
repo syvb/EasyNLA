@@ -410,6 +410,29 @@ Four Fable reviewers checked the matryoshka doc viewer:
   - The previous-token baseline beats matryoshka on 21/32 heads.
 - **HF READMEs and model cards** updated to match.
 
+### 12. Chat viewer (10-28)
+
+The user asked for a viewer like the doc viewer, but for chats. They chose Qwen3-8B's own replies, RL + matryoshka
++ SFT explanations with no gold, and 4 chats of about 500 tokens with real answers, not thinking.
+- **Code:**
+  - `scripts/heads_chat_gen.py`: seeded non-thinking replies; a chat is kept if the reply ended on its own; the text
+    must re-tokenize to the exact ids the model processed;
+  - `heads_chat_prompts.json`;
+  - `runpod/heads_l24_chatviewer_remote.sh` with `_a`/`_b` wrappers that split the chats across 2 pods;
+  - viewer support for chat turns.
+- **Run:** 2 secure H100 pods, launched 14:58, both deleted by 17:17, about $19.
+  - The repo upload was slow (the VM-to-host link ran at about 28 KB/s), but downloads were fast (1.5 MB/s).
+  - All 4 chats were kept on their first seed: 507, 501, 486 and 424 tokens.
+- **Three Fable reviews during the run:**
+  - *Pipeline:* nothing urgent. Rerun fixes: smoke output not fetched, failed chats reported, `<|endoftext|>` as a
+    stop token, a round-trip mismatch tries the next seed.
+  - *Viewer:* the relevance paragraph and Gold sentence were shown without data; role edge cases.
+  - *Method:* the position/sink confound, so compare assistant tokens at position ≥ 50 with web text; a chat-specific
+    baseline; 4 chats is about the noise level.
+  - All were fixed, and the caveats are in the page intro.
+- **Results:** results doc §11. Position-matched assistant tokens score RL +6.8% and matryoshka +17.1%, against web
+  +20.3% / +32.1%. H27 has a second sink after `</think>`. Pages and data are on HF under `l24/chat_viewer/`.
+
 ## Costs (audited 2026-10-27)
 
 **GPU** comes from RunPod's billing API (`/v1/billing/pods`, per pod, including disk). There were 27 pods from
