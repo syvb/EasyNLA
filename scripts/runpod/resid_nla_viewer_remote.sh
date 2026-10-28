@@ -51,7 +51,7 @@ python scripts/resid_nla_viewer_job.py \
     --docs /workspace/hfdata/l24/chat_viewer=l24/chat_viewer \
     --docs /workspace/hfdata/l24/std_rl/doc_viewer=l24/resid_nla/doc_viewer \
     --out "$RES/resid" --av-base /workspace/ckpt/av --av-lora /workspace/ckpt/rl/p0.0 --ar /workspace/ckpt/ar \
-    --rl-data /workspace/nanonla_data/rl_full.parquet --max-new-tokens 256 --hf-repo syvb/head-nla-qwen3-8b
+    --rl-data /workspace/nanonla_data/rl_full.parquet --max-new-tokens 1024 --hf-repo syvb/head-nla-qwen3-8b
 
 date -u > "$RES/DONE"
 echo "=== all stages done ==="

@@ -60,7 +60,8 @@ def main() -> None:
     p.add_argument("--layer", type=int, default=24)
     p.add_argument("--gen-batch", type=int, default=128)
     p.add_argument("--ar-batch", type=int, default=64)
-    p.add_argument("--max-new-tokens", type=int, default=256)
+    p.add_argument("--max-new-tokens", type=int, default=1024,
+                   help="far above the ~127-token mean, so an explanation never ends on the cap")
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--check-rows", type=int, default=256)
     p.add_argument("--min-check-fve", type=float, default=0.45)
