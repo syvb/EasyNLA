@@ -356,12 +356,46 @@ head-only control scores far below that:
 - the AR given an explanation of a different write from the same head: −101% (RL) / −100% (matryoshka).
 
 Re-scored against one mean over all heads, which ignores head identity, the head-only floor is still −88%.
-Writes are deviations spread across each head's 128-d output space, so knowing the subspace says almost nothing
-about the direction.
+
+Why identity buys so little (medians over heads, AR-train sites):
+- Each head writes into its own subspace: writes of different heads have |cos| 0.02, so identity is easy to read.
+- Within a head, the writes are not isotropic: about 24 effective directions of 128, and the top direction holds
+  16% of the second moment.
+- But they use those directions with both signs. Two random writes of the same head have mean cos +0.005, so
+  they cancel, the mean is short (ρ 0.076), and any fixed guess is near-orthogonal to a typical write.
+- Raw writes, before subtracting the head's mean write, behave the same (ρ 0.074).
+- The sites are one per document, weighted toward larger-than-typical writes. Over every token of a document,
+  writes are more alike (pairwise cos +0.16, about 8 effective directions), and identity is worth more there
+  (floor −44%).
 
 The NLA beats the best head-only control on all 32 heads: by +26 to +155 points (RL) and +40 to +159
 (matryoshka), with a median of +124. Per head, matryoshka closes 21–84% of the gap from the head-only floor to
 perfect (median 65%). `scripts/heads_head_identity_controls.py` → `docs/head_nla_head_identity_controls.json`.
+
+**How much is driven by attention sinks?** Figure `docs/head_nla_l24_sink_fve.png`; values in
+`head_nla_sink_analysis.json` (`scripts/heads_sink_analysis.py`, public data, attention used only to evaluate).
+
+![FVE vs sink weight](head_nla_l24_sink_fve.png)
+
+Sites are binned by the head's attention to the first token. The comparison is a sink-only reader that knows the
+head and its sink weight and nothing else (fit per head, leaving documents out). On the doc viewer there is also
+the exact sink-only write: what the head would write if all its attention were on the first token.
+
+- **The headline numbers are not driven by sinks.**
+  - Sink-dominated sites (weight ≥ 0.9) are 8% of eval rows and give 12–14% of the explained variance.
+  - Dropping them moves FVE only from +18.9 to +17.5% (RL) and from +29.7 to +28.2% (matryoshka).
+  - Most of the explained variance (62–68%) comes from sites with sink weight below 0.5.
+- **Quality is U-shaped in the sink weight.** It is best when the head barely uses the sink (matryoshka +37%)
+  and when it is fully parked (+50%). It is worst in between (+20 to +23%), where the write mixes the sink with
+  content.
+- **At parked sites, the NLA is mostly just saying "parked".**
+  - The sink-only reader matches RL there (+37% vs +37% on eval rows).
+  - The exact sink-only write matches matryoshka on the doc viewer (+56% vs +56%).
+  - This is the "conditional doubt" default (§8).
+- **Over every token of a document, sinks matter more.** Parked sites are 22% there and give a third of the
+  explained variance; without them FVE falls about 5 points (matryoshka 33 → 28%).
+- **Sink weight is informative, but far short of the NLA.** The sink-only reader scores −55% on eval rows: 34
+  points above knowing only the head, and 74–85 points below the NLA.
 
 **GQA siblings** (heads sharing a KV head). Compared at the same token, over every token of the 4 doc-viewer
 documents, sibling vs non-sibling pairs:
@@ -421,5 +455,6 @@ them.
   - the dataset `syvb/head-nla-qwen3-8b` under `l24/mtry/`: T=1 checks, raw sweep data, report, quotes vs attention, the matryoshka doc viewer and redacted logs;
   - the step-640 pair `syvb/head-nla-qwen3-8b-l24-mtry-{av,ar}`;
   - every checkpoint in `-l24-mtry-rl-ckpts`.
-- **Per head:** `docs/head_nla_l24_fve_per_head.{png,csv,json}` (`scripts/heads_per_head_fve.py`).
+- **Per head:** `docs/head_nla_l24_fve_per_head.{png,csv,json}` (`scripts/heads_per_head_fve.py`); head-only controls
+  `head_nla_head_identity_controls.json`; sinks `head_nla_l24_sink_fve.png`, `head_nla_sink_analysis.json`.
 - **Process:** `docs/head_nla_session_log.md`.

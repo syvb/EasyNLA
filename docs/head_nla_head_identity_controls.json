@@ -598,5 +598,15 @@
     "share_of_gap_closed": 0.7618650794029236
    }
   ]
+ },
+ "spread_ar_train": {
+  "rho": 0.07567337155342102,
+  "mean_cos_pair": 0.004878508858382702,
+  "mean_abs_cos_pair": 0.1437743753194809,
+  "top1_share": 0.16335080564022064,
+  "top10_share": 0.44569753110408783,
+  "effective_dims": 23.574028968811035,
+  "random_128d_mean_abs_cos": 0.07052369794346953,
+  "different_heads_mean_abs_cos": 0.020416373386979103
  }
 }
