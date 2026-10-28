@@ -79,6 +79,7 @@ def main() -> None:
             if ok:
                 best = cand
                 break
+        assert closest is not None, f"{chat['name']}: no attempt's text re-tokenized to the ids the model processed"
         if best is None:      # never ended on its own: keep the closest attempt rather than lose the chat
             best = closest
             print(f"[chat] !!! {chat['name']}: no attempt ended on its own within {a.max_new_tokens} tokens; keeping a cut-off reply", flush=True)
