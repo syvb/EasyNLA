@@ -1,8 +1,6 @@
 [
- {"name": "moon_face", "turns": ["Why does the Moon always show the same face to Earth? Explain it to a curious high-school student in about 300 words."]},
  {"name": "ipv4_code", "turns": ["Write a Python function that checks whether a string is a valid IPv4 address. Then explain how it works and show two example calls. About 300 words in total."]},
  {"name": "lighthouse_story", "turns": ["Write a short story, about 330 words, about a lighthouse keeper named Elsie who finds a message in a bottle."]},
- {"name": "interview_prep", "turns": ["I have an interview for a junior data analyst job at a hospital next Tuesday. How should I prepare? Keep it practical, about 300 words."]},
  {"name": "train_problem", "turns": ["A train leaves Leeds at 9:40 and travels at an average of 60 mph. A second train leaves the same station at 10:10 on the same route at 75 mph. When and how far from Leeds does the second train catch up? Show your working step by step, in about 250 words."]},
  {"name": "ada_lovelace", "turns": ["Who was Ada Lovelace? Answer in about 150 words.", "What did she think the Analytical Engine could not do? About 150 words."]}
 ]
