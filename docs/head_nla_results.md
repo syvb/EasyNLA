@@ -453,8 +453,10 @@ The per-chat viewers and the data are on HF under `l24/chat_viewer/`; the number
   in `l24/resid_nla/` and `l24/chat_viewer/<chat>/resid.parquet`.
 - **Still no private code on chats.** On 916 random chat sites, a Haiku 5.5 paraphrase keeps 96% (RL) and 98%
   (matryoshka) of the gain over an empty explanation, and the form-only skeleton keeps 0%; the web result was 97% and
-  2%. In FVE, the paraphrase costs 3.9 points (RL) and 2.7 points (matryoshka). Details:
-  `l24/chat_viewer/paraphrase_test/`.
+  2%. In FVE, the paraphrase costs 3.9 points (RL) and 2.7 points (matryoshka).
+  - About 7% of paraphrases were broken, here and in the web test: refusals that stopped mid-answer were kept as
+    fragments, plus meta replies. Excluding them raises retention to 97.6% / 98.4% (web: 97.6%).
+  - Details: `l24/chat_viewer/paraphrase_test/` (README and `defect_audit.json`).
 - **Caveats:** every component and the baseline are web-text-based; there are only 4 low-temperature chats; there is
   no gold and no ablation relevance.
 

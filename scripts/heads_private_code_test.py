@@ -61,6 +61,8 @@ words whose meaning is unclear as they are. Write plain prose of about the same 
 rewritten text."""
 
 TAG = re.compile(r"</?[A-Za-z][^>]*>")
+# replies about the task instead of a rewrite ("There's no passage here for me to rewrite...")
+META_REPLY = re.compile(r"^\s*(I (can't|cannot|can not|won't|don't|'m|am)|There('s| is| are) no|Please|Could you|Sorry|I'm sorry|It (seems|looks)|The (text|message|input) )", re.I)
 QUOTE_SPAN = re.compile(r"“[^”]*”|\"[^\"]*\"|‘[^’]*’(?![A-Za-z])")
 WORD = re.compile(r"[A-Za-z]+(?:['’\-][A-Za-z]+)*")
 
@@ -140,7 +142,8 @@ async def paraphrase_all(texts: dict[str, str], cache: Path, key: str, concurren
         usage["in"] += msg.usage.input_tokens
         usage["out"] += msg.usage.output_tokens
         out = "".join(b.text for b in msg.content if b.type == "text").strip()
-        if not out:
+        # a refusal can stop mid-answer and still return text ("Tit", half a paraphrase): only a finished turn counts
+        if not out or msg.stop_reason != "end_turn" or META_REPLY.search(out):
             usage["failed"] += 1
             return
         with cache.open("a") as f:
