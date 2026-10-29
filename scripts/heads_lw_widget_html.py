@@ -197,6 +197,10 @@ function build(){
  const hd=$('heads');CELLS=[];for(let h=0;h<D.n_heads;h++){const b=el('button',{'aria-label':'Head '+h},String(h));b.onclick=()=>sel(h,S.t);hd.append(b);CELLS.push(b)}
  ramp('r-fve','div');ramp('r-att','seq');
 }
+// chats open scrolled to the assistant's reply: its first non-template token at the top of the pane (scroll up for the
+// user turn and the template)
+function scrollToReply(){const R=D.roles,a=R?R.findIndex(r=>r==='assistant'):-1;if(a<0)return;const box=$('ctx');
+ box.scrollTop+=SPANS[a].getBoundingClientRect().top-box.getBoundingClientRect().top-6}
 function keepVisible(box,e){const b=box.getBoundingClientRect(),r=e.getBoundingClientRect();if(r.top<b.top+4)box.scrollTop-=b.top+4-r.top;else if(r.bottom>b.bottom-4)box.scrollTop+=r.bottom-b.bottom+4}
 function sel(h,t,scroll=true){
  S.h=Math.max(0,Math.min(D.n_heads-1,h));S.t=Math.max(0,Math.min(D.T-1,t));h=S.h;t=S.t;
@@ -228,7 +232,7 @@ $('prev').onclick=()=>sel(S.h,S.t-1);$('next').onclick=()=>sel(S.h,S.t+1);
 document.addEventListener('keydown',e=>{if(!D||e.metaKey||e.ctrlKey||e.altKey)return;const m={ArrowLeft:[0,-1],ArrowRight:[0,1],ArrowUp:[-1,0],ArrowDown:[1,0]}[e.key];
  if(!m)return;e.preventDefault();sel(S.h+m[0],S.t+m[1])});
 (async()=>{try{const B=JSON.parse($('blobs').textContent);const [d,a]=await Promise.all([gunzip(B.data),gunzip(B.att)]);
- D=JSON.parse(new TextDecoder().decode(d));ATT=a;TRI=D.T*(D.T+1)/2;build();sel(D.start[0],D.start[1]);
+ D=JSON.parse(new TextDecoder().decode(d));ATT=a;TRI=D.T*(D.T+1)/2;build();sel(D.start[0],D.start[1],!D.roles);if(D.roles)scrollToReply();
  }catch(e){$('ctx').textContent='Could not load the data: '+e}})();
 if(window.matchMedia)matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change',()=>{if(D){LUT={};ramp('r-fve','div');ramp('r-att','seq');sel(S.h,S.t,false)}});
 </script></body></html>
