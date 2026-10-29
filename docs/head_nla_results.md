@@ -714,6 +714,7 @@ These are reasoned, not measured: no run trained without centering. For most hea
     - `head_nla_l24_mtry_quality_by_prefix.png`;
     - `head_nla_l24_fve_distribution_std_vs_mtry.png`;
     - `head_nla_l24_fve_per_head_std_vs_mtry.png`;
+    - `head_nla_l24_fve_per_head_whole_std_vs_mtry.png` (the whole-explanation panel alone);
     - `head_nla_l24_mtry_prefix_by_head.png`;
     - `head_nla_l24_mtry_marginal_by_head.png`.
   - All public on HF:

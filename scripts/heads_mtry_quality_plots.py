@@ -18,6 +18,7 @@ Writes to --out-dir (prefix head_nla_l24_):
   fve_distribution_std_vs_mtry.png   per-write cosine and FVE of whole explanations, std vs matryoshka vs shuffled
   fve_per_head_std_vs_mtry.png       per-head FVE: whole explanations (std vs matryoshka), first 16 tokens
                                      (fair baseline vs matryoshka)
+  fve_per_head_whole_std_vs_mtry.png the whole-explanation panel alone
   mtry_prefix_by_head.png      per-head FVE at every prefix length, matryoshka and fair baseline
   mtry_marginal_by_head.png    per-head FVE gained at each truncation step, matryoshka
   mtry_quality.json            every plotted number
@@ -278,13 +279,12 @@ def main() -> None:
     res["per_head"]["rows_first16"] = np.bincount(heads, minlength=H).tolist()
     order = np.argsort(ph["whole: matryoshka pair (step 640)"][0])               # bottom → top = worst → best
     ypos = {h: i for i, h in enumerate(order)}
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 8.2), dpi=160, sharey=True)
-    fig.patch.set_facecolor(SURF)
-    panels = [(a1, "Whole explanation", ["whole: std pair (step 400)", "whole: matryoshka pair (step 640)"],
-               ["Std pair (step 400)", "Matryoshka pair (step 640)"]),
-              (a2, "First 16 explanation tokens", ["first 16: fair baseline (std AV + warm-up AR)", "first 16: matryoshka"],
-               ["Std AV + warm-up AR (fair baseline)", "Matryoshka (step 640)"])]
-    for ax, title, keys, labs in panels:
+    WHOLE = (["whole: std pair (step 400)", "whole: matryoshka pair (step 640)"],
+             ["Std pair (step 400)", "Matryoshka pair (step 640)"])
+    FIRST16 = (["first 16: fair baseline (std AV + warm-up AR)", "first 16: matryoshka"],
+               ["Std AV + warm-up AR (fair baseline)", "Matryoshka (step 640)"])
+
+    def dumbbell(ax, title: str, keys: list[str], labs: list[str]) -> None:
         (f0, c0), (f1, c1) = ph[keys[0]], ph[keys[1]]
         for h in range(H):
             y = ypos[h]
@@ -296,20 +296,39 @@ def main() -> None:
         ax.axvline(0, color=INK2, lw=1, zorder=0)
         style(ax, ygrid=False)
         ax.grid(axis="x", color=GRID, lw=0.8)
-        ax.set_title(title, loc="left", fontsize=10.5, color=INK, fontweight="bold")
+        if title:
+            ax.set_title(title, loc="left", fontsize=10.5, color=INK, fontweight="bold")
         ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{y:+.0f}%".replace("-", "−") if y else "0%"))
         ax.set_xlabel("FVE (95% CI)", color=INK2, fontsize=8.8)
         ax.legend(loc="lower right", frameon=False, fontsize=8.3, labelcolor=INK)
-    lo = min(100 * min(v[1][:, 0].min() for v in ph.values()), -60)
-    hi = 100 * max(v[1][:, 1].max() for v in ph.values())
-    a1.set_xlim(lo - 5, hi + 5)
-    a2.set_xlim(lo - 5, hi + 5)
-    a1.set_yticks(range(H))
-    a1.set_yticklabels([f"H{h}  (KV{h // 4})" for h in order], fontsize=8)
-    a1.set_ylim(-0.7, H - 0.3)
+        ax.set_yticks(range(H))
+        ax.set_yticklabels([f"H{h}  (KV{h // 4})" for h in order], fontsize=8)
+        ax.set_ylim(-0.7, H - 0.3)
+
+    def xlim(keys: list[str]) -> tuple[float, float]:
+        return (min(100 * min(ph[k][1][:, 0].min() for k in keys), -60) - 5,
+                100 * max(ph[k][1][:, 1].max() for k in keys) + 5)
+
+    # both panels: whole explanations, and the first 16 tokens
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 8.2), dpi=160, sharey=True)
+    fig.patch.set_facecolor(SURF)
+    dumbbell(a1, "Whole explanation", *WHOLE)
+    dumbbell(a2, "First 16 explanation tokens", *FIRST16)
+    for ax in (a1, a2):
+        ax.set_xlim(*xlim(WHOLE[0] + FIRST16[0]))
     heading(fig, "FVE per head: standard vs matryoshka", y0=0.985)
     fig.tight_layout(rect=(0, 0, 1, 0.955), w_pad=1.5)
     fig.savefig(out / "head_nla_l24_fve_per_head_std_vs_mtry.png", facecolor=SURF)
+    plt.close(fig)
+
+    # whole explanations only
+    fig, ax = plt.subplots(figsize=(6.4, 8.2), dpi=160)
+    fig.patch.set_facecolor(SURF)
+    dumbbell(ax, "", *WHOLE)
+    ax.set_xlim(*xlim(WHOLE[0]))
+    heading(fig, "FVE per head: standard vs matryoshka", y0=0.985)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out / "head_nla_l24_fve_per_head_whole_std_vs_mtry.png", facecolor=SURF)
     plt.close(fig)
 
     # ---- 5. per-head FVE at every prefix length (heatmaps) ----
@@ -405,7 +424,7 @@ def main() -> None:
     plt.close(fig)
 
     (out / "head_nla_l24_mtry_quality.json").write_text(json.dumps(res, indent=1) + "\n")
-    print(f"wrote 7 figures and head_nla_l24_mtry_quality.json to {out}")
+    print(f"wrote 8 figures and head_nla_l24_mtry_quality.json to {out}")
 
 
 if __name__ == "__main__":
