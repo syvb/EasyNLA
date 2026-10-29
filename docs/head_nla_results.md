@@ -522,6 +522,29 @@ bias term the architecture lacks; attention to sink tokens has been reported to 
 a near-flat direction of the loss, so training has no reason to collect it in one place. Data: `source` in
 `docs/head_nla_centering_analysis.json`.
 
+**Could the mean come from the weights instead?** Only in part.
+- It splits into two pieces:
+  - W_O,h W_V E[x̂], where x̂ is the normalized residual entering layer 24. This piece does not depend on attention.
+  - A part that depends on attention, such as the sink's value for parking heads.
+- The weights fix the maps but not E[x̂], which the earlier layers produce from real text.
+- The mean is not a fixed property of the model either. One document's mean write (about 250 tokens at positions ≥ 50)
+  has cos 0.65 with the 100k-record mean for KV6, 0.81 for the parking heads and 0.42 for the rest (web). On chats the
+  figures are 0.58, 0.55 and 0.21.
+- Whatever is used, the result depends on the text it is averaged over.
+
+**Does it matter for RL?** GRPO cancels any constant, and any positive scale, shared by a group's rewards, and every
+rollout in a group explains the same write. Removing the mean is not such a constant, though. Four effects remain:
+- **The AV's input direction changes.** This is the rotation measured above.
+- **The AR's targets change in SFT and in co-training.** Both are plain MSE, with no group normalization.
+- **The confidence-dependent part of the cosine does not cancel.** The AR's unit prediction leans toward the head mean
+  when an explanation leaves it unsure, so under raw targets the head mean props up vague explanations more than
+  confident ones. That changes the margins between explanations.
+- **The fixed-scale terms gain weight.** The −2 failure reward and the length penalty don't scale with the cosine. Raw
+  targets shrink the spread of the cosine within a group by about the rotation factor (0.5–0.9 for KV6 and parked
+  tokens), so after normalization those terms weigh more.
+
+These are reasoned, not measured: no run trained without centering. For most heads the rotation is small (median cos 0.97 on training sites).
+
 ## 13. Overall assessment
 
 **What works:**

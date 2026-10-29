@@ -17,7 +17,8 @@ see and predict directions, so everything here compares unit vectors.
   source      where the mean comes from: (a) per KV group, the cos between the 4 query heads' mean outputs z̄ (they share
               one value space, so a mean made by the shared values points the same way whatever each head attends to);
               (b) web, positions ≥ 50: the mean raw write split into tokens parked on the sink (≥ 90% attention on the
-              first token) and the rest, each part's projection on the global mean, and how much parked writes vary
+              first token) and the rest, each part's projection on the global mean, and how much parked writes vary;
+              (c) cos between one document's mean write and the global mean (could a little data, or the weights, fix it?)
 
 Sets: eval = l24/sft_data/eval.parquet (the training selection: 200 per head, weighted toward large deviations);
 web = the 4 doc-viewer documents, every token; chat = the 4 chat-viewer chats, every token.
@@ -212,7 +213,18 @@ def main() -> None:
         if pk.sum() > 1:
             row["parked_spread_rms"] = r(np.sqrt(((w[pk] - w[pk].mean(0)) ** 2).sum(1).mean()) / rms[h], 2)
         park.append(row)
-    out["source"] = {"kv_groups_z_bar": grp, "parked_vs_active_web_pos50": park}
+    # source (c): how well one document (positions >= 50, ~250 tokens) recovers each head's global mean write
+    one = {}
+    for (kind, n), V in vd.items():
+        dm = rms[None, :, None] * V[50:].mean(0)[None] + m[None]                   # [1, H, d] mean raw write
+        one[(kind, n)] = (dm[0] * m).sum(1) / np.linalg.norm(dm[0], axis=1) / np.linalg.norm(m, axis=1)
+    sets_h = {"KV6 (H24-27)": [24, 25, 26, 27], "parking heads (H1, H6, H20, H23)": [1, 6, 20, 23],
+              "other 24 heads": [h for h in range(H) if h not in (1, 6, 20, 23, 24, 25, 26, 27)]}
+    single = {}
+    for kind in ("web", "chat"):
+        A_ = np.array([c for (k, _), c in one.items() if k == kind])                # [docs, H]
+        single[kind] = {nm: {"median": r(np.median(A_[:, hs]), 2), "min": r(A_[:, hs].min(), 2)} for nm, hs in sets_h.items()}
+    out["source"] = {"kv_groups_z_bar": grp, "parked_vs_active_web_pos50": park, "single_doc_mean_cos_to_global": single}
     with open(a.out, "w") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
     print(json.dumps({k: v for k, v in out.items() if k not in ("mean_write_over_rms", "energy_share_of_mean")}, indent=1,

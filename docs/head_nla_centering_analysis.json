@@ -1146,6 +1146,36 @@
     "active_spread_rms": 0.82,
     "parked_spread_rms": 0.1
    }
-  ]
+  ],
+  "single_doc_mean_cos_to_global": {
+   "web": {
+    "KV6 (H24-27)": {
+     "median": 0.65,
+     "min": 0.28
+    },
+    "parking heads (H1, H6, H20, H23)": {
+     "median": 0.81,
+     "min": 0.24
+    },
+    "other 24 heads": {
+     "median": 0.42,
+     "min": -0.12
+    }
+   },
+   "chat": {
+    "KV6 (H24-27)": {
+     "median": 0.58,
+     "min": 0.24
+    },
+    "parking heads (H1, H6, H20, H23)": {
+     "median": 0.55,
+     "min": -0.06
+    },
+    "other 24 heads": {
+     "median": 0.21,
+     "min": -0.27
+    }
+   }
+  }
  }
 }
