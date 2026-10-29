@@ -387,9 +387,10 @@ def main() -> None:
     ax.axhline(0, color=INK2, lw=1, zorder=1)
     ax.fill_between(xs, lo, hi, color=MTRY_C, alpha=0.15, lw=0)
     ax.plot(xs, y, color=MTRY_C, lw=2, marker="o", ms=6, mec=SURF, mew=1.2, zorder=3)
-    for xv, yv in ((1, y[0]), (16, y[num.index("16")]), (120, y[-1])):
+    for xv, yv in zip(xs, y):                                                  # 1, 16 and 120 in full ink, the rest muted
+        key = xv in (1, 16, 120)
         ax.annotate(pct(yv / 100), (xv, yv), xytext=(0, 9), textcoords="offset points", ha="center", va="bottom",
-                    fontsize=9, color=INK)
+                    fontsize=9.5 if key else 8, color=INK if key else INK2, fontweight="bold" if key else "normal")
     ax.set_xscale("log", base=2)
     ax.set_xticks(xs)
     ax.set_xticklabels([str(v) for v in xs])
