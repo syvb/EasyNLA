@@ -612,4 +612,6 @@ These are reasoned, not measured: no run trained without centering. For most hea
 - **Centering:** `docs/head_nla_centering_analysis.json` (`scripts/heads_centering_analysis.py`); the floor
   analysis `head_nla_mean_direction_floor.json` (`scripts/heads_mean_direction_floor.py`, √d bug fixed).
 - **Chats:** HF `l24/chat_viewer/` (4 viewer pages, data, `chat_analysis.json`); `scripts/heads_chat_analysis.py`.
+- **Explorer widget for the LessWrong post:** `docs/head_nla_lw_widget.md`. Live at https://i.smitop.com/head-nla/widget.html;
+  rebuilt exactly from public data by `scripts/heads_lw_widget_build.sh`.
 - **Process:** `docs/head_nla_session_log.md`.

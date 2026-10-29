@@ -3,7 +3,8 @@
     python scripts/heads_lw_widget_html.py --doc <folder> --label <menu name> [--start HEAD:POS] [--doc ... --label ...] \\
         --out-dir <dir> [--default <folder name>]
 
-Each folder is one document of the doc viewer (token_ids.npy, meta.json, sites.parquet, attn.npz, mtry.parquet: e.g.
+Each --doc is a local folder, or hf:<path> for a folder of the public HF dataset syvb/head-nla-qwen3-8b (downloaded
+anonymously, e.g. hf:l24/chat_viewer/02_lighthouse_story). Each folder is one document of the doc viewer (token_ids.npy, meta.json, sites.parquet, attn.npz, mtry.parquet: e.g.
 l24/mtry/doc_viewer/<doc>/ + l24/std_rl/doc_viewer/<doc>/ of the HF dataset) or one chat, l24/chat_viewer/<chat>/
 (chat-template tokens muted, each turn labelled User / Assistant, opened scrolled to the assistant's reply). A menu picks
 the text. For each, the page shows every token × every head of the head NLA's explanations, matryoshka (step 640) or
@@ -35,6 +36,7 @@ from heads_doc_viewer_html import chat_roles  # noqa: E402
 
 
 ATT_LEVELS = 31
+HF_REPO = "syvb/head-nla-qwen3-8b"
 
 
 def display_tokens(tok, ids: list[int]) -> list[str]:
@@ -96,6 +98,22 @@ def doc_parts(tok, d: Path, label: str, start: str | None) -> tuple[dict, dict, 
     return parts, {"rl": js(models["rl"])}, line
 
 
+DOC_FILES = ("token_ids.npy", "meta.json", "sites.parquet", "attn.npz", "mtry.parquet")
+
+
+def resolve_doc(spec: str) -> Path:
+    """A local folder, or hf:<path in syvb/head-nla-qwen3-8b> → the downloaded folder (only the files used here)."""
+    if not spec.startswith("hf:"):
+        return Path(spec)
+    from huggingface_hub import snapshot_download
+    sub = spec[3:].strip("/")
+    root = snapshot_download(HF_REPO, repo_type="dataset", allow_patterns=[f"{sub}/{f}" for f in DOC_FILES], token=False)
+    d = Path(root) / sub
+    missing = [f for f in DOC_FILES if not (d / f).exists()]
+    assert not missing, f"{spec}: not in {HF_REPO}: {missing}"
+    return d
+
+
 def write_data(path: Path, name: str, parts: dict) -> str:
     """data/<name>.js: one call to the page's loader. Loaded by a <script> tag, so no CORS is needed even when the page
     runs with an opaque origin (a sandboxed LessWrong widget). Returns a content hash for cache-busting."""
@@ -120,7 +138,7 @@ def main() -> None:
     out = Path(a.out_dir)
     (out / "data").mkdir(parents=True, exist_ok=True)
     chats = []
-    for d, label, st in zip(map(Path, a.doc), a.label, starts):
+    for d, label, st in zip(map(resolve_doc, a.doc), a.label, starts):
         main_parts, std_parts, line = doc_parts(tok, d, label, None if st == "auto" else st)
         v = write_data(out / "data" / f"{d.name}.js", d.name, main_parts)
         vs = write_data(out / "data" / f"{d.name}.std.js", f"{d.name}.std", std_parts)

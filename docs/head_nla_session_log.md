@@ -450,8 +450,11 @@ The user asked for a viewer like the doc viewer, but for chats. They chose Qwen3
 
 ### 14. Widget, training recipe, centering (10-28 to 10-29)
 
-- **LessWrong widget:** a self-contained single-document page (`scripts/heads_lw_widget_html.py`), on HF under
-  `l24/lw_widget/`.
+- **LessWrong widget:** an explorer page for the 4 chats, with a Matryoshka / Standard toggle
+  (`docs/head_nla_lw_widget.md`).
+  - It is served from the user's R2 bucket at https://i.smitop.com/head-nla/ and copied to HF `l24/lw_widget/`.
+  - It is rebuilt byte for byte from public data by `scripts/heads_lw_widget_build.sh`.
+  - The first versions were single files: the TMS web text, then the lighthouse chat alone.
 - **Training recipe:** `docs/head_nla_l24_training_recipe.md` lists every parameter of the final std and matryoshka
   runs, from the resolved run configs.
 - **Centering:** results doc §12 (`scripts/heads_centering_analysis.py`, CPU only).
