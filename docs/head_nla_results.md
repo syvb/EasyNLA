@@ -500,6 +500,28 @@ Source: `scripts/heads_centering_analysis.py` → `docs/head_nla_centering_analy
   - On chats, most of the NLA's FVE comes from these sites. Weighted by ‖v‖², chat matryoshka FVE falls from 18% to 5%,
     while web text is unchanged (32%).
 
+**Where the mean comes from.** An attention output is a weighted average of value vectors (softmax weights sum to 1,
+and Qwen3 has no attention or MLP biases), so it can't be zero on average unless the values cancel. Two sources show up:
+- **Values with a shared component.** A part that every value vector shares appears in every average, whatever the head
+  attends to.
+  - The four query heads of KV6 (H24–27) share one value space. Their mean outputs there are 3–5× larger than other
+    heads' and point the same way (cos 0.83–0.98).
+  - Yet these heads almost never park on the sink, and 91–112% of their mean comes from tokens where they attend
+    elsewhere.
+  - KV3, KV4 and KV7 show the same pattern at a smaller size (cos 0.69–0.90).
+- **The parked, no-op output.** Heads that often have nothing to read put their attention on the first token and write
+  nearly the same vector each time. Parked writes vary by 0.11 RMS around their own mean, against 0.92 for the
+  other tokens.
+  - For H1, H6, H20 and H23, which park on 57–79% of tokens at positions ≥ 50, this parked output is 60–96% of the mean.
+  - For heads that rarely park, its share is near 0.
+
+There is little pressure to remove either. A constant added at every position mostly cancels downstream: shifting every
+key by the same vector moves a query's attention logits equally, which softmax ignores. A constant can also serve as the
+bias term the architecture lacks; attention to sink tokens has been reported to work as an implicit bias (Sun et al.,
+2024, "Massive Activations in Large Language Models"). Where a constant is produced — this head, an MLP, or nowhere — is
+a near-flat direction of the loss, so training has no reason to collect it in one place. Data: `source` in
+`docs/head_nla_centering_analysis.json`.
+
 ## 13. Overall assessment
 
 **What works:**

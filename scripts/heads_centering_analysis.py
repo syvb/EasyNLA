@@ -14,6 +14,10 @@ see and predict directions, so everything here compares unit vectors.
   variance    shares of E|v|² (web documents, positions ≥ 50): the leftover global mean, between documents, within
   quality     pooled FVE (std RL, matryoshka) by |v| bin and by rotation bin; and FVE weighted by |v|²
   identity    W_O's conditioning: whether a write's head is recoverable from the vector, centered or not
+  source      where the mean comes from: (a) per KV group, the cos between the 4 query heads' mean outputs z̄ (they share
+              one value space, so a mean made by the shared values points the same way whatever each head attends to);
+              (b) web, positions ≥ 50: the mean raw write split into tokens parked on the sink (≥ 90% attention on the
+              first token) and the rest, each part's projection on the global mean, and how much parked writes vary
 
 Sets: eval = l24/sft_data/eval.parquet (the training selection: 200 per head, weighted toward large deviations);
 web = the 4 doc-viewer documents, every token; chat = the 4 chat-viewer chats, every token.
@@ -177,6 +181,38 @@ def main() -> None:
                    "weighted_by_v_norm_sq": {"rl": fve(X_, "rl_cos", X_.v_norm.to_numpy() ** 2),
                                              "mtry": fve(X_, "mtry_cos", X_.v_norm.to_numpy() ** 2)}}
     out["quality_pos50"] = q
+
+    # source (a): mean head outputs within each KV group (Qwen3: query head h reads KV head h // 4)
+    z = st["mean_head_out"][0].astype(np.float64)
+    uz = unit(z)
+    grp = {}
+    for g in range(H // 4):
+        C = uz[4 * g:4 * g + 4] @ uz[4 * g:4 * g + 4].T
+        grp[f"KV{g}"] = {"z_bar_norm": [r(x, 2) for x in np.linalg.norm(z[4 * g:4 * g + 4], axis=1)],
+                         "pairwise_cos_median": r(np.median(C[np.triu_indices(4, 1)]), 2),
+                         "pairwise_cos_min": r(C[np.triu_indices(4, 1)].min(), 2)}
+    # source (b): parked vs active tokens (web, positions >= 50)
+    fw = {}
+    for (kind, n), V in vd.items():
+        if kind == "web":
+            x = D[(D.kind == kind) & (D.doc == n)]
+            f_ = np.zeros(V.shape[:2])
+            f_[x.pos.to_numpy(), x["head"].to_numpy()] = x.first_w.to_numpy()
+            fw[n] = f_[50:]
+    F = np.concatenate([fw[n] for n in WEB])
+    park = []
+    for h, v in enumerate(stack("web", 50)):
+        ok = np.linalg.norm(v, axis=1) < cap[h] - 1e-3
+        w, pk = rms[h] * v[ok] + m[h], F[ok, h] >= 0.9
+        mm = m[h] @ m[h]
+        row = {"head": h, "parked_share": r(pk.mean(), 2),
+               "parked_part_of_mean": r((w[pk].sum(0) / len(w)) @ m[h] / mm, 2) if pk.any() else 0.0,
+               "active_part_of_mean": r((w[~pk].sum(0) / len(w)) @ m[h] / mm, 2),
+               "active_spread_rms": r(np.sqrt(((w[~pk] - w[~pk].mean(0)) ** 2).sum(1).mean()) / rms[h], 2)}
+        if pk.sum() > 1:
+            row["parked_spread_rms"] = r(np.sqrt(((w[pk] - w[pk].mean(0)) ** 2).sum(1).mean()) / rms[h], 2)
+        park.append(row)
+    out["source"] = {"kv_groups_z_bar": grp, "parked_vs_active_web_pos50": park}
     with open(a.out, "w") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
     print(json.dumps({k: v for k, v in out.items() if k not in ("mean_write_over_rms", "energy_share_of_mean")}, indent=1,
