@@ -21,11 +21,12 @@ chats.
 - **The 32 heads at the selected token:** coloured by FVE.
 - **The selected site's explanation:** with its FVE, the head's FVE over the whole chat, and its top attended tokens.
   Attention is shown for the reader only; neither model sees it.
-- **Default site per chat:** a head that reads one clear token.
-  - Lighthouse: H7 at "was" (reads "handwriting", 95%).
-  - IPv4: H0 at ")\n" (reads "num", 83%).
+- **Default site per chat:** a head that reads one clear token, in the first lines of the reply, so it is visible on
+  load at both 340 px and LessWrong's 690 px.
+  - Lighthouse: H7 at "wounded" (reads "wind", 35%, after the first token at 38%).
+  - IPv4: H5 at "```" (reads "Python" in the question, 55%).
   - Train: H5 at "train" (reads "catch", 48%).
-  - Ada: H26 at "," (reads "abbage", 54%).
+  - Ada: H13 at "the" (reads "ace" of Lovelace in the question, 35%).
 
 ## Inputs (all public)
 

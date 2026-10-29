@@ -8,8 +8,8 @@ set -euo pipefail
 out=${1:?usage: $0 <out dir>}
 cd "$(dirname "$0")/.."
 python scripts/heads_lw_widget_html.py \
-  --doc hf:l24/chat_viewer/01_ipv4_code        --label "IPv4 checker (code)"    --start 0:115 \
-  --doc hf:l24/chat_viewer/02_lighthouse_story --label "Lighthouse story"       --start 7:200 \
+  --doc hf:l24/chat_viewer/01_ipv4_code        --label "IPv4 checker (code)"    --start 5:65 \
+  --doc hf:l24/chat_viewer/02_lighthouse_story --label "Lighthouse story"       --start 7:70 \
   --doc hf:l24/chat_viewer/03_train_problem    --label "Train problem (maths)"  --start 5:92 \
-  --doc hf:l24/chat_viewer/04_ada_lovelace     --label "Ada Lovelace (2 turns)" --start 26:73 \
+  --doc hf:l24/chat_viewer/04_ada_lovelace     --label "Ada Lovelace (2 turns)" --start 13:49 \
   --default 02_lighthouse_story --out-dir "$out"
