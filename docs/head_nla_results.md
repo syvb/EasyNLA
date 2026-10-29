@@ -377,7 +377,14 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
 ### Reconstruction quality and marginal FVE
 
 `scripts/heads_mtry_quality_plots.py` draws six figures from the public per-row files (CPU only). Their numbers
-are in `docs/head_nla_l24_mtry_quality.json`, and the pooled FVE matches the report above.
+are in `docs/head_nla_l24_mtry_quality.json`, and the pooled FVE matches the report above. A seventh is the
+matryoshka curve alone.
+
+![Matryoshka FVE from the first n tokens](head_nla_l24_mtry_fve_by_token.png)
+
+`head_nla_l24_mtry_fve_by_token.png`: the matryoshka pair's FVE when the AR reads the first n explanation tokens, pooled
+over the 2,000 held-out writes. The band is a 95% bootstrap over writes. It is −27% at 1 token, −2% at 4, +16% at 16,
++29% at 120 and +30% for whole explanations. The figures carry no descriptions; captions live here.
 
 ![Marginal FVE at each truncation point](head_nla_l24_mtry_marginal_fve.png)
 
@@ -701,6 +708,7 @@ These are reasoned, not measured: no run trained without centering. For most hea
 - **Matryoshka:** `docs/head_nla_l24_matryoshka_plan.md`, `docs/head_nla_l24_mtry_fve_by_prefix.png`,
   `docs/head_nla_l24_mtry_examples.md`.
   - Quality figures by `scripts/heads_mtry_quality_plots.py` (numbers in `head_nla_l24_mtry_quality.json`):
+    - `head_nla_l24_mtry_fve_by_token.png`;
     - `head_nla_l24_mtry_marginal_fve.png`;
     - `head_nla_l24_mtry_quality_by_prefix.png`;
     - `head_nla_l24_fve_distribution_std_vs_mtry.png`;

@@ -69,9 +69,8 @@ def style(ax, ygrid: bool = True) -> None:
     ax.tick_params(colors=INK2, labelsize=8.5, length=0)
 
 
-def heading(fig, title: str, sub: str, y0: float = 0.975) -> None:
+def heading(fig, title: str, y0: float = 0.975) -> None:
     fig.text(0.012, y0, title, fontsize=13, color=INK, fontweight="bold", va="top")
-    fig.text(0.012, y0 - 0.045 * (6.0 / fig.get_figheight()), sub, fontsize=8.8, color=INK2, va="top", linespacing=1.45)
 
 
 def fig_legend(fig, handles, y: float, ncol: int) -> None:
@@ -82,11 +81,6 @@ def fig_legend(fig, handles, y: float, ncol: int) -> None:
 def line_handle(col, ls, lab, marker="o"):
     from matplotlib.lines import Line2D
     return Line2D([], [], color=col, ls=ls, lw=2, marker=marker, ms=5.5, mec=SURF, label=lab)
-
-
-EMPTY_NOTE = ("“empty” = the AR reads only “Attention head L24Hh:”. It never trained on empty text and scores about "
-              "−100%,\nbelow the −89% of the best head-only guess (the head's mean direction), so about 11 points of the "
-              "first step only bring it up to that guess.")
 
 
 def pcty(ax) -> None:
@@ -151,7 +145,7 @@ def main() -> None:
     x = np.arange(len(LS))
 
     # ---- 1. marginal FVE at each truncation step ----
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 6.1), dpi=160)
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 5.2), dpi=160)
     fig.patch.set_facecolor(SURF)
     xs = np.arange(len(STEPS))
     for k, lab, col, ls, _ in LINES:
@@ -184,17 +178,13 @@ def main() -> None:
         ax.set_xlabel("explanation tokens the AR reads: from → to", color=INK2, fontsize=8.8)
     a1.legend(loc="upper right", frameon=False, fontsize=8.3, labelcolor=INK)
     a2.legend(loc="upper right", frameon=False, fontsize=8.3, labelcolor=INK)
-    heading(fig, "Marginal FVE at each truncation point: matryoshka puts the information first",
-            f"{N:,} held-out writes, one T=1 explanation each; the AR reads the first L tokens. FVE pooled over writes; "
-            "bars = 95% bootstrap over writes.\nThe last step averages "
-            f"{R[LINES[0][1]]['step_tokens'][-1]:.0f} extra tokens (matryoshka) and {R[LINES[1][1]]['step_tokens'][-1]:.0f} "
-            "(std); explanations shorter than 120 tokens add nothing there.\n" + EMPTY_NOTE)
-    fig.tight_layout(rect=(0, 0, 1, 0.8), w_pad=2.5)
+    heading(fig, "Marginal FVE at each truncation point")
+    fig.tight_layout(rect=(0, 0, 1, 0.93), w_pad=2.5)
     fig.savefig(out / "head_nla_l24_mtry_marginal_fve.png", facecolor=SURF)
     plt.close(fig)
 
     # ---- 2. per-write quality by prefix length ----
-    fig, axs = plt.subplots(1, 3, figsize=(12, 5.6), dpi=160)
+    fig, axs = plt.subplots(1, 3, figsize=(12, 4.9), dpi=160)
     fig.patch.set_facecolor(SURF)
     for k, lab, col, ls, _ in LINES:
         r = R[lab]
@@ -206,34 +196,25 @@ def main() -> None:
         axs[1].plot(x, y, color=col, ls=ls, lw=2, marker="o", ms=5, mec=SURF, mew=1.2)
         y = 100 * np.array(r["share_of_gain"])
         axs[2].plot(x, y, color=col, ls=ls, lw=2, marker="o", ms=5, mec=SURF, mew=1.2)
-    axs[0].set_title("Cosine with the true write, per write", loc="left", fontsize=10, color=INK, fontweight="bold")
-    axs[0].set_ylabel("median (band: middle 50% of writes)", color=INK2, fontsize=8.8)
-    axs[1].set_title("Writes reconstructed better than\nthe head's mean write (FVE > 0)", loc="left", fontsize=10,
+    axs[0].set_title("Cosine per write (median, IQR)", loc="left", fontsize=10, color=INK, fontweight="bold")
+    axs[1].set_title("Writes with FVE > 0", loc="left", fontsize=10,
                      color=INK, fontweight="bold")
     axs[1].set_ylim(0, 100)
     axs[1].yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{y:.0f}%"))
-    axs[2].set_title("Share of the empty → whole FVE gain\nreached by the first L tokens", loc="left", fontsize=10,
+    axs[2].set_title("Share of the empty → whole gain", loc="left", fontsize=10,
                      color=INK, fontweight="bold")
     axs[2].set_ylim(0, 105)
     axs[2].yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{y:.0f}%"))
     m, b = R[LINES[0][1]], R[LINES[1][1]]
     i16 = LS.index("16")
-    axs[2].text(0.98, 0.04, f"Matryoshka: {100 * m['share_of_gain'][1]:.0f}% at token 1,\n"
-                f"fair baseline {100 * b['share_of_gain'][1]:.0f}%", transform=axs[2].transAxes, fontsize=8.3,
-                color=INK, ha="right", va="bottom")
-    axs[1].text(0.98, 0.04, f"At 16 tokens:\nmatryoshka {100 * m['rows_beating_mean'][i16]:.0f}%,\n"
-                f"fair baseline {100 * b['rows_beating_mean'][i16]:.0f}%", transform=axs[1].transAxes, fontsize=8.3,
-                color=INK, ha="right", va="bottom")
     for ax in axs:
         style(ax)
         ax.set_xticks(x)
         ax.set_xticklabels(LLAB, fontsize=8)
         ax.set_xlabel("explanation tokens the AR reads", color=INK2, fontsize=8.8)
-    heading(fig, "How reconstruction builds up as the AR reads more of the explanation",
-            f"{N:,} held-out writes (all 32 heads). Middle: bands = 95% bootstrap over writes. Right: (FVE(L) − FVE(empty)) / "
-            "(FVE(whole) − FVE(empty)), pooled FVE.\n" + EMPTY_NOTE)
-    fig_legend(fig, [line_handle(col, ls, lab) for _, lab, col, ls, _ in LINES], 0.845, 3)
-    fig.tight_layout(rect=(0, 0, 1, 0.8), w_pad=2.2)
+    heading(fig, "Reconstruction by prefix length")
+    fig_legend(fig, [line_handle(col, ls, lab) for _, lab, col, ls, _ in LINES], 0.925, 3)
+    fig.tight_layout(rect=(0, 0, 1, 0.87), w_pad=2.2)
     fig.savefig(out / "head_nla_l24_mtry_quality_by_prefix.png", facecolor=SURF)
     plt.close(fig)
 
@@ -241,7 +222,7 @@ def main() -> None:
     bfull = cm["base"].astype(np.float64)
     dist = [("Std pair (step 400)", cs["av__true"], STD_C, "-"), ("Matryoshka pair (step 640)", cm["av__true"], MTRY_C, "-"),
             ("Shuffled control (matryoshka)", cm["av__shuf"], SHUF_C, (0, (4, 3)))]
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 5.0), dpi=160)
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.6), dpi=160)
     fig.patch.set_facecolor(SURF)
     res["whole"] = {"n_rows": int(len(bfull))}
     for lab, e, col, ls in dist:
@@ -260,21 +241,18 @@ def main() -> None:
             v = res["whole"][lab][key] * (100 if key == "fve_pooled" else 1)
             ax.axvline(v, color=col, lw=1, ls=(0, (1, 2)))
     a1.set_title("Cosine with the true write", loc="left", fontsize=10.5, color=INK, fontweight="bold")
-    a1.set_xlabel("cosine (dotted: mean)", color=INK2, fontsize=8.8)
+    a1.set_xlabel("cosine", color=INK2, fontsize=8.8)
     a2.set_title("Per-write FVE", loc="left", fontsize=10.5, color=INK, fontweight="bold")
-    a2.set_xlabel("FVE vs the head's mean write (dotted: pooled FVE)", color=INK2, fontsize=8.8)
+    a2.set_xlabel("FVE", color=INK2, fontsize=8.8)
     a2.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{y:+.0f}%".replace("-", "−") if y else "0%"))
     W = res["whole"]
-    a2.text(0.02, 0.97, "Below −150%, not shown: " + ", ".join(
-        f"{lab.split(' (')[0].lower()} {100 * W[lab]['rows_fve_below_-150']:.1f}%" for lab, *_ in dist),
-        transform=a2.transAxes, fontsize=8, color=INK2, va="top")
-    heading(fig, "Whole explanations: how well each write is reconstructed",
-            f"All {len(bfull):,} held-out writes, one T=1 explanation each, read by its own AR. Mean cosine "
-            f"{W[dist[0][0]]['cos_mean']:.2f} (std) and {W[dist[1][0]]['cos_mean']:.2f} (matryoshka); pooled FVE "
-            f"{pct(W[dist[0][0]]['fve_pooled'])} and {pct(W[dist[1][0]]['fve_pooled'])}.\nShuffled control: the matryoshka "
-            "AV describes a different write of the same head, scored against this one.")
-    fig_legend(fig, [line_handle(col, ls, lab, marker=None) for lab, _, col, ls in dist], 0.85, 3)
-    fig.tight_layout(rect=(0, 0, 1, 0.8), w_pad=2.5)
+    off = [(lab, W[lab]["rows_fve_below_-150"]) for lab, *_ in dist if W[lab]["rows_fve_below_-150"] >= 0.0005]
+    if off:
+        a2.text(0.02, 0.97, "Below −150%: " + ", ".join(f"{lab.split(' (')[0].lower()} {100 * v:.1f}%" for lab, v in off),
+                transform=a2.transAxes, fontsize=8, color=INK2, va="top")
+    heading(fig, "Whole explanations: per-write reconstruction")
+    fig_legend(fig, [line_handle(col, ls, lab, marker=None) for lab, _, col, ls in dist], 0.925, 3)
+    fig.tight_layout(rect=(0, 0, 1, 0.87), w_pad=2.5)
     fig.savefig(out / "head_nla_l24_fve_distribution_std_vs_mtry.png", facecolor=SURF)
     plt.close(fig)
 
@@ -300,12 +278,12 @@ def main() -> None:
     res["per_head"]["rows_first16"] = np.bincount(heads, minlength=H).tolist()
     order = np.argsort(ph["whole: matryoshka pair (step 640)"][0])               # bottom → top = worst → best
     ypos = {h: i for i, h in enumerate(order)}
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 8.6), dpi=160, sharey=True)
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 8.2), dpi=160, sharey=True)
     fig.patch.set_facecolor(SURF)
     panels = [(a1, "Whole explanation", ["whole: std pair (step 400)", "whole: matryoshka pair (step 640)"],
                ["Std pair (step 400)", "Matryoshka pair (step 640)"]),
               (a2, "First 16 explanation tokens", ["first 16: fair baseline (std AV + warm-up AR)", "first 16: matryoshka"],
-               ["Std AV + warm-up AR", "Matryoshka (step 640)"])]
+               ["Std AV + warm-up AR (fair baseline)", "Matryoshka (step 640)"])]
     for ax, title, keys, labs in panels:
         (f0, c0), (f1, c1) = ph[keys[0]], ph[keys[1]]
         for h in range(H):
@@ -320,7 +298,7 @@ def main() -> None:
         ax.grid(axis="x", color=GRID, lw=0.8)
         ax.set_title(title, loc="left", fontsize=10.5, color=INK, fontweight="bold")
         ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{y:+.0f}%".replace("-", "−") if y else "0%"))
-        ax.set_xlabel("FVE vs the head's mean write (95% bootstrap CI)", color=INK2, fontsize=8.8)
+        ax.set_xlabel("FVE (95% CI)", color=INK2, fontsize=8.8)
         ax.legend(loc="lower right", frameon=False, fontsize=8.3, labelcolor=INK)
     lo = min(100 * min(v[1][:, 0].min() for v in ph.values()), -60)
     hi = 100 * max(v[1][:, 1].max() for v in ph.values())
@@ -329,13 +307,8 @@ def main() -> None:
     a1.set_yticks(range(H))
     a1.set_yticklabels([f"H{h}  (KV{h // 4})" for h in order], fontsize=8)
     a1.set_ylim(-0.7, H - 0.3)
-    nw, n16 = np.bincount(hfull).mean(), np.bincount(heads).mean()
-    heading(fig, "FVE per attention head, standard and matryoshka NLA",
-            f"Held-out writes: about {nw:.0f} per head for whole explanations (all {len(bfull):,}), about {n16:.0f} per "
-            f"head for the first 16 tokens (prefix sweep, {N:,}).\nHeads sorted by the matryoshka pair's whole-explanation "
-            "FVE. Left: each pair's own AR. Right: the std AV's text read by the warm-up AR (trained on prefixes),\nthe "
-            "fair comparison.", y0=0.985)
-    fig.tight_layout(rect=(0, 0, 1, 0.905), w_pad=1.5)
+    heading(fig, "FVE per head: standard vs matryoshka", y0=0.985)
+    fig.tight_layout(rect=(0, 0, 1, 0.955), w_pad=1.5)
     fig.savefig(out / "head_nla_l24_fve_per_head_std_vs_mtry.png", facecolor=SURF)
     plt.close(fig)
 
@@ -347,7 +320,7 @@ def main() -> None:
           "Fair baseline: std AV + warm-up AR": head_by_L(E["rl400|mtry_w"])}
     res["per_head_by_prefix"] = {k: v.tolist() for k, v in HM.items()}
     norm = TwoSlopeNorm(vmin=-100, vcenter=0, vmax=100)
-    fig, axs = plt.subplots(1, 2, figsize=(11, 8.6), dpi=160, sharey=True)
+    fig, axs = plt.subplots(1, 2, figsize=(11, 8.2), dpi=160, sharey=True)
     fig.patch.set_facecolor(SURF)
     for ax, (lab, M) in zip(axs, HM.items()):
         im = ax.imshow(np.clip(100 * M[order], -100, 100), cmap=DIV, norm=norm, aspect="auto", origin="lower",
@@ -365,14 +338,11 @@ def main() -> None:
     axs[0].set_yticks(range(H))
     axs[0].set_yticklabels([f"H{h}" for h in order], fontsize=8)
     cb = fig.colorbar(im, cax=fig.add_axes((0.925, 0.25, 0.015, 0.5)))
-    cb.set_label("FVE (%), clipped at ±100", color=INK2, fontsize=8.5)
+    cb.set_label("FVE (%)", color=INK2, fontsize=8.5)
     cb.ax.tick_params(colors=INK2, labelsize=8, length=0)
     cb.outline.set_visible(False)
-    heading(fig, "FVE per head at every prefix length",
-            f"Prefix sweep: {N:,} held-out writes, about {n16:.0f} per head. Cells: pooled FVE (%) of that head's writes "
-            "when the AR reads the first L tokens.\nHeads in the per-head figure's order (the matryoshka pair's "
-            "whole-explanation FVE, best at the top).", y0=0.985)
-    fig.subplots_adjust(left=0.06, right=0.9, top=0.88, bottom=0.07, wspace=0.06)
+    heading(fig, "FVE per head by prefix length", y0=0.985)
+    fig.subplots_adjust(left=0.06, right=0.9, top=0.915, bottom=0.07, wspace=0.06)
     fig.savefig(out / "head_nla_l24_mtry_prefix_by_head.png", facecolor=SURF)
     plt.close(fig)
 
@@ -380,7 +350,7 @@ def main() -> None:
     M = HM["Matryoshka (step-640 AV + AR)"]
     G = 100 * (M[:, 1:] - M[:, :-1])                                            # [H, steps]
     res["per_head_step_gain_mtry"] = G.tolist()
-    fig, ax = plt.subplots(figsize=(9.2, 9.4), dpi=160)
+    fig, ax = plt.subplots(figsize=(9.2, 8.8), dpi=160)
     fig.patch.set_facecolor(SURF)
     seq = LinearSegmentedColormap.from_list("gain", ["#f4f3f0", "#86b6ef", "#2a78d6", "#104281"])
     gn = PowerNorm(gamma=0.5, vmin=0, vmax=100)
@@ -388,9 +358,6 @@ def main() -> None:
     for (yy, xx), v in np.ndenumerate(G[order]):
         ax.text(xx, yy, f"{v:+.0f}".replace("-", "−") if abs(v) >= 0.5 else "0", ha="center", va="center",
                 fontsize=6.3, color="#fcfcfb" if v > 30 else INK)
-    tot = M[:, -1] - M[:, 0]
-    first_share = G[:, 0] / (100 * tot)
-    late = G[:, LS.index("32"):]                                               # steps from 32 on
     ax.set_xticks(range(len(STEPS)))
     ax.set_xticklabels(STEPS, rotation=40, ha="right", fontsize=8)
     ax.set_yticks(range(H))
@@ -400,21 +367,49 @@ def main() -> None:
     for sp in ax.spines.values():
         sp.set_visible(False)
     cb = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
-    cb.set_label("FVE points gained in the step (square-root scale)", color=INK2, fontsize=8.5)
+    cb.set_label("FVE points gained", color=INK2, fontsize=8.5)
     cb.ax.tick_params(colors=INK2, labelsize=8, length=0)
     cb.outline.set_visible(False)
-    heading(fig, "Matryoshka: FVE gained at each truncation step, per head",
-            f"About {n16:.0f} held-out writes per head, so single steps are noisy (a few points). Heads in the per-head "
-            f"figure's order.\nThe first step is more than half of the empty → whole gain for {(first_share > 0.5).sum()} of "
-            f"{H} heads (see the note on “empty”\nin the marginal figure). From 32 tokens on, no step adds more than "
-            f"{late.max():.0f} points for any head (median {np.median(late):.0f}).\nColour: square-root scale; "
-            f"{(G < 0).sum()} negative cell(s) shown as 0.", y0=0.985)
-    fig.subplots_adjust(left=0.09, right=0.93, top=0.85, bottom=0.1)
+    heading(fig, "Matryoshka: FVE gained per truncation step, by head", y0=0.985)
+    fig.subplots_adjust(left=0.09, right=0.93, top=0.935, bottom=0.1)
     fig.savefig(out / "head_nla_l24_mtry_marginal_by_head.png", facecolor=SURF)
     plt.close(fig)
 
+    # ---- 7. matryoshka: FVE from the first n tokens ----
+    r = R[LINES[0][1]]
+    num = LS[1:-1]                                                             # 1 … 120
+    xs = [int(L) for L in num]
+    xw = 240                                                                   # "whole", set apart on the log axis
+    y = 100 * np.array(r["fve"][1:-1])
+    lo, hi = (100 * np.array([c[i] for c in r["fve_ci"][1:-1]]) for i in (0, 1))
+    fw, (wl, wh) = 100 * r["fve"][-1], (100 * v for v in r["fve_ci"][-1])
+    fig, ax = plt.subplots(figsize=(7.5, 4.3), dpi=160)
+    fig.patch.set_facecolor(SURF)
+    style(ax)
+    ax.axhline(0, color=INK2, lw=1, zorder=1)
+    ax.axvline(170, color=GRID, lw=1, zorder=1)
+    ax.fill_between(xs, lo, hi, color=MTRY_C, alpha=0.15, lw=0)
+    ax.plot(xs, y, color=MTRY_C, lw=2, marker="o", ms=6, mec=SURF, mew=1.2, zorder=3)
+    ax.errorbar([xw], [fw], yerr=[[fw - wl], [wh - fw]], fmt="o", color=MTRY_C, ms=6, mec=SURF, mew=1.2,
+                elinewidth=1.5, capsize=0, zorder=3)
+    for xv, yv in ((1, y[0]), (16, y[num.index("16")]), (xw, fw)):
+        ax.annotate(pct(yv / 100), (xv, yv), xytext=(0, 9), textcoords="offset points", ha="center", va="bottom",
+                    fontsize=9, color=INK)
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(xs + [xw])
+    ax.set_xticklabels([str(v) for v in xs] + ["whole"])
+    ax.minorticks_off()
+    ax.set_xlim(0.75, xw * 1.35)
+    pcty(ax)
+    ax.set_xlabel("explanation tokens read (n)", color=INK2, fontsize=9)
+    ax.set_ylabel("FVE", color=INK2, fontsize=9)
+    ax.set_title("Matryoshka NLA: FVE from the first n tokens", loc="left", fontsize=12, color=INK, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(out / "head_nla_l24_mtry_fve_by_token.png", facecolor=SURF)
+    plt.close(fig)
+
     (out / "head_nla_l24_mtry_quality.json").write_text(json.dumps(res, indent=1) + "\n")
-    print(f"wrote 6 figures and head_nla_l24_mtry_quality.json to {out}")
+    print(f"wrote 7 figures and head_nla_l24_mtry_quality.json to {out}")
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ def main() -> None:
         ("uniform", "uniform_given_in_context", "k random positions", "#8f8e89", None, (0, (4, 3))),
     ]
     rows = [("All quotes", 0), ("Quotes that appear in the text", 1)]
-    fig, axes = plt.subplots(2, 3, figsize=(11, 7.0), dpi=160, sharex=True, sharey="row")
+    fig, axes = plt.subplots(2, 3, figsize=(11, 6.4), dpi=160, sharex=True, sharey="row")
     fig.patch.set_facecolor(surf)
     for (row_title, ri), axr in zip(rows, axes):
         for (src, title), ax in zip(SRCS, axr):
@@ -76,22 +76,11 @@ def main() -> None:
     axes[0, 0].set_yticks([0, 5, 10, 15])
     fig.legend(handles=[Line2D([], [], color=c, marker=m, ms=6.5, mec=surf, lw=2 if k != "uniform" else 1.4, ls=ls,
                                label=lab) for k, _, lab, c, m, ls in series],
-               loc="upper left", bbox_to_anchor=(0.006, 0.895), ncol=4, frameon=False, fontsize=8.5, labelcolor=ink,
+               loc="upper left", bbox_to_anchor=(0.006, 0.955), ncol=4, frameon=False, fontsize=8.5, labelcolor=ink,
                handlelength=2.6, columnspacing=1.6)
-    rule = ("the quote is exactly 1–4 consecutive tokens of the text" if a.rule == "strict"
-            else "a word of the quote matches a token, or a ≥4-character substring either way")
-    fig.text(0.012, 0.985, "Quoted terms in head explanations name the tokens that head attends to",
-             fontsize=13, color=ink, fontweight="bold", va="top")
-    fig.text(0.012, 0.948, "Qwen3-8B layer 24, every token × head of 8 texts (4 web documents, 4 chats). "
-             f"Matching: {rule}.\nA shuffled explanation is another token's explanation from the same head and text "
-             f"({J['shuffles']} re-pairings).", fontsize=8.8, color=ink2, va="top", linespacing=1.4)
-    ci = [R[src]["k"]["10"]["diff_ci95"] for src, _ in SRCS]
-    fig.text(0.012, 0.012, "Top-10 minus shuffled, 95% CI over the 256 text × head groups: "
-             + " · ".join(f"{n} {100 * lo:+.1f} to {100 * hi:+.1f} points" for n, (lo, hi)
-                          in zip(("standard RL", "matryoshka", "first 16 tokens"), ci))
-             + ".\nThe difference is positive in all 8 texts for every source.", fontsize=8.2, color=ink2,
-             va="bottom", linespacing=1.4)
-    fig.tight_layout(rect=(0, 0.045, 1, 0.845), h_pad=1.6, w_pad=1.2)
+    fig.text(0.012, 0.985, "Quoted terms name the head's top-k attended tokens", fontsize=13, color=ink,
+             fontweight="bold", va="top")
+    fig.tight_layout(rect=(0, 0, 1, 0.9), h_pad=1.6, w_pad=1.2)
     fig.savefig(a.out, facecolor=surf)
     print(f"wrote {a.out}")
 
