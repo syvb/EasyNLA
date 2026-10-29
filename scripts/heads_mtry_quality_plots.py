@@ -324,9 +324,9 @@ def main() -> None:
     # whole explanations only
     fig, ax = plt.subplots(figsize=(6.4, 8.2), dpi=160)
     fig.patch.set_facecolor(SURF)
-    dumbbell(ax, "", *WHOLE)
+    dumbbell(ax, "", WHOLE[0], ["Std pair", "Matryoshka pair"])
     ax.set_xlim(*xlim(WHOLE[0]))
-    heading(fig, "FVE per head: standard vs matryoshka", y0=0.985)
+    heading(fig, "FVE per head: standard and matryoshka", y0=0.985)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(out / "head_nla_l24_fve_per_head_whole_std_vs_mtry.png", facecolor=SURF)
     plt.close(fig)
