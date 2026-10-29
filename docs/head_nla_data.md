@@ -205,6 +205,7 @@ A per-request reminder, label-style notes and a third readout did not help.
 - **But the explanations break the rules:** 93% quote tokens at T=1 (often tokens the head attended
   to, or the current token), plus stray markup and invented strings. A copy/quote penalty or a frozen
   reader is needed before using RL here.
+- Every training parameter of the final std and matryoshka runs, for replication: `docs/head_nla_l24_training_recipe.md`.
 - Details, curves, incidents: `docs/head_nla_l24_std_plan.md`. The earlier raw-magnitude RL run
   (`docs/head_nla_l24_rl_plan.md`) was stopped at step 44.
 - Artifacts: models `syvb/head-nla-qwen3-8b-l24-std-{av,ar,rl-ckpts}`; dataset `l24/rl_data/`,
