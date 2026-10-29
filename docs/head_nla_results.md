@@ -182,8 +182,9 @@ and see how much of its gain over no text the RL AR still recovers:
   - TF-IDF classifier on RL text: 55% (chance 25%).
 - **Should a GQA group be treated as one head? No.** Same-group writes share subspace 5× more than heads
   from different groups (top-16 overlap 0.098 vs 0.013), but at the same token their signed cosine
-  averages −0.03. The KV group explains 67% of per-head FVE variance, so it is useful for analysis but not
-  as the unit to train on.
+  averages −0.03. The KV group explains 42% (matryoshka) and 44% (std) of the final models' per-head FVE variance on
+  the held-out eval rows; it was 67% for the first RL run. So it is useful for analysis but not as the unit to train
+  on. See `head_nla_l24_fve_per_head_whole_by_kv.png`.
 
 ## 6. Do quoted terms name what the head reads?
 
