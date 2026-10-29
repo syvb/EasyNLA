@@ -383,8 +383,9 @@ matryoshka curve alone.
 ![Matryoshka FVE from the first n tokens](head_nla_l24_mtry_fve_by_token.png)
 
 `head_nla_l24_mtry_fve_by_token.png`: the matryoshka pair's FVE when the AR reads the first n explanation tokens, pooled
-over the 2,000 held-out writes. The band is a 95% bootstrap over writes. It is −27% at 1 token, −2% at 4, +16% at 16,
-+29% at 120 and +30% for whole explanations. The figures carry no descriptions; captions live here.
+over the 2,000 held-out writes. The band is a 95% bootstrap over writes. It is −27% at 1 token, −2% at 4, +16% at 16
+and +29% at 120. It stops at 120 tokens, the longest prefix matryoshka trained on. The figures carry no descriptions;
+captions live here.
 
 ![Marginal FVE at each truncation point](head_nla_l24_mtry_marginal_fve.png)
 

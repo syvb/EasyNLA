@@ -375,31 +375,26 @@ def main() -> None:
     fig.savefig(out / "head_nla_l24_mtry_marginal_by_head.png", facecolor=SURF)
     plt.close(fig)
 
-    # ---- 7. matryoshka: FVE from the first n tokens ----
+    # ---- 7. matryoshka: FVE from the first n tokens (1 … 120, the range it was trained on) ----
     r = R[LINES[0][1]]
-    num = LS[1:-1]                                                             # 1 … 120
+    num = LS[1:-1]
     xs = [int(L) for L in num]
-    xw = 240                                                                   # "whole", set apart on the log axis
     y = 100 * np.array(r["fve"][1:-1])
     lo, hi = (100 * np.array([c[i] for c in r["fve_ci"][1:-1]]) for i in (0, 1))
-    fw, (wl, wh) = 100 * r["fve"][-1], (100 * v for v in r["fve_ci"][-1])
     fig, ax = plt.subplots(figsize=(7.5, 4.3), dpi=160)
     fig.patch.set_facecolor(SURF)
     style(ax)
     ax.axhline(0, color=INK2, lw=1, zorder=1)
-    ax.axvline(170, color=GRID, lw=1, zorder=1)
     ax.fill_between(xs, lo, hi, color=MTRY_C, alpha=0.15, lw=0)
     ax.plot(xs, y, color=MTRY_C, lw=2, marker="o", ms=6, mec=SURF, mew=1.2, zorder=3)
-    ax.errorbar([xw], [fw], yerr=[[fw - wl], [wh - fw]], fmt="o", color=MTRY_C, ms=6, mec=SURF, mew=1.2,
-                elinewidth=1.5, capsize=0, zorder=3)
-    for xv, yv in ((1, y[0]), (16, y[num.index("16")]), (xw, fw)):
+    for xv, yv in ((1, y[0]), (16, y[num.index("16")]), (120, y[-1])):
         ax.annotate(pct(yv / 100), (xv, yv), xytext=(0, 9), textcoords="offset points", ha="center", va="bottom",
                     fontsize=9, color=INK)
     ax.set_xscale("log", base=2)
-    ax.set_xticks(xs + [xw])
-    ax.set_xticklabels([str(v) for v in xs] + ["whole"])
+    ax.set_xticks(xs)
+    ax.set_xticklabels([str(v) for v in xs])
     ax.minorticks_off()
-    ax.set_xlim(0.75, xw * 1.35)
+    ax.set_xlim(0.75, 160)
     pcty(ax)
     ax.set_xlabel("explanation tokens read (n)", color=INK2, fontsize=9)
     ax.set_ylabel("FVE", color=INK2, fontsize=9)
