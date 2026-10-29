@@ -19,11 +19,49 @@ from matplotlib.lines import Line2D  # noqa: E402
 SRCS = [("std RL", "Standard RL (step 400)"), ("matryoshka", "Matryoshka (step 640)"), ("matryoshka, first 16 tokens", "Matryoshka, first 16 tokens")]
 
 
+def single(a, r: dict, title: str, ks: list[int], series: list, colours: tuple) -> None:
+    """One source, quotes that appear in the text only."""
+    surf, ink, ink2, grid = colours
+    fig, ax = plt.subplots(figsize=(6.8, 4.6), dpi=160)
+    fig.patch.set_facecolor(surf)
+    ax.set_facecolor(surf)
+    for key, ckey, lab, col, mk, ls in series[::-1]:
+        y = [100 * r["k"][str(k)][ckey] for k in ks]
+        ax.plot(ks, y, color=col, lw=2 if key != "uniform" else 1.4, ls=ls, marker=mk, ms=6.5, mec=surf, mew=1.2,
+                zorder=3 if key == "true" else 2, solid_capstyle="round", label=lab)
+    for key, ckey, _, col, *_ in series[:3]:                                    # value labels at k = 10
+        v = 100 * r["k"]["10"][ckey]
+        ax.annotate(f"{v:.0f}%", (10, v), xytext=(0, 8 if key != "shuffled" else -9), textcoords="offset points",
+                    ha="center", va="bottom" if key != "shuffled" else "top", fontsize=9,
+                    color=ink if key == "true" else ink2, fontweight="bold" if key == "true" else "normal")
+    ax.grid(axis="y", color=grid, lw=.8)
+    ax.set_axisbelow(True)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    for sp in ("left", "bottom"):
+        ax.spines[sp].set_color(grid)
+    ax.tick_params(colors=ink2, labelsize=8.5, length=0)
+    ax.set_xticks(ks)
+    ax.set_xlim(0, 21.5)
+    ax.set_ylim(0, 100)
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{y:.0f}%"))
+    ax.set_xlabel("k (the head's most-attended tokens, sink excluded)", fontsize=8.8, color=ink2)
+    ax.set_ylabel("quotes naming a top-k token", fontsize=8.8, color=ink2)
+    h, lab = ax.get_legend_handles_labels()
+    ax.legend(h[::-1], lab[::-1], loc="upper left", frameon=False, fontsize=8.2, labelcolor=ink)
+    ax.set_title(f"{title}: quotes that appear in the text", loc="left", fontsize=11.5, color=ink, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(a.out, facecolor=surf)
+    print(f"wrote {a.out}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--json", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--rule", default="strict", choices=["strict", "loose"])
+    p.add_argument("--single", default=None, choices=[k for k, _ in SRCS],
+                   help="draw only this source's in-text panel (quotes that appear in the text)")
     a = p.parse_args()
     J = json.load(open(a.json))
     R = J["rules"][a.rule]
@@ -36,6 +74,10 @@ def main() -> None:
         ("shuffled", "shuffled_given_in_context", "Shuffled explanation (same head, same text)", "#1baf7a", "^", "-"),
         ("uniform", "uniform_given_in_context", "k random positions", "#8f8e89", None, (0, (4, 3))),
     ]
+    if a.single:
+        single(a, R[a.single], dict(SRCS)[a.single].split(" (")[0].replace("Standard RL", "Standard NLA"), ks, series,
+               (surf, ink, ink2, grid))
+        return
     rows = [("All quotes", 0), ("Quotes that appear in the text", 1)]
     fig, axes = plt.subplots(2, 3, figsize=(11, 6.4), dpi=160, sharex=True, sharey="row")
     fig.patch.set_facecolor(surf)

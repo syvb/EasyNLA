@@ -1,0 +1,44 @@
+{
+ "texts": [
+  "01_journalism_ocoee_homicide",
+  "02_cs_programming_languages",
+  "03_medical_depression",
+  "04_law_gainsborough_fraud",
+  "01_ipv4_code",
+  "02_lighthouse_story",
+  "03_train_problem",
+  "04_ada_lovelace"
+ ],
+ "src": "rl_text",
+ "matching": "strict",
+ "shuffles": 10,
+ "stats": {
+  "this head, actual quotes": {
+   "n": 26103,
+   "median": 1.2434749562646548,
+   "mean": 19.84477917419983,
+   "q25": 0.14889030589748492,
+   "q75": 12.428977789326606,
+   "share_above_10x": 0.272152626134927,
+   "share_above_1x": 0.5246140290388078
+  },
+  "other 31 heads, same quotes": {
+   "n": 809193,
+   "median": 0.5998038223337084,
+   "mean": 4.172025355481704,
+   "q25": 0.12035155500502748,
+   "q75": 2.598877511315211,
+   "share_above_10x": 0.09114265694339917,
+   "share_above_1x": 0.4094696815222079
+  },
+  "this head, shuffled quotes": {
+   "n": 229896,
+   "median": 0.22046424076875581,
+   "mean": 1.3302253564604594,
+   "q25": 0.05033585129142508,
+   "q75": 0.8428245788614206,
+   "share_above_10x": 0.023597626752966557,
+   "share_above_1x": 0.22234836621776805
+  }
+ }
+}

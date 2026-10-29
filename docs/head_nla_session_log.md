@@ -477,6 +477,7 @@ The user asked for a viewer like the doc viewer, but for chats. They chose Qwen3
 - **The script was checked** against brute force (ranks, non-self ranks) and Monte Carlo (uniform chance). On one
   text, loose top-5, it reproduces §6's figures (8.1% vs 4.8% other heads).
 - **Figure:** `docs/head_nla_quote_topk_shuffle.png` (`scripts/heads_quote_topk_plot.py`).
+- **Attention lift on quoted tokens** (standard NLA): `scripts/heads_quote_attention_lift.py`, results doc §6.
 
 ### 16. Reconstruction-quality figures (10-29)
 

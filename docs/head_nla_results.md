@@ -272,6 +272,30 @@ Top-20 is 11% vs 4.9%, 20% vs 6.2% and 35% vs 8.9%.
   within 2 points. H3, H4, H11 and H21 are among them in every variant, as in §6.
 - **Gold and SFT** quote in 0.1% of explanations (144 and 98 quotes), too few to test.
 
+### How much more the head attends to quoted tokens (standard NLA)
+
+![Attention on quoted tokens](head_nla_quote_attention_lift_rl.png)
+
+`scripts/heads_quote_attention_lift.py` → `docs/head_nla_quote_attention_lift_rl.{json,png}`.
+- **Data:** every standard-NLA quote that appears in the text, under strict matching: 26,103 quotes from the 8 texts.
+- **Attention lift:** the head's attention on the quoted token(s), as a share of its attention to non-sink tokens,
+  divided by their share of the context. 1× is an average token.
+- **Controls:** the same as above. Shuffled quotes count only when they appear in this token's text.
+- **Single panel:** the in-text top-k panel for the standard NLA alone is `docs/head_nla_quote_topk_std_in_text.png`
+  (`scripts/heads_quote_topk_plot.py --single "std RL"`).
+
+| Lift | Median | Mean | ≥ 1× | ≥ 10× |
+|---|---|---|---|---|
+| This head, its explanation's quotes | 1.2× | 20× | 52% | **27%** |
+| Other 31 heads, same quoted tokens | 0.60× | 4.2× | 41% | 9.1% |
+| This head, shuffled explanation's quotes | 0.22× | 1.3× | 22% | 2.4% |
+
+- **Quoted tokens get far more of the head's attention than chance.** Their mean lift is 15× a shuffled quote's
+  (20× vs 1.3×), and their median 5.6×.
+- **The effect is a heavy tail.** 27% of quoted tokens get at least 10× an average token's attention, against 2.4%
+  for shuffled quotes. About half get less than an average token.
+- **Part of it is shared with other heads.** The other heads give the same tokens 9.1% ≥ 10×, between the two.
+
 ## 7. How much do the explanations add beyond cheap baselines?
 
 **Explanation-free guesses on the same FVE scale** (`scripts/heads_nla_baselines.py`, doc-viewer sites):
