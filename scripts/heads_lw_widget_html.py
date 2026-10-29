@@ -49,7 +49,7 @@ def display_tokens(tok, ids: list[int]) -> list[str]:
 
 
 def b64gz(b: bytes) -> str:
-    return base64.b64encode(gzip.compress(b, 9)).decode()
+    return base64.b64encode(gzip.compress(b, 9, mtime=0)).decode()     # mtime=0: same data, same bytes, same hash
 
 
 def doc_parts(tok, d: Path, label: str, start: str | None) -> tuple[dict, dict, str]:
@@ -146,14 +146,16 @@ TEMPLATE = r"""<!doctype html>
 *{box-sizing:border-box}html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--ink);font:13px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
 #app{height:100vh;min-height:360px;max-width:760px;margin:0 auto;display:grid;grid-template-rows:auto minmax(70px,1fr) auto minmax(90px,1.2fr) auto;gap:6px;padding:8px 10px 6px;position:relative}
-.top{display:flex;align-items:center;gap:6px 8px;min-width:0}@media (max-width:560px){.top{flex-wrap:wrap}.top .ttl{flex-basis:100%}}
-.ttl{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}.ttl .sub{font-weight:400;color:var(--ink-3)}@media (max-width:420px){.ttl .mdl{display:none}}
+/* title (with the chat menu) left, controls right; when both don't fit, the controls wrap as one group onto a second row */
+.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 8px}
+.ttl{font-weight:650;white-space:nowrap;display:flex;align-items:center;gap:5px;flex:none}.ttl .sub{font-weight:400;color:var(--ink-3)}
+.ctl{display:flex;align-items:center;gap:8px;flex:none}@media (max-width:420px){.mdl{display:none}}
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;flex:none}
 .seg button{border:0;border-radius:0;background:var(--bg);padding:3px 8px}.seg button+button{border-left:1px solid var(--border)}
 button{font:inherit;font-size:12px;color:var(--ink);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:3px 8px;cursor:pointer;line-height:1.3}
 button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .shl{color:var(--ink-3);font-size:12px;flex:none}
-#chat{font:inherit;font-size:12.5px;font-weight:400;color:var(--ink);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px 4px;max-width:100%;cursor:pointer}
+#chat{font:inherit;font-size:12.5px;font-weight:400;color:var(--ink);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px 4px;cursor:pointer;flex:none}
 #chat:focus-visible{outline:2px solid var(--accent);outline-offset:1px}@media (max-width:420px){.shl{display:none}}
 .pane{border:1px solid var(--border);border-radius:9px;background:var(--panel);overflow-y:auto;min-height:0;overscroll-behavior:contain}
 #ctx{padding:6px 9px;white-space:pre-wrap;word-break:break-word;line-height:1.75;font-size:13px}
@@ -178,11 +180,11 @@ button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}button:focus-v
 #load{color:var(--ink-3);padding:6px 2px}
 </style></head><body>
 <div id="app">
-<div class="top"><span class="ttl">Head NLA <span class="sub"><span class="mdl">· Qwen3-8B L24 </span>· </span><select id="chat" aria-label="Chat"></select></span><span class="shl">Shade text by</span>
+<div class="top"><span class="ttl">Head NLA <span class="sub">·</span><select id="chat" aria-label="Chat"></select></span><span class="ctl"><span class="shl">Shade text by</span>
 <span class="seg" role="group" aria-label="Shade text by"><button id="m-att" aria-pressed="true" title="the selected head's attention from the selected token">Attention</button><button id="m-fve" aria-pressed="false" title="the selected head's FVE at each token">FVE</button></span>
-<span class="seg" role="group" aria-label="Head NLA model"><button id="x-mtry" aria-pressed="true" title="matryoshka-trained (RL step 640): puts the most informative content first">Matryoshka</button><button id="x-rl" aria-pressed="false" title="standard RL training (step 400)">Standard</button></span></div>
+<span class="seg" role="group" aria-label="Head NLA model"><button id="x-mtry" aria-pressed="true" title="matryoshka-trained (RL step 640): puts the most informative content first">Matryoshka</button><button id="x-rl" aria-pressed="false" title="standard RL training (step 400)">Standard</button></span></span></div>
 <div class="pane" id="ctx" aria-label="Text; click a token"><div id="load">Loading…</div></div>
-<div><div class="hh"><span>Heads at</span><span class="q" id="qtok"></span><span class="mut" id="qpos"></span><span class="sp"></span><button id="prev" aria-label="Previous token">‹</button><button id="next" aria-label="Next token">›</button></div>
+<div><div class="hh"><span><span class="mdl">Qwen3-8B </span>L24 heads at</span><span class="q" id="qtok"></span><span class="mut" id="qpos"></span><span class="sp"></span><button id="prev" aria-label="Previous token">‹</button><button id="next" aria-label="Next token">›</button></div>
 <div id="heads" role="group" aria-label="Attention heads, coloured by FVE at this token"></div></div>
 <div class="pane" id="detail" aria-live="polite"></div>
 <div class="lg"><span>FVE <span class="k">−100%</span><canvas id="r-fve" width="140" height="8"></canvas><span class="k">+100%</span></span>
