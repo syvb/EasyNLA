@@ -231,7 +231,9 @@ sites per source.
   uniformly from the context.
 - **Matching is strict:** the quote is exactly 1–4 consecutive context tokens. The sink is excluded from top-k.
 
-Share of quotes that name one of the head's top-k attended tokens:
+![Quotes vs top-k attention, against a shuffled control](head_nla_quote_topk_shuffle.png)
+
+(`scripts/heads_quote_topk_plot.py`.) Share of quotes that name one of the head's top-k attended tokens:
 
 | | Std RL | Matryoshka | Matryoshka, first 16 tokens |
 |---|---|---|---|
@@ -663,7 +665,8 @@ These are reasoned, not measured: no run trained without centering. For most hea
   analysis `head_nla_mean_direction_floor.json` (`scripts/heads_mean_direction_floor.py`, √d bug fixed).
 - **Chats:** HF `l24/chat_viewer/` (4 viewer pages, data, `chat_analysis.json`); `scripts/heads_chat_analysis.py`.
 - **Quotes vs attention:** HF `l24/mtry/quote_attn/` (`scripts/heads_quote_attention.py`, top-5 vs other heads);
-  `docs/head_nla_quote_topk_shuffle.json` (`scripts/heads_quote_topk_shuffle.py`, top-k vs a shuffled control).
+  `docs/head_nla_quote_topk_shuffle.{json,png}` (`scripts/heads_quote_topk_shuffle.py`, top-k vs a shuffled
+  control; figure by `scripts/heads_quote_topk_plot.py`).
 - **Explorer widget for the LessWrong post:** `docs/head_nla_lw_widget.md`. Live at https://i.smitop.com/head-nla/widget.html;
   rebuilt exactly from public data by `scripts/heads_lw_widget_build.sh`.
 - **Process:** `docs/head_nla_session_log.md`.
