@@ -220,6 +220,55 @@ The first-16-token figure rests on about 1,100–1,500 quotes, because short pre
 - An earlier count on the std run's greedy outputs agrees: content-word quotes match an attended token
   14.8% of the time (chance 3.0%) and the current token 8.2% (chance 0.3%).
 
+### Top-k attended tokens, against a shuffled control
+
+`scripts/heads_quote_topk_shuffle.py` (→ `docs/head_nla_quote_topk_shuffle.json`, CPU only, public inputs) repeats
+the check for k = 1, 5, 10, 20 on all 8 public texts: the 4 web documents above and the 4 chats of §11, about 99k
+sites per source.
+- **The control is a shuffled explanation.** Each site gets the explanation of another site of the same head in the
+  same text (10 random derangements). Its quotes are checked against this site's context and attention.
+- **Two more references:** the same quote against the other 31 heads' top-k at the token, and k positions drawn
+  uniformly from the context.
+- **Matching is strict:** the quote is exactly 1–4 consecutive context tokens. The sink is excluded from top-k.
+
+Share of quotes that name one of the head's top-k attended tokens:
+
+| | Std RL | Matryoshka | Matryoshka, first 16 tokens |
+|---|---|---|---|
+| Quotes (explanations with one) | 234k (90%) | 117k (45%) | 2.9k (2.7%) |
+| Quote is in the context at all | 11% | 7.8% | 20% |
+| Top-1: true vs shuffled | 3.0% vs 0.2% | 4.6% vs 0.1% | 13% vs 0.3% |
+| Top-5 | 4.4% vs 0.8% | 5.4% vs 0.5% | 15% vs 1.2% |
+| **Top-10** | **5.2% vs 1.5%** | **5.8% vs 0.9%** | **16% vs 2.2%** |
+| Top-20 | 6.1% vs 2.5% | 6.1% vs 1.6% | 16% vs 4.0% |
+| Top-10: the other heads' top-10 / 10 uniform positions | 3.4% / 1.7% | 3.9% / 1.3% | 11% / 3.2% |
+| Top-10, of quotes that are in the context | 46% vs 15% | 74% vs 16% | 81% vs 15% |
+| Top-10, current token excluded | 4.1% vs 1.5% | 3.5% vs 1.0% | 8.6% vs 2.3% |
+| Explanations with a quote naming a top-10 token | 8.3% vs 2.8% | 3.6% vs 0.8% | 0.4% vs 0.1% |
+
+With §6's loose matching, top-10 is 9.4% vs 2.8% (std), 18% vs 3.5% (matryoshka) and 33% vs 5.1% (first 16 tokens).
+Top-20 is 11% vs 4.9%, 20% vs 6.2% and 35% vs 8.9%.
+
+- **Quotes name the head's attended tokens well above the shuffle, at every k.**
+  - At top-10 (strict), true − shuffled is +3.7 points for std (95% CI 2.8–4.6) and +4.8 for matryoshka (3.2–6.5).
+    The CIs resample the 256 text × head groups. For the first 16 tokens it is +14 (8.8–18).
+  - The difference is positive in all 8 texts for every source and both matching rules, in the chats as well as the web text.
+- **The hits are mostly the single most attended token.** From top-1 to top-20 the true rate only doubles
+  (std 3.0% → 6.1%), while the shuffled rate grows elevenfold (0.2% → 2.5%). The ratio falls from about 13× to 2.4×.
+- **The absolute rate is low because most quotes are not in the text.** 89% (std) and 92% (matryoshka) of quotes
+  are not a span of the context. A quote that is in the context names a top-10 token 46% / 74% of the time; a
+  shuffled quote that happens to be in the context does 15–16% of the time.
+- **About half of it is specific to this head.**
+  - The same quotes hit the other heads' top-10 3.4% / 3.9% of the time, between the true and shuffled rates. So
+    part of the effect is tokens that many heads attend to at that position.
+  - At top-10, 40–50% of the excess over the shuffle is also an excess over the other heads (both rules). At top-20,
+    the other heads come close to the true rate (4.6% vs 6.1% std).
+- **It isn't only self-attention.** H0 and H7 contribute most, by quoting the current token. Excluding the current
+  token from both the quote's matches and the ranking leaves 4.1% vs 1.5% (std) and 3.5% vs 1.0% (matryoshka).
+- **Per head:** true exceeds shuffled on 24/32 heads (std) and 26/32 (matryoshka), at top-10, strict. The others are
+  within 2 points. H3, H4, H11 and H21 are among them in every variant, as in §6.
+- **Gold and SFT** quote in 0.1% of explanations (144 and 98 quotes), too few to test.
+
 ## 7. How much do the explanations add beyond cheap baselines?
 
 **Explanation-free guesses on the same FVE scale** (`scripts/heads_nla_baselines.py`, doc-viewer sites):
@@ -566,7 +615,8 @@ These are reasoned, not measured: no run trained without centering. For most hea
   true write (skill 57%), and 0.65 after matryoshka (skill 63%). Most of that last step is the matryoshka AR:
   read by the step-400 AR, the matryoshka text scores 0.605.
 - **The information is in the words.** It survives paraphrase, it lets anyone tell the heads (and GQA
-  siblings) apart, and its in-context quotes point at what the head actually reads, 3–5× above other heads.
+  siblings) apart, and its in-context quotes point at what the head actually reads, 3–5× above other heads. A
+  quote names one of the head's top-10 attended tokens 3–6× as often as a shuffled explanation's quote (§6).
 - **Matryoshka frontloading works and is cheap** (about $17). The first 16 tokens carry what used to need
   the whole explanation.
 - **The explanations recover what a head writes, when it writes something.** In a blind test they recovered
@@ -612,6 +662,8 @@ These are reasoned, not measured: no run trained without centering. For most hea
 - **Centering:** `docs/head_nla_centering_analysis.json` (`scripts/heads_centering_analysis.py`); the floor
   analysis `head_nla_mean_direction_floor.json` (`scripts/heads_mean_direction_floor.py`, √d bug fixed).
 - **Chats:** HF `l24/chat_viewer/` (4 viewer pages, data, `chat_analysis.json`); `scripts/heads_chat_analysis.py`.
+- **Quotes vs attention:** HF `l24/mtry/quote_attn/` (`scripts/heads_quote_attention.py`, top-5 vs other heads);
+  `docs/head_nla_quote_topk_shuffle.json` (`scripts/heads_quote_topk_shuffle.py`, top-k vs a shuffled control).
 - **Explorer widget for the LessWrong post:** `docs/head_nla_lw_widget.md`. Live at https://i.smitop.com/head-nla/widget.html;
   rebuilt exactly from public data by `scripts/heads_lw_widget_build.sh`.
 - **Process:** `docs/head_nla_session_log.md`.

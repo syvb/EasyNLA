@@ -464,6 +464,19 @@ The user asked for a viewer like the doc viewer, but for chats. They chose Qwen3
   - Fixed: raw ρ is 0.27, not 0.074, and the head-only floor is −56%, not −100%.
   - The JSON was regenerated and the results doc corrected.
 
+### 15. Quotes vs top-k attention, shuffled control (10-29)
+
+- **Asked:** how often a quote names one of the head's top-10/20 attended tokens, against a shuffled control.
+  - The §6 check had used only top-5, controlled by the other heads.
+  - The older top-16 count's control was another document's write.
+- **Done:** `scripts/heads_quote_topk_shuffle.py` on the 8 public texts (4 web docs, 4 chats), CPU only, about 10
+  minutes. The control gives each site another site's explanation of the same head in the same text.
+- **Result** (results doc §6): at top-10 with strict matching, std quotes hit 5.2% vs 1.5% shuffled, and matryoshka
+  5.8% vs 0.9%. It is positive in all 8 texts. Most hits are the top-1 token, and about half the excess is
+  specific to the head, judged against the other heads at the same token.
+- **The script was checked** against brute force (ranks, non-self ranks) and Monte Carlo (uniform chance). On one
+  text, loose top-5, it reproduces §6's figures (8.1% vs 4.8% other heads).
+
 ## Costs (audited 2026-10-27)
 
 **GPU** comes from RunPod's billing API (`/v1/billing/pods`, per pod, including disk). There were 27 pods from
