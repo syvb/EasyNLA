@@ -197,7 +197,7 @@ def main() -> None:
     for h in picked_heads:
         i = int(ex_rng.choice(np.flatnonzero(heads == h)))
         lines += [f"### L24H{h} · eval row {int(gen.eval_row[i])}", "",
-                  f"- **Gold (Sonnet):** {md(gen.av__gold[i])}", "",
+                  f"- **Gold (Haiku 5.5):** {md(gen.av__gold[i])}", "",
                   f"- **Std** — whole {pct(row_fve('rl400', 'rl400', 'full', i))}, first 16 tokens "
                   f"{pct(row_fve('rl400', 'mtry_w', '16', i))}  ",
                   f"  first 16 tokens: *{md(first(gen.av__rl400[i]))}*  ",

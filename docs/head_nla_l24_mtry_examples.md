@@ -27,7 +27,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H0 · eval row 4036
 
-- **Gold (Sonnet):** Chatty, informal talk about school life and vague unnamed people or things, with a playful, puzzled edge that tends to lead into exclamations and questions.
+- **Gold (Haiku 5.5):** Chatty, informal talk about school life and vague unnamed people or things, with a playful, puzzled edge that tends to lead into exclamations and questions.
 
 - **Std** — whole +49%, first 16 tokens −67%  
   first 16 tokens: *Examining whether a work of elements still holds its status, often positioned at the*  
@@ -39,7 +39,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H1 · eval row 1429
 
-- **Gold (Sonnet):** Hedged remarks about something being absent or left out, where a gap seems to exist or a check for leftovers is implied. Continuations likely turn toward offering a possibility, a fix, or asking whether anything else is needed.
+- **Gold (Haiku 5.5):** Hedged remarks about something being absent or left out, where a gap seems to exist or a check for leftovers is implied. Continuations likely turn toward offering a possibility, a fix, or asking whether anything else is needed.
 
 - **Std** — whole +13%, first 16 tokens +12%  
   first 16 tokens: *Outline of missing or incomplete information, a gap in a supposition about something un*  
@@ -51,7 +51,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H2 · eval row 3265
 
-- **Gold (Sonnet):** Points toward a direction or destination in code-like and technical text, where the next thing named is a target, a reference, or an outside device or system being addressed.
+- **Gold (Haiku 5.5):** Points toward a direction or destination in code-like and technical text, where the next thing named is a target, a reference, or an outside device or system being addressed.
 
 - **Std** — whole +35%, first 16 tokens +35%  
   first 16 tokens: *Personal response to unspecified things: the derive clause describing a person’s own to an*  
@@ -63,7 +63,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H3 · eval row 4807
 
-- **Gold (Sonnet):** Hedged personal judgment, where a speaker softens a claim about how things appear or generally behave. The continuation is likely to be a stance on what seems true, what always happens, or what someone really makes of a situation.
+- **Gold (Haiku 5.5):** Hedged personal judgment, where a speaker softens a claim about how things appear or generally behave. The continuation is likely to be a stance on what seems true, what always happens, or what someone really makes of a situation.
 
 - **Std** — whole −61%, first 16 tokens −86%  
   first 16 tokens: *Points and pauses, the frames where a line breaks into a fresh paragraph, are*  
@@ -75,7 +75,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H4 · eval row 2438
 
-- **Gold (Sonnet):** Marks the point where a code block or structured definition is about to open with its first brace, so the next lines are expected to sit inside it. A weaker tilt toward wording about being located within a range or span, and toward the absence of something.
+- **Gold (Haiku 5.5):** Marks the point where a code block or structured definition is about to open with its first brace, so the next lines are expected to sit inside it. A weaker tilt toward wording about being located within a range or span, and toward the absence of something.
 
 - **Std** — whole −52%, first 16 tokens −73%  
   first 16 tokens: *Rounds of distribution and growth, with a tilt toward natural and inherent qualities,*  
@@ -87,7 +87,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H5 · eval row 3661
 
-- **Gold (Sonnet):** The idea of covering a surface with colour or pigment, with a secondary pull toward filling a space or acquiring something, often within a short narrated clause with a personal subject.
+- **Gold (Haiku 5.5):** The idea of covering a surface with colour or pigment, with a secondary pull toward filling a space or acquiring something, often within a short narrated clause with a personal subject.
 
 - **Std** — whole +32%, first 16 tokens +11%  
   first 16 tokens: *Statements of painted, applied embellishment, especially dyeing or tinting a type*  
@@ -99,7 +99,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H6 · eval row 6179
 
-- **Gold (Sonnet):** Abstract, undetermined ideas that are being qualified, with a contrast turning on what ought to have been the case or what is still undefined. Continuations tend toward hedged judgments about obligation and what should follow.
+- **Gold (Haiku 5.5):** Abstract, undetermined ideas that are being qualified, with a contrast turning on what ought to have been the case or what is still undefined. Continuations tend toward hedged judgments about obligation and what should follow.
 
 - **Std** — whole +16%, first 16 tokens +13%  
   first 16 tokens: *Qualifying a subject that follows an open list, such as an unspecified, unspecified*  
@@ -111,7 +111,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H7 · eval row 4966
 
-- **Gold (Sonnet):** Stands in for an unnamed or undetermined thing, item or occasion, pulling the continuation toward vagueness and open-ended reference, as if something unspecified or not yet defined is being pointed at.
+- **Gold (Haiku 5.5):** Stands in for an unnamed or undetermined thing, item or occasion, pulling the continuation toward vagueness and open-ended reference, as if something unspecified or not yet defined is being pointed at.
 
 - **Std** — whole +60%, first 16 tokens +45%  
   first 16 tokens: *Notes of a short, casual thought that offers no conclusion, perhaps a remark that*  
@@ -123,7 +123,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H8 · eval row 6288
 
-- **Gold (Sonnet):** Necessity, impossibility and the ability to achieve something, especially in advice about what must be done to guarantee a result. Continuations tend toward general guidance on what is required, what cannot be avoided, or how an outcome can be secured.
+- **Gold (Haiku 5.5):** Necessity, impossibility and the ability to achieve something, especially in advice about what must be done to guarantee a result. Continuations tend toward general guidance on what is required, what cannot be avoided, or how an outcome can be secured.
 
 - **Std** — whole +25%, first 16 tokens −46%  
   first 16 tokens: *Negated certainty about whether anyone can make things happen: the sentence is about making*  
@@ -135,7 +135,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H10 · eval row 3189
 
-- **Gold (Sonnet):** Trailing, unfinished speech in which the speaker points at a situation with demonstratives or addresses someone directly, then lets the thought hang. A faint reflective, abstract tone accompanies it.
+- **Gold (Haiku 5.5):** Trailing, unfinished speech in which the speaker points at a situation with demonstratives or addresses someone directly, then lets the thought hang. A faint reflective, abstract tone accompanies it.
 
 - **Std** — whole +78%, first 16 tokens +71%  
   first 16 tokens: *Informality and an openness toward casual talk, so that the text still feels tentative*  
@@ -147,7 +147,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H12 · eval row 5003
 
-- **Gold (Sonnet):** Verbs of transfer and reporting, the kind that look for a recipient or a reported claim to follow, along with a lean toward talk of something unfinished or lacking.
+- **Gold (Haiku 5.5):** Verbs of transfer and reporting, the kind that look for a recipient or a reported claim to follow, along with a lean toward talk of something unfinished or lacking.
 
 - **Std** — whole −14%, first 16 tokens −63%  
   first 16 tokens: *Statements of inability to be solved, suggesting no clear answer or path is available except*  
@@ -159,7 +159,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H13 · eval row 6039
 
-- **Gold (Sonnet):** Concepts of deficiency and limited scope: something being absent, incomplete, unclear or small, which tends to lead into a judgment about how useful or general it is.
+- **Gold (Haiku 5.5):** Concepts of deficiency and limited scope: something being absent, incomplete, unclear or small, which tends to lead into a judgment about how useful or general it is.
 
 - **Std** — whole +37%, first 16 tokens +9%  
   first 16 tokens: *Unique and carefully hand-crafted text: a short obsessive-looking piece of material,*  
@@ -171,7 +171,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H14 · eval row 4075
 
-- **Gold (Sonnet):** A casual, conversational register built around first-person talk, often negated or softened, such as saying something is not needed, not a big deal, or only a small part of a situation. It pushes toward informal, hedged replies.
+- **Gold (Haiku 5.5):** A casual, conversational register built around first-person talk, often negated or softened, such as saying something is not needed, not a big deal, or only a small part of a situation. It pushes toward informal, hedged replies.
 
 - **Std** — whole +28%, first 16 tokens +9%  
   first 16 tokens: *Continuations leaning on contrast, particularly of mathematics and everyday living. A secondary pull*  
@@ -183,7 +183,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H15 · eval row 5808
 
-- **Gold (Sonnet):** Direct second-person advice about what the reader must, cannot, or needs to do, framed as a rule or instruction. A secondary thread concerns buying decisions, so the continuation likely tells the reader what to purchase or avoid.
+- **Gold (Haiku 5.5):** Direct second-person advice about what the reader must, cannot, or needs to do, framed as a rule or instruction. A secondary thread concerns buying decisions, so the continuation likely tells the reader what to purchase or avoid.
 
 - **Std** — whole +15%, first 16 tokens −86%  
   first 16 tokens: *Points the text toward broad, scope-setting sentences about tackling problems or subjects, often*  
@@ -195,7 +195,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H17 · eval row 4237
 
-- **Gold (Sonnet):** Discussion of whether a function, formula or configuration can or will behave a certain way, often framed as failing, being impossible, or not holding. It leans toward technical or parameter-setting talk, with a secondary pull toward small values and random behavior.
+- **Gold (Haiku 5.5):** Discussion of whether a function, formula or configuration can or will behave a certain way, often framed as failing, being impossible, or not holding. It leans toward technical or parameter-setting talk, with a secondary pull toward small values and random behavior.
 
 - **Std** — whole +46%, first 16 tokens +40%  
   first 16 tokens: *Segments of text that tilt toward conditional probability about future events, and hinge on quant*  
@@ -207,7 +207,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H18 · eval row 3872
 
-- **Gold (Sonnet):** Degrees of certainty and likelihood in a claim, placed just before the main verb or predicate, with a looser pull toward talk about art and artists.
+- **Gold (Haiku 5.5):** Degrees of certainty and likelihood in a claim, placed just before the main verb or predicate, with a looser pull toward talk about art and artists.
 
 - **Std** — whole +76%, first 16 tokens −86%  
   first 16 tokens: *Questions and expressions of doubt, addressing a reader directly about their beliefs and work,*  
@@ -219,7 +219,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H20 · eval row 1835
 
-- **Gold (Sonnet):** Hedged, conversational commentary on something odd or unexpected: a speaker wondering aloud whether something is strange, might happen, or always seems to occur. It leans toward trailing, tentative sentences that trail off with an ellipsis or a line break.
+- **Gold (Haiku 5.5):** Hedged, conversational commentary on something odd or unexpected: a speaker wondering aloud whether something is strange, might happen, or always seems to occur. It leans toward trailing, tentative sentences that trail off with an ellipsis or a line break.
 
 - **Std** — whole +57%, first 16 tokens +60%  
   first 16 tokens: *A sense that something is about to happen, with a hesitant, unsettled tone*  
@@ -231,7 +231,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H22 · eval row 4703
 
-- **Gold (Sonnet):** Hesitant uncertainty about whether anything can be known or done, with a sense that nothing definite can be said. The continuation likely trails into a character's doubtful, half-finished reflection on what is impossible or unclear.
+- **Gold (Haiku 5.5):** Hesitant uncertainty about whether anything can be known or done, with a sense that nothing definite can be said. The continuation likely trails into a character's doubtful, half-finished reflection on what is impossible or unclear.
 
 - **Std** — whole +30%, first 16 tokens −68%  
   first 16 tokens: *לעומדות, a conflict or gap situation where another reached too far or*  
@@ -243,7 +243,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H24 · eval row 885
 
-- **Gold (Sonnet):** Generic references to people and their possessions, where the next phrase is likely to set one individual against others or talk about someone's own property, opinions, or personal affairs.
+- **Gold (Haiku 5.5):** Generic references to people and their possessions, where the next phrase is likely to set one individual against others or talk about someone's own property, opinions, or personal affairs.
 
 - **Std** — whole −102%, first 16 tokens −100%  
   first 16 tokens: *Points of interest that begin an unfinished sentence about someone or something laboring, with*  
@@ -255,7 +255,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H25 · eval row 4345
 
-- **Gold (Sonnet):** Casual first-person talk about what one doesn't do, isn't, or can't make happen, where a negation or a plain action verb is about to come next. A secondary lean toward Canadian geography and institutions.
+- **Gold (Haiku 5.5):** Casual first-person talk about what one doesn't do, isn't, or can't make happen, where a negation or a plain action verb is about to come next. A secondary lean toward Canadian geography and institutions.
 
 - **Std** — whole +16%, first 16 tokens −72%  
   first 16 tokens: *Refinement. The model gets a push toward self-improvement, especially involving*  
@@ -267,7 +267,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H26 · eval row 4820
 
-- **Gold (Sonnet):** Taiwanese and mainland Chinese place names, especially cities and provinces, form the core of the vector. A secondary pull is toward hedged contrasts, where something is described as small, related, or nearly impossible.
+- **Gold (Haiku 5.5):** Taiwanese and mainland Chinese place names, especially cities and provinces, form the core of the vector. A secondary pull is toward hedged contrasts, where something is described as small, related, or nearly impossible.
 
 - **Std** — whole +43%, first 16 tokens +40%  
   first 16 tokens: *Sets of small clusters, wherecasual thinking about Chinese things runs alongside the code*  
@@ -279,7 +279,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H27 · eval row 5503
 
-- **Gold (Sonnet):** Clause-ending punctuation in formal, British-leaning prose: the model is steered toward closing a clause with a semicolon or question mark, or linking onward with a contrastive or temporal connective, in long, measured sentences.
+- **Gold (Haiku 5.5):** Clause-ending punctuation in formal, British-leaning prose: the model is steered toward closing a clause with a semicolon or question mark, or linking onward with a contrastive or temporal connective, in long, measured sentences.
 
 - **Std** — whole +42%, first 16 tokens −108%  
   first 16 tokens: *Hedging about personal perspective, about what one might choose to do and the*  
@@ -291,7 +291,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H29 · eval row 3100
 
-- **Gold (Sonnet):** Explanatory phrasing about what a term means, what a person says or does, and how things relate to one another, often introducing a definition or a reference to someone. A secondary pull toward a standalone capital M as an initial or label.
+- **Gold (Haiku 5.5):** Explanatory phrasing about what a term means, what a person says or does, and how things relate to one another, often introducing a definition or a reference to someone. A secondary pull toward a standalone capital M as an initial or label.
 
 - **Std** — whole +27%, first 16 tokens −32%  
   first 16 tokens: *Expressing a stance toward a single subject holding a particular quality or outcome, often*  
@@ -303,7 +303,7 @@ One write per head for 24 heads (seeded). Scores: FVE of the whole explanation (
 
 ### L24H31 · eval row 2236
 
-- **Gold (Sonnet):** Signals that a fragment or excluded share of something is coming, the kind of quantifier phrasing that picks out a portion of a whole, with a leaning toward empty or undefined values and a possible end of line.
+- **Gold (Haiku 5.5):** Signals that a fragment or excluded share of something is coming, the kind of quantifier phrasing that picks out a portion of a whole, with a leaning toward empty or undefined values and a possible end of line.
 
 - **Std** — whole +50%, first 16 tokens +59%  
   first 16 tokens: *Negation of what is not possible, a somewhat hesitant attitude toward a statement of*  
