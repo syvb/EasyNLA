@@ -19,6 +19,7 @@ Writes to --out-dir (prefix head_nla_l24_):
   fve_per_head_std_vs_mtry.png       per-head FVE: whole explanations (std vs matryoshka), first 16 tokens
                                      (fair baseline vs matryoshka)
   fve_per_head_whole_std_vs_mtry.png the whole-explanation panel alone
+  fve_per_head_whole_by_kv.png       the same, heads grouped by KV group
   mtry_prefix_by_head.png      per-head FVE at every prefix length, matryoshka and fair baseline
   mtry_marginal_by_head.png    per-head FVE gained at each truncation step, matryoshka
   mtry_quality.json            every plotted number
@@ -284,13 +285,16 @@ def main() -> None:
     FIRST16 = (["first 16: fair baseline (std AV + warm-up AR)", "first 16: matryoshka"],
                ["Std AV + warm-up AR (fair baseline)", "Matryoshka (step 640)"])
 
-    def dumbbell(ax, title: str, keys: list[str], labs: list[str]) -> None:
+    def dumbbell(ax, title: str, keys: list[str], labs: list[str], pos: dict | None = None) -> None:
+        """One row per head at pos[h] (default: sorted by matryoshka whole FVE, with H/KV tick labels)."""
+        custom = pos is not None
+        pos = pos if custom else ypos
         (f0, c0), (f1, c1) = ph[keys[0]], ph[keys[1]]
         for h in range(H):
-            y = ypos[h]
+            y = pos[h]
             ax.plot([100 * f0[h], 100 * f1[h]], [y, y], color=GRID, lw=2.2, zorder=1, solid_capstyle="round")
         for (f, c), col, lab, dy in (((f0, c0), STD_C, labs[0], -0.17), ((f1, c1), MTRY_C, labs[1], 0.17)):
-            yy = np.array([ypos[h] for h in range(H)]) + dy
+            yy = np.array([pos[h] for h in range(H)]) + dy
             ax.errorbar(100 * f, yy, xerr=[100 * (f - c[:, 0]), 100 * (c[:, 1] - f)], fmt="o", color=col, ms=5.5,
                         mec=SURF, mew=1, elinewidth=1, capsize=0, label=lab, zorder=3)
         ax.axvline(0, color=INK2, lw=1, zorder=0)
@@ -301,9 +305,10 @@ def main() -> None:
         ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda y, _: f"{y:+.0f}%".replace("-", "−") if y else "0%"))
         ax.set_xlabel("FVE (95% CI)", color=INK2, fontsize=8.8)
         ax.legend(loc="lower right", frameon=False, fontsize=8.3, labelcolor=INK)
-        ax.set_yticks(range(H))
-        ax.set_yticklabels([f"H{h}  (KV{h // 4})" for h in order], fontsize=8)
-        ax.set_ylim(-0.7, H - 0.3)
+        if not custom:
+            ax.set_yticks(range(H))
+            ax.set_yticklabels([f"H{h}  (KV{h // 4})" for h in order], fontsize=8)
+            ax.set_ylim(-0.7, H - 0.3)
 
     def xlim(keys: list[str]) -> tuple[float, float]:
         return (min(100 * min(ph[k][1][:, 0].min() for k in keys), -60) - 5,
@@ -329,6 +334,39 @@ def main() -> None:
     heading(fig, "FVE per head: standard and matryoshka", y0=0.985)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(out / "head_nla_l24_fve_per_head_whole_std_vs_mtry.png", facecolor=SURF)
+    plt.close(fig)
+
+    # whole explanations, grouped by KV group (the 4 query heads that share keys and values); groups ordered by their
+    # mean matryoshka FVE, heads within a group by their own, best at the top
+    from matplotlib.transforms import blended_transform_factory
+    fm = ph[WHOLE[0][1]][0]
+    groups = sorted(range(H // 4), key=lambda g: fm[4 * g:4 * g + 4].mean())
+    gap, pos, y, spans = 0.9, {}, 0.0, []
+    for g in groups:
+        hs = sorted(range(4 * g, 4 * g + 4), key=lambda h: fm[h])
+        spans.append((g, y, y + 3))
+        for h in hs:
+            pos[h] = y
+            y += 1
+        y += gap
+    fig, ax = plt.subplots(figsize=(6.6, 8.6), dpi=160)
+    fig.patch.set_facecolor(SURF)
+    for i, (g, y0, y1) in enumerate(spans):
+        if i % 2:
+            ax.axhspan(y0 - 0.5, y1 + 0.5, color="#f1f0ec", lw=0, zorder=0)
+    dumbbell(ax, "", WHOLE[0], ["Std pair", "Matryoshka pair"], pos=pos)
+    ax.set_xlim(*xlim(WHOLE[0]))
+    ax.set_yticks([pos[h] for h in range(H)])
+    ax.set_yticklabels([f"H{h}" for h in range(H)], fontsize=8)
+    ax.set_ylim(-0.7, y - gap - 0.3)
+    tr = blended_transform_factory(ax.transAxes, ax.transData)
+    for g, y0, y1 in spans:
+        ax.plot([-0.115, -0.115], [y0 - 0.3, y1 + 0.3], transform=tr, color=INK2, lw=1, clip_on=False)
+        ax.text(-0.135, (y0 + y1) / 2, f"KV{g}", transform=tr, ha="right", va="center", fontsize=8.5, color=INK,
+                fontweight="bold", clip_on=False)
+    heading(fig, "FVE per head, by KV group: standard and matryoshka", y0=0.985)
+    fig.tight_layout(rect=(0.05, 0, 1, 0.96))
+    fig.savefig(out / "head_nla_l24_fve_per_head_whole_by_kv.png", facecolor=SURF)
     plt.close(fig)
 
     # ---- 5. per-head FVE at every prefix length (heatmaps) ----
@@ -424,7 +462,7 @@ def main() -> None:
     plt.close(fig)
 
     (out / "head_nla_l24_mtry_quality.json").write_text(json.dumps(res, indent=1) + "\n")
-    print(f"wrote 8 figures and head_nla_l24_mtry_quality.json to {out}")
+    print(f"wrote 9 figures and head_nla_l24_mtry_quality.json to {out}")
 
 
 if __name__ == "__main__":
