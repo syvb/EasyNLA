@@ -448,6 +448,19 @@ The user asked for a viewer like the doc viewer, but for chats. They chose Qwen3
 - **Paraphrase test on 1,000 chat sites:** Haiku 5.5 paraphrases cost $0.97, with 4.4% refused. One scoring pod
   (about $1.50). Retention is 96% (RL) and 98% (matryoshka), the skeleton keeps 0%, the same as on web text.
 
+### 14. Widget, training recipe, centering (10-28 to 10-29)
+
+- **LessWrong widget:** a self-contained single-document page (`scripts/heads_lw_widget_html.py`), on HF under
+  `l24/lw_widget/`.
+- **Training recipe:** `docs/head_nla_l24_training_recipe.md` lists every parameter of the final std and matryoshka
+  runs, from the resolved run configs.
+- **Centering:** results doc §12 (`scripts/heads_centering_analysis.py`, CPU only).
+- **Bug found:** `scripts/heads_mean_direction_floor.py` rebuilt the raw writes from AR-format targets without
+  undoing their √d scaling. That made the mean write 64× too small, and the results doc claimed raw writes were no more
+  clustered than centered ones.
+  - Fixed: raw ρ is 0.27, not 0.074, and the head-only floor is −56%, not −100%.
+  - The JSON was regenerated and the results doc corrected.
+
 ## Costs (audited 2026-10-27)
 
 **GPU** comes from RunPod's billing API (`/v1/billing/pods`, per pod, including disk). There were 27 pods from

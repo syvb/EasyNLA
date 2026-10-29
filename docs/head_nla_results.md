@@ -36,8 +36,9 @@ large corpus, normalized per head and capped at norm 4.
     where ρ is the length of the mean.
     - On our head targets, ρ is 0.076 (median per head), so the floor is −89% (−100% to −67% per head). The
       SFT pair (−87%) sits barely above it.
-    - The raw head writes, before subtracting each head's mean write, are no more clustered: ρ is 0.074 and the
-      floor −100%. So the spread is not an artifact of our centering.
+    - The raw head writes, before subtracting each head's mean write, are more clustered: ρ is 0.27 (0.13–0.65 per
+      head), and the floor is −56%. Centering removes that head-only constant (§12). An earlier version of this
+      line said raw writes were no more clustered (ρ 0.074); that came from a scaling bug, since fixed.
     - For the standard NLA's input (Qwen3-8B layer-24 residual), ρ is 0.66 and the floor only −20%. Much of
       that clustering is two outlier dimensions (mean |x| about 115, against a median of 1.7). Without them, ρ is
       0.34 and the floor −49%. Centered, the residual is even more spread out than the head writes (ρ 0.022).
@@ -363,7 +364,8 @@ Why identity buys so little (medians over heads, AR-train sites):
   16% of the second moment.
 - But they use those directions with both signs. Two random writes of the same head have mean cos +0.005, so
   they cancel, the mean is short (ρ 0.076), and any fixed guess is near-orthogonal to a typical write.
-- Raw writes, before subtracting the head's mean write, behave the same (ρ 0.074).
+- Raw writes, before subtracting the head's mean write, are more alike (ρ 0.27, up to 0.65 for H1, H20 and the KV6
+  heads). Centering removes that constant (§12).
 - The sites are one per document, weighted toward larger-than-typical writes. Over every token of a document,
   writes are more alike (pairwise cos +0.16, about 8 effective directions), and identity is worth more there
   (floor −44%).
@@ -460,7 +462,45 @@ The per-chat viewers and the data are on HF under `l24/chat_viewer/`; the number
 - **Caveats:** every component and the baseline are web-text-based; there are only 4 low-temperature chats; there is
   no gold and no ablation relevance.
 
-## 12. Overall assessment
+## 12. Did centering the writes help?
+
+Every target is the write minus that head's global mean write, then only its direction is used. The mean is one
+vector per head, measured on 100k web-text records at positions ≥ 50.
+Source: `scripts/heads_centering_analysis.py` → `docs/head_nla_centering_analysis.json` (CPU, public data).
+
+- **Head identity is in the vector either way.** A write lies in its own head's 128-d slice of W_O: on the eval rows,
+  99.9999% of its coordinates fall in that slice. The mean write does too, so centering neither hides the head nor
+  reveals it.
+- **What centering removes is a head-only constant.** On the training sites (eval rows), the best constant unit-vector
+  guess per head scores:
+  - mean cos 0.26 against raw writes (0.49–0.65 for H1, H20 and the four KV6 heads);
+  - 0.09 against centered writes.
+
+  The FVE floor is −56% raw against −89% centered. The AR is told which head it is reading, so without centering a
+  large part of its cosine would come from head identity alone.
+- **How far it turns the AV's input.** The median cos between the raw and the centered direction is:
+  - 0.97 per head on training sites, below 0.9 for H1, H20, H24 and H27;
+  - 0.93 over every token of the web documents, below 0.9 for 11 heads.
+
+  The mean's energy share (4% median) understates this. Typical writes are smaller than the RMS that energy is
+  measured against, so the fixed mean is a larger part of their direction.
+- **What it leaves behind: a per-document mean.** In 27–30 of 32 heads, a single document's leftover mean (median
+  0.30–0.40 RMS on web text, 0.37–0.49 on chats) is larger than the global mean that was removed (0.20). Over every
+  token at positions ≥ 50 of the web documents, the variance of the centered writes splits into:
+  - leftover global mean: 5%;
+  - between documents: 12% (up to 68% for the KV4 and KV6 heads);
+  - within documents: 83%.
+
+  This is the topic component the explanations mostly describe; compare the doc-mean baseline in §7.
+- **The mean transfers imperfectly.** It was fit on web text at positions ≥ 50.
+  - At the first token, the offset left over is 0.37 RMS (up to 0.86).
+  - On chats, centering with the web mean makes writes slightly more alike than raw ones (head-only cos 0.42 vs 0.38).
+- **Small centered writes count fully.** Direction-only training weights every site equally.
+  - The smallest fifth of writes (‖v‖ ≈ 0.22 RMS, 92% of attention on the sink) score among the best (matryoshka FVE 37%).
+  - On chats, most of the NLA's FVE comes from these sites. Weighted by ‖v‖², chat matryoshka FVE falls from 18% to 5%,
+    while web text is unchanged (32%).
+
+## 13. Overall assessment
 
 **What works:**
 - **A write-only head NLA can be trained.** After RL its reconstructions reach held-out cosine 0.60 with the
@@ -490,6 +530,8 @@ The per-chat viewers and the data are on HF under `l24/chat_viewer/`; the number
 - filter or weight sites by write norm when using explanations;
 - a higher KL, plus a frozen or independent reader to evaluate faithfulness;
 - the multi-epoch AR retrain (prepared, never run);
+- keep centering, but fit the mean on the data the NLA will be used on (all positions, chats if they matter), ship it
+  with the models, and report FVE weighted by ‖v‖² next to the unweighted number (§12);
 - a layer scan before moving away from L24. Earlier diagnostics favour L6–L12 for text readouts.
 
 ## Index of results files
@@ -508,5 +550,7 @@ The per-chat viewers and the data are on HF under `l24/chat_viewer/`; the number
   - every checkpoint in `-l24-mtry-rl-ckpts`.
 - **Per head:** `docs/head_nla_l24_fve_per_head.{png,csv,json}` (`scripts/heads_per_head_fve.py`); head-only controls
   `head_nla_head_identity_controls.json`; sinks `head_nla_l24_sink_overview.png`, `head_nla_l24_sink_fve.png`, `head_nla_sink_analysis.json`.
+- **Centering:** `docs/head_nla_centering_analysis.json` (`scripts/heads_centering_analysis.py`); the floor
+  analysis `head_nla_mean_direction_floor.json` (`scripts/heads_mean_direction_floor.py`, √d bug fixed).
 - **Chats:** HF `l24/chat_viewer/` (4 viewer pages, data, `chat_analysis.json`); `scripts/heads_chat_analysis.py`.
 - **Process:** `docs/head_nla_session_log.md`.

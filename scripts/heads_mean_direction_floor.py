@@ -60,6 +60,7 @@ def main() -> None:
         t = pq.read_table(get(f), columns=["activation_vector", "head"]).to_pandas()
         return np.stack(t.activation_vector.values).astype(np.float32), t["head"].values
     Vtr, Htr = load("l24/sft_data/ar_sft.parquet")
+    Vtr /= np.sqrt(Vtr.shape[1])        # AR-format targets are √d · v (export_sft); the raw write needs v itself
     Vte, Hte = load("l24/sft_data/eval.parquet")
     head, raw = [], []
     for h in range(32):
