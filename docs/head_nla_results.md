@@ -502,13 +502,16 @@ Source: `scripts/heads_centering_analysis.py` → `docs/head_nla_centering_analy
 
 **Where the mean comes from.** An attention output is a weighted average of value vectors (softmax weights sum to 1,
 and Qwen3 has no attention or MLP biases), so it can't be zero on average unless the values cancel. Two sources show up:
-- **Values with a shared component.** A part that every value vector shares appears in every average, whatever the head
-  attends to.
+- **Values with a shared component (KV6).** A part shared by the value vectors a head attends to appears in every
+  average it takes.
   - The four query heads of KV6 (H24–27) share one value space. Their mean outputs there are 3–5× larger than other
     heads' and point the same way (cos 0.83–0.98).
   - Yet these heads almost never park on the sink, and 91–112% of their mean comes from tokens where they attend
     elsewhere.
-  - KV3, KV4 and KV7 show the same pattern at a smaller size (cos 0.69–0.90).
+  - The plain average of KV6's values, ignoring attention, points along their mean write (cos 0.83).
+  - For the other heads, the same average is 3–6× larger than their actual mean and points elsewhere (cos 0.45), so
+    where those heads attend shapes their mean. See "weights" below.
+  - KV3, KV4 and KV7's mean outputs align within each group too (cos 0.69–0.90).
 - **The parked, no-op output.** Heads that often have nothing to read put their attention on the first token and write
   nearly the same vector each time. Parked writes vary by 0.11 RMS around their own mean, against 0.92 for the
   other tokens.
@@ -522,14 +525,25 @@ bias term the architecture lacks; attention to sink tokens has been reported to 
 a near-flat direction of the loss, so training has no reason to collect it in one place. Data: `source` in
 `docs/head_nla_centering_analysis.json`.
 
-**Could the mean come from the weights instead?** Only in part.
-- It splits into two pieces:
-  - W_O,h W_V E[x̂], where x̂ is the normalized residual entering layer 24. This piece does not depend on attention.
-  - A part that depends on attention, such as the sink's value for parking heads.
-- The weights fix the maps but not E[x̂], which the earlier layers produce from real text.
-- The mean is not a fixed property of the model either. One document's mean write (about 250 tokens at positions ≥ 50)
-  has cos 0.65 with the 100k-record mean for KV6, 0.81 for the parking heads and 0.42 for the rest (web). On chats the
-  figures are 0.58, 0.55 and 0.21.
+**Could the mean come from the weights instead?** In practice no.
+`scripts/heads_centering_from_weights.py` (→ `docs/head_nla_centering_from_weights.json`) runs layers 0–24 on CPU over
+the 4 web documents and the 4 chats. It matches the stored writes at median cos 0.99993. It then scores two
+weights-based estimates of each head's mean write on the training sites. "Share" is 1 − |m − m̂|²/|m|², the fraction
+of the mean's size removed; 0 means no better than not centering.
+
+| Estimate | KV6 | Parking heads | Other 24 | Share of the centering effect recovered (all heads) |
+|---|---|---|---|---|
+| The first token's write: weights + one token | cos 0.43, share +0.17 | cos 0.90, share +0.22 | cos −0.22, share −2.7 | −105% |
+| The plain average of values: weights + one mean input vector for the layer (web) | cos 0.83, share +0.23 | cos −0.32, share −37 | cos 0.45, share −9.5 | −167% |
+
+"Centering effect" is the drop in the head-only constant's cosine, from 0.26 raw to 0.09 with exact centering.
+- For most heads, both estimates make things worse than no centering.
+- The best cases recover a third (the first-token write, for the parking heads) and a sixth (the value average, for
+  KV6) of the effect, and only the direction is right.
+- A head's mean depends on where it attends, which the weights don't give.
+- The mean is not a fixed property of the model either. One document's mean write (about 250 tokens at positions
+  ≥ 50) has cos 0.65 with the 100k-record mean for KV6, 0.81 for the parking heads and 0.42 for the rest (web). On
+  chats the figures are 0.58, 0.55 and 0.21.
 - Whatever is used, the result depends on the text it is averaged over.
 
 **Does it matter for RL?** GRPO cancels any constant, and any positive scale, shared by a group's rewards, and every
