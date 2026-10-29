@@ -476,6 +476,16 @@ The user asked for a viewer like the doc viewer, but for chats. They chose Qwen3
   specific to the head, judged against the other heads at the same token.
 - **The script was checked** against brute force (ranks, non-self ranks) and Monte Carlo (uniform chance). On one
   text, loose top-5, it reproduces §6's figures (8.1% vs 4.8% other heads).
+- **Figure:** `docs/head_nla_quote_topk_shuffle.png` (`scripts/heads_quote_topk_plot.py`).
+
+### 16. Reconstruction-quality figures (10-29)
+
+- **Asked:** a set of graphs of matryoshka reconstruction quality, including marginal FVE at the truncation
+  points, and per-head FVE for both models.
+- **Done:** `scripts/heads_mtry_quality_plots.py` draws six figures (results doc §9) from the public sweep and
+  checks files. It runs on CPU in a few seconds and reproduces the report's pooled FVE.
+- **Caveat on the first token:** the AR never trained on empty text, so about 11 of matryoshka's 73-point
+  first step is the AR reaching the head-only floor. The figures say so.
 
 ## Costs (audited 2026-10-27)
 

@@ -374,12 +374,56 @@ Docs: `docs/head_nla_l24_matryoshka_plan.md`; figure `docs/head_nla_l24_mtry_fve
   **37 / 28 / 32 / 43%**, and matryoshka's first 16 tokens beat the std text's first 16 tokens on every
   document (cos 0.59–0.67 vs 0.40–0.49).
 
+### Reconstruction quality and marginal FVE
+
+`scripts/heads_mtry_quality_plots.py` draws six figures from the public per-row files (CPU only). Their numbers
+are in `docs/head_nla_l24_mtry_quality.json`, and the pooled FVE matches the report above.
+
+![Marginal FVE at each truncation point](head_nla_l24_mtry_marginal_fve.png)
+
+FVE points gained per added token, at each truncation step (2,000 held-out writes):
+
+| Step | empty→1 | 1→2 | 2→4 | 4→8 | 8→16 | 16→32 | 32→64 | 64→120 | 120→whole |
+|---|---|---|---|---|---|---|---|---|---|
+| Matryoshka | 73 | 14 | 5.6 | 2.4 | 1.1 | 0.34 | 0.14 | 0.06 | 0.02 |
+| Fair baseline | 11 | 7.3 | 9.5 | 5.1 | 2.0 | 1.0 | 0.50 | 0.19 | 0.06 |
+
+- **Matryoshka buys its frontloading at the first token.**
+  - One token takes it from −100% to −27%, 56% of its empty → whole gain. The fair baseline gets 9% there.
+  - About 11 of those 73 points only bring the AR from its empty-text score up to the head-only floor (−89%,
+    the head's mean direction). The AR never trained on empty text.
+  - The first tokens vary: 765 different ones in 2,000 explanations. The most common are "Conditional",
+    "Points", "A", "The" and "Missing".
+- **After that, each doubling of the prefix adds less.** Matryoshka's steps are 14, 11, 10, 8, 5, 5, 3 points.
+  The baseline gains 16–21 points per doubling from 4 to 64 tokens. Past 64 tokens both gain little per token.
+- **Per write** (`head_nla_l24_mtry_quality_by_prefix.png`):
+  - median cosine 0.35 after one token, 0.60 at 16 tokens, 0.69 whole;
+  - the share of writes reconstructed better than the head's mean write is 67% at 16 tokens, against 32% for
+    the fair baseline;
+  - whole explanations reach 80%, against 71% for the std pair.
+- **Whole explanations** (`head_nla_l24_fve_distribution_std_vs_mtry.png`, all 6,360 held-out writes): the
+  per-write distributions shift right, with no new tail.
+  - Mean cosine is 0.60 → 0.65; pooled FVE +19% → +30%.
+  - The shuffled control centres on cosine 0.00.
+- **Per head** (`head_nla_l24_fve_per_head_std_vs_mtry.png`, `…_mtry_prefix_by_head.png`,
+  `…_mtry_marginal_by_head.png`):
+  - Matryoshka beats std on every head for whole explanations, by +4 to +18 points (median +11). The CIs
+    separate on 28 heads.
+  - At 16 tokens it beats the fair baseline on every head (median +36). H0 gains the most: +136, as the
+    baseline's 16-token reading of H0 is −77%.
+  - For 23 heads the first token is more than half of the empty → whole gain. From 32 tokens on, no step adds
+    more than 11 points for any head (median 3).
+  - Whole-explanation FVE stays negative for H1, H3, H4 and H24.
+
 ## 10. Which heads can it explain? (per-head FVE)
 
 Figure `docs/head_nla_l24_fve_per_head.png`; values in `head_nla_l24_fve_per_head.{csv,json}`. Made by
 `scripts/heads_per_head_fve.py`, which reads only the public HF dataset (no GPU).
 
 ![FVE per head](head_nla_l24_fve_per_head.png)
+
+A cleaner standard-vs-matryoshka view, with 95% CIs and heads sorted by FVE, is
+`head_nla_l24_fve_per_head_std_vs_mtry.png` (§9, "Reconstruction quality and marginal FVE").
 
 The figure has two views. The held-out eval rows (about 199 per head, T=1) were sampled with more weight on
 larger-than-typical writes; the doc viewer covers every token of 4 held-out documents. They rank the heads
@@ -655,7 +699,15 @@ These are reasoned, not measured: no run trained without centering. For most hea
 - **Earlier stages:** `docs/head_nla_data.md`, `docs/head_nla_l24_plan.md`, `docs/head_nla_l24_rl_plan.md`.
 - **Mechanism:** `docs/head_nla_l24_h18_case_study.md` and `docs/head_nla_l24_blind_study.md`. The blind study's bundles and accounts are on HF under `l24/blind_study/`.
 - **Matryoshka:** `docs/head_nla_l24_matryoshka_plan.md`, `docs/head_nla_l24_mtry_fve_by_prefix.png`,
-  `docs/head_nla_l24_mtry_examples.md`. All public on HF:
+  `docs/head_nla_l24_mtry_examples.md`.
+  - Quality figures by `scripts/heads_mtry_quality_plots.py` (numbers in `head_nla_l24_mtry_quality.json`):
+    - `head_nla_l24_mtry_marginal_fve.png`;
+    - `head_nla_l24_mtry_quality_by_prefix.png`;
+    - `head_nla_l24_fve_distribution_std_vs_mtry.png`;
+    - `head_nla_l24_fve_per_head_std_vs_mtry.png`;
+    - `head_nla_l24_mtry_prefix_by_head.png`;
+    - `head_nla_l24_mtry_marginal_by_head.png`.
+  - All public on HF:
   - the dataset `syvb/head-nla-qwen3-8b` under `l24/mtry/`: T=1 checks, raw sweep data, report, quotes vs attention, the matryoshka doc viewer and redacted logs;
   - the step-640 pair `syvb/head-nla-qwen3-8b-l24-mtry-{av,ar}`;
   - every checkpoint in `-l24-mtry-rl-ckpts`.
