@@ -1,21 +1,28 @@
-"""Compact single-document head-NLA viewer, sized to be iframed into a LessWrong post widget (340–700 px wide).
+"""Compact head-NLA viewer sized to be iframed into a LessWrong post widget (340–700 px wide): one page, several texts.
 
-    python scripts/heads_lw_widget_html.py --doc <doc viewer folder> --out widget.html [--start HEAD:POS]
+    python scripts/heads_lw_widget_html.py --doc <folder> --label <menu name> [--start HEAD:POS] [--doc ... --label ...] \\
+        --out-dir <dir> [--default <folder name>]
 
-The folder is one document of the doc viewer (token_ids.npy, meta.json, sites.parquet, attn.npz, mtry.parquet), e.g.
-l24/mtry/doc_viewer/<doc>/ + l24/std_rl/doc_viewer/<doc>/ of the HF dataset, or one chat, l24/chat_viewer/<chat>/ (chat-
-template tokens shown muted, each turn labelled User / Assistant). The page shows every token × every head
-of the head NLA's explanations, matryoshka (step 640) or standard RL (step 400) by a toggle: the text (shaded by the
-selected head's attention from the selected token, or by that head's FVE at each token), the 32 heads at the selected
-token coloured by FVE, and the selected site's explanation. The page fills its iframe's height (scroll inside the panes), so the embedding sets the height.
-Data is gzip-compressed and base64-embedded (one self-contained file, no fetches); ?theme=dark|auto in the URL
-switches from the default light theme.
+Each folder is one document of the doc viewer (token_ids.npy, meta.json, sites.parquet, attn.npz, mtry.parquet: e.g.
+l24/mtry/doc_viewer/<doc>/ + l24/std_rl/doc_viewer/<doc>/ of the HF dataset) or one chat, l24/chat_viewer/<chat>/
+(chat-template tokens muted, each turn labelled User / Assistant, opened scrolled to the assistant's reply). A menu picks
+the text. For each, the page shows every token × every head of the head NLA's explanations, matryoshka (step 640) or
+standard RL (step 400) by a toggle:
+  - the text, shaded by the selected head's attention from the selected token, or by that head's FVE at each token;
+  - the 32 heads at the selected token, coloured by FVE;
+  - the selected site's explanation.
+The page fills its iframe's height (the panes scroll), so the embedding sets the height.
+
+Output: <out-dir>/widget.html (small; the menu and data versions inline) and, per text, data/<doc>.js (tokens,
+attention, matryoshka explanations) and data/<doc>.std.js (standard explanations, fetched on the first switch). Data
+files are gzip+base64 JSON loaded by <script> tag, so they need no CORS headers even from a sandboxed iframe; their URLs
+carry a content hash, so a new build is never served from a stale cache. URL options: ?theme=dark|auto, ?chat=<doc>.
 """
 
 import argparse
 import base64
 import gzip
-import html
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -45,17 +52,8 @@ def b64gz(b: bytes) -> str:
     return base64.b64encode(gzip.compress(b, 9)).decode()
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--doc", required=True)
-    p.add_argument("--out", required=True)
-    p.add_argument("--start", default=None, help="HEAD:POS selected on load (default: the best-explained non-sink site past position 60)")
-    p.add_argument("--label", default=None, help="short name of the text for the header (default: from meta.json)")
-    p.add_argument("--base-model", default="Qwen/Qwen3-8B")
-    a = p.parse_args()
-    from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(a.base_model)
-    d = Path(a.doc)
+def doc_parts(tok, d: Path, label: str, start: str | None) -> tuple[dict, dict, str]:
+    """One document → (data-file parts {base, att, mtry}, {rl}, log line). Each part is gzip+base64 JSON (att: raw bytes)."""
     meta = json.loads((d / "meta.json").read_text())
     ids = np.load(d / "token_ids.npy").tolist()
     T, H = len(ids), int(meta["n_heads"])
@@ -67,46 +65,80 @@ def main() -> None:
     base = 2 * (1 - s.rl_cos) / np.maximum(1 - s.rl_fve, 1e-6)
     assert np.allclose(1 - 2 * (1 - s.mtry_cos) / base, s.mtry_fve, atol=2e-3), "mtry_fve is not on the RL site baseline"
     models = {}
-    for key, prefix in (("mtry", "mtry"), ("rl", "rl")):
-        err = 2 * (1 - s[f"{prefix}_cos"])
-        models[key] = {"fve": [round(float(x), 3) for x in s[f"{prefix}_fve"]], "text": s[f"{prefix}_text"].tolist(),
+    for key in ("mtry", "rl"):
+        err = 2 * (1 - s[f"{key}_cos"])
+        models[key] = {"fve": [round(float(x), 3) for x in s[f"{key}_fve"]], "text": s[f"{key}_text"].tolist(),
                        "head_fve": [round(float(1 - err[s["head"] == h].sum() / base[s["head"] == h].sum()), 3) for h in range(H)],
                        "doc_fve": round(float(1 - err.sum() / base.sum()), 3)}
     attn = np.load(d / "attn.npz")["attn"].astype(np.float32)                          # [H, T, T]
-    first_w = attn[:, :, 0]
-    if a.start:
-        h0, t0 = map(int, a.start.split(":"))
+    if start:
+        h0, t0 = map(int, start.split(":"))
     else:
-        ok = (s.pos >= 60) & (first_w[s["head"], s.pos] < 0.3)
+        ok = (s.pos >= 60) & (attn[:, :, 0][s["head"], s.pos] < 0.3)
         r = s[ok].sort_values("mtry_fve", ascending=False).iloc[0]
         h0, t0 = int(r["head"]), int(r.pos)
     # causal attention rows for shading: √w (small weights stay visible) in ATT_LEVELS steps, concatenated per head then
     # per query token; the top keys and their exact weights are listed separately
     att = np.concatenate([np.sqrt(np.clip(attn[h, t, : t + 1], 0, 1)) for h in range(H) for t in range(T)])
-    att_b = (att * ATT_LEVELS).round().astype(np.uint8).tobytes()
     reads = []
     for h in range(H):
         for t in range(T):
             w = attn[h, t, : t + 1]
             top = np.argsort(-w, kind="stable")[:3]
             reads.append([[int(j), round(float(w[j]), 3)] for j in top if w[j] >= 0.03])
-    host = meta.get("url", "").split("/")[2] if "://" in meta.get("url", "") else ""
     tokens = display_tokens(tok, ids)
-    data = {"layer": int(meta.get("layer", 24)), "n_heads": H, "T": T, "label": a.label or meta["name"].split("_", 1)[-1].replace("_", " "),
-            "source": host, "domain": meta.get("domain", "").replace("_", " "), "tokens": tokens, "roles": chat_roles(tokens),
-            "models": models, "reads": reads, "att_levels": ATT_LEVELS, "start": [h0, t0]}
-    blobs = {"data": b64gz(json.dumps(data, ensure_ascii=False).encode()), "att": b64gz(att_b)}
-    page = TEMPLATE.replace("__TITLE__", html.escape(f"Head NLA: {data['label']}")).replace("__BLOBS__", json.dumps(blobs))
-    Path(a.out).write_text(page)
-    print(f"{d.name}: {T} tokens × {H} heads, start H{h0} #{t0}; pooled FVE matryoshka {models['mtry']['doc_fve']:+.3f}, "
-          f"standard {models['rl']['doc_fve']:+.3f}; "
-          f"wrote {a.out} ({Path(a.out).stat().st_size / 1e6:.2f} MB)")
+    base_d = {"layer": int(meta.get("layer", 24)), "n_heads": H, "T": T, "label": label, "tokens": tokens,
+              "roles": chat_roles(tokens), "reads": reads, "att_levels": ATT_LEVELS, "start": [h0, t0]}
+    js = lambda o: b64gz(json.dumps(o, ensure_ascii=False).encode())                    # noqa: E731
+    parts = {"base": js(base_d), "att": b64gz((att * ATT_LEVELS).round().astype(np.uint8).tobytes()), "mtry": js(models["mtry"])}
+    line = (f"{d.name}: {T} tokens × {H} heads, start H{h0} #{t0}; pooled FVE matryoshka {models['mtry']['doc_fve']:+.3f}, "
+            f"standard {models['rl']['doc_fve']:+.3f}")
+    return parts, {"rl": js(models["rl"])}, line
+
+
+def write_data(path: Path, name: str, parts: dict) -> str:
+    """data/<name>.js: one call to the page's loader. Loaded by a <script> tag, so no CORS is needed even when the page
+    runs with an opaque origin (a sandboxed LessWrong widget). Returns a content hash for cache-busting."""
+    body = f"HEADNLA_LOAD({json.dumps(name)},{json.dumps(parts)});\n"
+    path.write_text(body)
+    return hashlib.sha256(body.encode()).hexdigest()[:12]
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--doc", action="append", required=True, help="a doc-viewer or chat-viewer folder (repeatable, in menu order)")
+    p.add_argument("--label", action="append", required=True, help="menu name of each --doc, in the same order")
+    p.add_argument("--start", action="append", default=None, help="HEAD:POS selected when each --doc opens, or 'auto'")
+    p.add_argument("--default", default=None, help="folder name of the --doc shown first (default: the first)")
+    p.add_argument("--out-dir", required=True, help="writes widget.html and data/<doc>.js, data/<doc>.std.js")
+    p.add_argument("--base-model", default="Qwen/Qwen3-8B")
+    a = p.parse_args()
+    starts = a.start or ["auto"] * len(a.doc)
+    assert len(a.label) == len(a.doc) == len(starts), "give one --label (and --start, if any) per --doc"
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(a.base_model)
+    out = Path(a.out_dir)
+    (out / "data").mkdir(parents=True, exist_ok=True)
+    chats = []
+    for d, label, st in zip(map(Path, a.doc), a.label, starts):
+        main_parts, std_parts, line = doc_parts(tok, d, label, None if st == "auto" else st)
+        v = write_data(out / "data" / f"{d.name}.js", d.name, main_parts)
+        vs = write_data(out / "data" / f"{d.name}.std.js", f"{d.name}.std", std_parts)
+        chats.append({"key": d.name, "label": label, "v": v, "vs": vs})
+        mb = lambda f: (out / "data" / f).stat().st_size / 1e6                          # noqa: E731
+        print(f"{line}; data {mb(d.name + '.js'):.1f} MB + standard {mb(d.name + '.std.js'):.1f} MB", flush=True)
+    keys = [c["key"] for c in chats]
+    manifest = {"chats": chats, "default": a.default or keys[0]}
+    assert manifest["default"] in keys, f"--default {a.default} is not one of {keys}"
+    (out / "widget.html").write_text(TEMPLATE.replace("__MANIFEST__", json.dumps(manifest).replace("</", "<\\/")))
+    print(f"wrote {out / 'widget.html'} ({(out / 'widget.html').stat().st_size / 1e3:.0f} kB) and {len(chats) * 2} data files")
 
 
 TEMPLATE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>__TITLE__</title>
+<title>Head NLA explorer</title>
 <script>try{const t=new URLSearchParams(location.search).get('theme');if(t==='dark'||t==='auto')document.documentElement.dataset.theme=t}catch(e){}</script>
+<!-- ?theme=dark|auto (default light); ?chat=<key> opens that chat instead of the default -->
 <style>
 :root{--bg:#ffffff;--panel:#faf9f7;--border:#e3e2dd;--ink:#1a1a19;--ink-2:#52514e;--ink-3:#8a8984;--accent:#2a78d6;--sel:#1a1a19;--pill:#f3f2ef;--user:#7a5195;--asst:#1f7f73}
 :root[data-theme="dark"]{--bg:#1a1a19;--panel:#20201e;--border:#3a3a37;--ink:#f0efec;--ink-2:#c3c2b7;--ink-3:#8f8e87;--accent:#5b9ae8;--sel:#f0efec;--pill:#2a2a28;--user:#8d62ad;--asst:#2a8d80}
@@ -120,7 +152,9 @@ body{background:var(--bg);color:var(--ink);font:13px/1.45 system-ui,-apple-syste
 .seg button{border:0;border-radius:0;background:var(--bg);padding:3px 8px}.seg button+button{border-left:1px solid var(--border)}
 button{font:inherit;font-size:12px;color:var(--ink);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:3px 8px;cursor:pointer;line-height:1.3}
 button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.shl{color:var(--ink-3);font-size:12px;flex:none}@media (max-width:420px){.shl{display:none}}
+.shl{color:var(--ink-3);font-size:12px;flex:none}
+#chat{font:inherit;font-size:12.5px;font-weight:400;color:var(--ink);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px 4px;max-width:100%;cursor:pointer}
+#chat:focus-visible{outline:2px solid var(--accent);outline-offset:1px}@media (max-width:420px){.shl{display:none}}
 .pane{border:1px solid var(--border);border-radius:9px;background:var(--panel);overflow-y:auto;min-height:0;overscroll-behavior:contain}
 #ctx{padding:6px 9px;white-space:pre-wrap;word-break:break-word;line-height:1.75;font-size:13px}
 #ctx .t{border-radius:3px;cursor:pointer;padding:1px 0}#ctx .t.fut{color:var(--ink-3)}
@@ -144,7 +178,7 @@ button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}button:focus-v
 #load{color:var(--ink-3);padding:6px 2px}
 </style></head><body>
 <div id="app">
-<div class="top"><span class="ttl" id="ttl">Head NLA</span><span class="shl">Shade text by</span>
+<div class="top"><span class="ttl">Head NLA <span class="sub"><span class="mdl">· Qwen3-8B L24 </span>· </span><select id="chat" aria-label="Chat"></select></span><span class="shl">Shade text by</span>
 <span class="seg" role="group" aria-label="Shade text by"><button id="m-att" aria-pressed="true" title="the selected head's attention from the selected token">Attention</button><button id="m-fve" aria-pressed="false" title="the selected head's FVE at each token">FVE</button></span>
 <span class="seg" role="group" aria-label="Head NLA model"><button id="x-mtry" aria-pressed="true" title="matryoshka-trained (RL step 640): puts the most informative content first">Matryoshka</button><button id="x-rl" aria-pressed="false" title="standard RL training (step 400)">Standard</button></span></div>
 <div class="pane" id="ctx" aria-label="Text; click a token"><div id="load">Loading…</div></div>
@@ -154,14 +188,29 @@ button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}button:focus-v
 <div class="lg"><span>FVE <span class="k">−100%</span><canvas id="r-fve" width="140" height="8"></canvas><span class="k">+100%</span></span>
 <span id="lg-att">attention <span class="k">0</span><canvas id="r-att" width="140" height="8"></canvas><span class="k">100%</span></span><span class="hint">← → tokens · ↑ ↓ heads</span></div>
 </div>
-<script id="blobs" type="application/json">__BLOBS__</script>
+<script id="manifest" type="application/json">__MANIFEST__</script>
 <script>
 const $=id=>document.getElementById(id);
-const S={h:0,t:0,mode:'att',model:'mtry'};let D=null,ATT=null,TRI=0,SPANS=[],CELLS=[];
+const MAN=JSON.parse($('manifest').textContent);
+const S={h:0,t:0,mode:'att',model:'mtry',chat:null};let D=null,SPANS=[],CELLS=[],GEN=0;
 const LABEL={mtry:'Matryoshka NLA explanation',rl:'Standard NLA explanation (RL step 400)'};
 const M=()=>D.models[S.model];
 async function gunzip(b64){const b=Uint8Array.from(atob(b64),c=>c.charCodeAt(0));
  return new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer())}
+// Data files (data/<name>.js) call HEADNLA_LOAD. They load by <script> tag rather than fetch(): inside a sandboxed
+// widget iframe this page has an opaque origin, and a script tag needs no CORS headers where fetch would.
+const PENDING={},FILES={},CHATS={};
+window.HEADNLA_LOAD=(name,parts)=>{const r=PENDING[name];delete PENDING[name];if(r)r(parts)};
+function file(name,v){
+ if(!FILES[name])FILES[name]=new Promise((res,rej)=>{PENDING[name]=res;const sc=document.createElement('script');
+  sc.src='data/'+name+'.js?v='+v;sc.onerror=()=>{delete FILES[name];delete PENDING[name];rej(new Error('could not load data/'+name+'.js'))};document.head.append(sc)})
+  .then(async p=>{const o={};for(const[k,b]of Object.entries(p))o[k]=await gunzip(b);return o});
+ return FILES[name]}
+const json=u=>JSON.parse(new TextDecoder().decode(u));
+async function chatData(key){
+ if(CHATS[key])return CHATS[key];const c=MAN.chats.find(x=>x.key===key),p=await file(key,c.v),d=json(p.base);
+ d.att=p.att;d.tri=d.T*(d.T+1)/2;d.models={mtry:json(p.mtry)};return CHATS[key]=d}
+async function stdData(d,key){if(!d.models.rl){const c=MAN.chats.find(x=>x.key===key);d.models.rl=json((await file(key+'.std',c.vs)).rl)}}
 const pct=x=>x==null?'n/a':(x>=0?'+':'−')+Math.abs(Math.round(100*x))+'%';
 const vis=s=>s.replace(/\n/g,'⏎').replace(/\t/g,'⇥')||'∅';
 const quote=s=>'“'+(s.trim()||vis(s))+'”';
@@ -184,19 +233,18 @@ function lut(kind){const key=kind+(isDark()?'d':'l');if(LUT[key])return LUT[key]
 const fveC=v=>lut('div')[Math.round(Math.max(0,Math.min(1,(v+1)/2))*255)];
 const attC=q=>lut('seq')[q];
 function ramp(id,kind){const c=$(id),x=c.getContext('2d'),L=lut(kind);for(let i=0;i<c.width;i++){x.fillStyle=L[Math.round(i/(c.width-1)*255)].bg;x.fillRect(i,0,1,c.height)}}
-const k=(h,t)=>h*D.T+t,off=(h,t)=>h*TRI+t*(t+1)/2;
-function attRow(h,t){return ATT.subarray(off(h,t),off(h,t)+t+1)}       // √w × att_levels for key positions 0..t
+const k=(h,t)=>h*D.T+t,off=(h,t)=>h*D.tri+t*(t+1)/2;
+function attRow(h,t){return D.att.subarray(off(h,t),off(h,t)+t+1)}     // √w × att_levels for key positions 0..t
 function el(t,a={},...c){const e=document.createElement(t);for(const[x,v]of Object.entries(a)){if(x==='class')e.className=v;else if(x==='style')e.style.cssText=v;else e.setAttribute(x,v)}for(const y of c)if(y!=null)e.append(y);return e}
 function build(){
- $('ttl').replaceChildren(document.createTextNode('Head NLA '),el('span',{class:'sub'},el('span',{class:'mdl'},`· Qwen3-8B L${D.layer} `),'· '+D.label));
  // chats: template tokens muted; a User / Assistant label where each turn opens (role names come from chat_roles)
  const ctx=$('ctx'),R=D.roles;ctx.replaceChildren();SPANS=D.tokens.map((s,t)=>{
   if(R&&s==='<|im_start|>'&&t+1<D.T){const r=R[t+1].replace('~','');ctx.append(el('span',{class:'turn '+r},r==='user'?'User':r==='assistant'?'Assistant':r))}
   const e=el('span',{class:'t'+(R&&R[t].startsWith('~')?' tpl':'')},s);e.dataset.t=t;ctx.append(e);return e});
- ctx.addEventListener('click',e=>{const t=e.target.closest('.t');if(t)sel(S.h,+t.dataset.t)});
- const hd=$('heads');CELLS=[];for(let h=0;h<D.n_heads;h++){const b=el('button',{'aria-label':'Head '+h},String(h));b.onclick=()=>sel(h,S.t);hd.append(b);CELLS.push(b)}
- ramp('r-fve','div');ramp('r-att','seq');
+ const hd=$('heads');hd.replaceChildren();CELLS=[];
+ for(let h=0;h<D.n_heads;h++){const b=el('button',{'aria-label':'Head '+h},String(h));b.onclick=()=>sel(h,S.t);hd.append(b);CELLS.push(b)}
 }
+$('ctx').addEventListener('click',e=>{const t=e.target.closest('.t');if(t&&D)sel(S.h,+t.dataset.t)});
 // chats open scrolled to the assistant's reply: its first non-template token at the top of the pane (scroll up for the
 // user turn and the template)
 function scrollToReply(){const R=D.roles,a=R?R.findIndex(r=>r==='assistant'):-1;if(a<0)return;const box=$('ctx');
@@ -224,16 +272,28 @@ function sel(h,t,scroll=true){
   el('div',{class:'mut',style:'margin-top:5px'},LABEL[S.model]+' · one sample at temperature 1'));
  $('detail').scrollTop=0;
 }
-function setMode(m){S.mode=m;$('m-att').setAttribute('aria-pressed',m==='att');$('m-fve').setAttribute('aria-pressed',m==='fve');$('lg-att').style.visibility=m==='att'?'visible':'hidden';sel(S.h,S.t,false)}
+function setMode(m){S.mode=m;$('m-att').setAttribute('aria-pressed',m==='att');$('m-fve').setAttribute('aria-pressed',m==='fve');$('lg-att').style.visibility=m==='att'?'visible':'hidden';if(D)sel(S.h,S.t,false)}
 $('m-att').onclick=()=>setMode('att');$('m-fve').onclick=()=>setMode('fve');
-function setModel(m){S.model=m;$('x-mtry').setAttribute('aria-pressed',m==='mtry');$('x-rl').setAttribute('aria-pressed',m==='rl');if(D)sel(S.h,S.t,false)}
+const loading=msg=>$('detail').replaceChildren(el('div',{class:'mut'},msg));
+const failed=e=>loading('Could not load the data: '+e.message);
+async function setModel(m){
+ $('x-mtry').setAttribute('aria-pressed',m==='mtry');$('x-rl').setAttribute('aria-pressed',m==='rl');
+ const g=++GEN;if(D&&m==='rl'&&!D.models.rl){loading('Loading the standard explanations…');try{await stdData(D,S.chat)}catch(e){if(g===GEN)failed(e);return}}
+ if(g!==GEN)return;S.model=m;if(D)sel(S.h,S.t,false)}
+// open a chat at its default site, scrolled to the assistant's reply; keeps the shading and model choices
+async function openChat(key){
+ const g=++GEN;S.chat=key;$('chat').value=key;D=null;$('ctx').replaceChildren(el('div',{id:'load'},'Loading…'));loading('');
+ let d;try{d=await chatData(key);if(S.model==='rl')await stdData(d,key)}catch(e){if(g===GEN){$('ctx').textContent='';failed(e)}return}
+ if(g!==GEN)return;D=d;build();sel(D.start[0],D.start[1],!D.roles);if(D.roles)scrollToReply()}
+for(const c of MAN.chats)$('chat').append(el('option',{value:c.key},c.label));
+$('chat').onchange=e=>openChat(e.target.value);
 $('x-mtry').onclick=()=>setModel('mtry');$('x-rl').onclick=()=>setModel('rl');
 $('prev').onclick=()=>sel(S.h,S.t-1);$('next').onclick=()=>sel(S.h,S.t+1);
 document.addEventListener('keydown',e=>{if(!D||e.metaKey||e.ctrlKey||e.altKey)return;const m={ArrowLeft:[0,-1],ArrowRight:[0,1],ArrowUp:[-1,0],ArrowDown:[1,0]}[e.key];
  if(!m)return;e.preventDefault();sel(S.h+m[0],S.t+m[1])});
-(async()=>{try{const B=JSON.parse($('blobs').textContent);const [d,a]=await Promise.all([gunzip(B.data),gunzip(B.att)]);
- D=JSON.parse(new TextDecoder().decode(d));ATT=a;TRI=D.T*(D.T+1)/2;build();sel(D.start[0],D.start[1],!D.roles);if(D.roles)scrollToReply();
- }catch(e){$('ctx').textContent='Could not load the data: '+e}})();
+ramp('r-fve','div');ramp('r-att','seq');
+{let q=null;try{q=new URLSearchParams(location.search).get('chat')}catch(e){}
+ openChat(MAN.chats.some(c=>c.key===q)?q:MAN.default)}
 if(window.matchMedia)matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change',()=>{if(D){LUT={};ramp('r-fve','div');ramp('r-att','seq');sel(S.h,S.t,false)}});
 </script></body></html>
 """
