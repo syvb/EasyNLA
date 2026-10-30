@@ -84,9 +84,17 @@ The default theme is light.
   nested in it inherits the sandbox. Its origin is `null`, so `fetch()` of its own data files fails without CORS
   headers; this was confirmed in Chromium. Data files are loaded by `<script>` tag instead. Each one calls
   `HEADNLA_LOAD(name, parts)` with gzip+base64 JSON parts, which `DecompressionStream` decodes.
-- **Caching.** Cloudflare doesn't cache `/head-nla/*` (`cf-cache-status: DYNAMIC`) and serves brotli. There is no
-  `Cache-Control` header, so browsers may reuse a cached `widget.html` for a while after an update. The data URLs carry
-  content hashes (`?v=`), so a page never pairs with stale data.
+- **Caching.** The data URLs carry content hashes (`?v=`), so a page never pairs with stale data. Cloudflare serves
+  brotli.
+  - **2026-10-29:** Cloudflare did not cache `/head-nla/*` (`cf-cache-status: DYNAMIC`), and there was no
+    `Cache-Control` header.
+  - **2026-10-30:** everything under `/head-nla/` is cached at the edge (`MISS`, then `HIT`), 404s included.
+    Cloudflare adds `Cache-Control: max-age=1200`, so a browser keeps a page for up to 20 minutes.
+  - **Suggested:**
+    - `widget.html`: no edge cache, and `Cache-Control: no-cache` so browsers revalidate (cheap, by Last-Modified);
+    - `data/*.js?v=…`: cache for a long time (immutable, since the URL changes with the content);
+    - 404s: a short TTL, so a file requested before it is uploaded doesn't stay missing.
+  - **After changing `widget.html`:** purge its URL in Cloudflare, in case an edge still holds the old copy.
 - **Size.** The page fills its iframe's height and the panes scroll, so the embed sets the height. It is laid out for
   340–700 px. The header's controls wrap onto a second row when they don't fit beside the title and menu.
 - **Scrolling passes on to the post.** The panes have no `overscroll-behavior: contain`. With it, a wheel or touch
