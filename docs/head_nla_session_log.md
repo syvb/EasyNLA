@@ -488,6 +488,22 @@ The user asked for a viewer like the doc viewer, but for chats. They chose Qwen3
 - **Caveat on the first token:** the AR never trained on empty text, so about 11 of matryoshka's 73-point
   first step is the AR reaching the head-only floor. The figures say so.
 
+### 17. Archive before deleting the dev VM (10-30)
+
+- **Audit:** every file under the home directory's NLA folders (3,716 files, 32 GB) was hashed and matched against
+  all of the user's HF repos and the git trees. 21 GB was already on HF.
+- **Uploaded** to `syvb/head-nla-qwen3-8b` (secret scan clean; wandb host and entity, and home paths, redacted):
+  - `l24/meta/corpus.parquet`, the 10,000 source documents;
+  - `l24/chat_viewer/paraphrase_test/defect_labels.parquet`, the per-paraphrase defect labels;
+  - `l24/logs/misc/`, logs of early, failed and side runs.
+- **Left behind, not needed:**
+  - CPU smoke-test checkpoints (`rl_cpu/`);
+  - weights extracted for the blind study (regenerable; the scripts are on HF);
+  - superseded viewer builds, review scratch and screenshots;
+  - unredacted copies of logs already on HF in redacted form;
+  - launcher and pod-connection logs (their costs are audited below);
+  - an unsynced wandb run whose tables are on HF as `l24/probe` and `l24/checks`.
+
 ## Costs (audited 2026-10-27)
 
 **GPU** comes from RunPod's billing API (`/v1/billing/pods`, per pod, including disk). There were 27 pods from

@@ -45,7 +45,7 @@ python -m nla.datagen.heads.run_pipeline --config configs/datagen/heads_qwen3_8b
 
 | Stage | Setting |
 |---|---|
-| Corpus | `m-a-p/FineFineWeb`: 200 random shard files × 50 docs ≥ 1,000 chars, seed 42. The first 10,000 docs are used. |
+| Corpus | `m-a-p/FineFineWeb`: 200 random shard files × 50 docs ≥ 1,000 chars, seed 42. The first 10,000 docs are used. A copy is on HF at `l24/meta/corpus.parquet`. |
 | Extract | Per doc, 10 token positions drawn uniformly from positions ≥ 50 that are not special tokens. The RNG is keyed on (seed 42, doc id). Truncated to 2,048 tokens, no BOS, giving 100k records. |
 | What a record stores | The input to layer 24's `self_attn.o_proj`: all heads' outputs z, head h at `[h·128:(h+1)·128]`. Hook: `nla/datagen/heads/capture.py`. It also stores attention statistics, which are used for evaluation only and never for training data. |
 | Stats | Per head, over all 100k records: the mean output z̄_h, and the RMS (`dev_rms`) and quantiles (0.5, 0.9, 0.99, 0.999) of ‖W_O,h (z_h − z̄_h)‖. |
