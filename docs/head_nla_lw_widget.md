@@ -46,7 +46,8 @@ scripts/heads_lw_widget_build.sh <out dir>     # CPU only, a few minutes; downlo
 ```
 
 The output is deterministic (gzip with `mtime=0`). A build in an empty HF cache, without a token, matched the published
-files byte for byte on 2026-10-29: `widget.html` and all 8 data files, both on HF and on i.smitop.com.
+files byte for byte on 2026-10-29: `widget.html` and all 8 data files, both on HF and on i.smitop.com. The 2026-10-30
+scroll fix changed only `widget.html`; the data files are unchanged.
 
 | File | Size | Content |
 |---|---|---|
@@ -88,3 +89,7 @@ The default theme is light.
   content hashes (`?v=`), so a page never pairs with stale data.
 - **Size.** The page fills its iframe's height and the panes scroll, so the embed sets the height. It is laid out for
   340–700 px. The header's controls wrap onto a second row when they don't fit beside the title and menu.
+- **Scrolling passes on to the post.** The panes have no `overscroll-behavior: contain`. With it, a wheel or touch
+  scroll over a pane stopped at the pane's end instead of continuing to scroll the post (fixed 2026-10-30, after the
+  post went up). Checked in headless Chromium with the page in a sandboxed iframe: before the fix the parent page stayed
+  at scrollY 0 after the pane hit its end; after it, the parent page scrolled.

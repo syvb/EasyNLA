@@ -175,7 +175,7 @@ button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}button:focus-v
 .shl{color:var(--ink-3);font-size:12px;flex:none}
 #chat{font:inherit;font-size:12.5px;font-weight:400;color:var(--ink);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:2px 4px;cursor:pointer;flex:none}
 #chat:focus-visible{outline:2px solid var(--accent);outline-offset:1px}@media (max-width:420px){.shl{display:none}}
-.pane{border:1px solid var(--border);border-radius:9px;background:var(--panel);overflow-y:auto;min-height:0;overscroll-behavior:contain}
+.pane{border:1px solid var(--border);border-radius:9px;background:var(--panel);overflow-y:auto;min-height:0}
 #ctx{padding:6px 9px;white-space:pre-wrap;word-break:break-word;line-height:1.75;font-size:13px}
 #ctx .t{border-radius:3px;cursor:pointer;padding:1px 0}#ctx .t.fut{color:var(--ink-3)}
 #ctx .t.cur{outline:2px solid var(--sel);outline-offset:0;font-weight:650}
