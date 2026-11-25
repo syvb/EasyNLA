@@ -73,20 +73,47 @@ def read_reset_steer_log(model):
         return {}
 
 
-def build_steering_vector(activation, marker_pos, injection_layer=1):
+def build_steering_vector(
+    activation, marker_pos, injection_layer=1, soft_norm_tau: float = 0.0,
+):
     """One activation -> a vllm-lens SteeringVector injected at `marker_pos`.
 
     SHAPE MATTERS: activations must be 3-D [n_layers, n_positions, d]. vllm-lens
     only honors position_indices for 3-D tensors; a 2-D [n_layers, d] tensor
     takes the BROADCAST branch in _worker_ext.py (_apply_steering) and gets ADDed
     at EVERY token, silently ignoring position_indices.
+
+    Soft-clipped norm weighting (Fix 3, `soft_norm_tau > 0`):
+      vllm-lens applies `h'_p = h_p + scale * ||h_p|| * (v / ||v||)` when
+      `norm_match=True`. Setting `scale = ||v|| / (sqrt(||v||^2 + tau^2) + 1e-9)`
+      matches HF's `karvonen_inject_in_residual(..., soft_norm_tau=tau)`
+      (`h'_p = h_p + ||h_p|| * v / (sqrt(||v||^2 + tau^2) + 1e-9)`) without
+      requiring additional vllm-lens worker patches. Degenerate exact-zero
+      vectors disable `norm_match` with `scale=0.0` so `0 / 0` can never NaN.
     """
     from vllm_lens import SteeringVector
 
+    from nla.utils.soft_norm import soft_norm_scale_factor
+
+    act_cpu = activation.view(1, 1, -1).cpu().float()  # [1, 1, d]
+    if soft_norm_tau < 0.0:
+        raise ValueError(f"soft_norm_tau must be >= 0.0, got {soft_norm_tau}")
+    if soft_norm_tau > 0.0:
+        v_norm = float(act_cpu.norm().item())
+        if v_norm <= 1e-12:
+            scale = 0.0
+            norm_match = False
+        else:
+            scale = soft_norm_scale_factor(v_norm, soft_norm_tau)
+            norm_match = True
+    else:
+        scale = 1.0
+        norm_match = True
+
     return SteeringVector(
-        activations=activation.view(1, 1, -1).cpu().float(),  # [1, 1, d]
+        activations=act_cpu,
         layer_indices=[injection_layer],
-        scale=1.0,
-        norm_match=True,
+        scale=scale,
+        norm_match=norm_match,
         position_indices=[marker_pos],
     )

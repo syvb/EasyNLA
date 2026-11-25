@@ -35,6 +35,9 @@ class NLAExtractionMeta:
     corpus: str
     corpus_slice: dict[str, int]
     positions_per_doc: int
+    injection_scale: str | float | None = None
+    mse_scale: str | float | None = None
+    soft_norm_tau: float | None = None
 
 
 @dataclass
@@ -98,8 +101,14 @@ def serialize_sidecar(meta: NLADatasetMeta) -> str:
 
     # asdict() gives None for unset nested dataclasses; drop None-valued top-level
     # keys so the YAML stays readable and downstream readers don't have to
-    # special-case "tokens: null" vs "tokens absent".
+    # special-case "tokens: null" vs "tokens absent". Also drop None-valued
+    # optional extraction fields so absent mse_scale still defaults to
+    # sqrt_d_model in config.py (whereas explicit null means raw).
     d = {k: v for k, v in asdict(meta).items() if v is not None}
+    if isinstance(d.get("extraction"), dict):
+        for opt_k in ("injection_scale", "mse_scale", "soft_norm_tau"):
+            if d["extraction"].get(opt_k) is None:
+                d["extraction"].pop(opt_k, None)
     return yaml.safe_dump(d, sort_keys=False)
 
 

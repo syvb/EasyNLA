@@ -81,6 +81,8 @@ def main():
     p.add_argument("--max-new-tokens", type=int, default=200)
     p.add_argument("--4bit", dest="four_bit", action="store_true",
                    help="load the base in 4-bit (matches the single-GPU training path)")
+    p.add_argument("--soft-norm-tau", type=float, default=0.0,
+                   help="Fix 3 soft-clipped norm floor tau (0.0 = baseline unit-norm injection)")
     args = p.parse_args()
 
     device = "cuda"
@@ -125,7 +127,7 @@ def main():
     vref = [None]
     register_karvonen_hook(actor, vref, cfg.injection_token_id,
                            cfg.injection_left_neighbor_id, cfg.injection_right_neighbor_id,
-                           layer_idx=1)
+                           layer_idx=1, soft_norm_tau=args.soft_norm_tau)
     critic = load_ar_critic(args.ar_ckpt, args.base_ckpt, device) if args.ar_ckpt else None
 
     for i, row in enumerate(rows):

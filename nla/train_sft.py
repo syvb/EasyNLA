@@ -38,7 +38,7 @@ import wandb
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-from nla.utils import critic_predict, register_karvonen_hook
+from nla.utils import critic_predict, register_karvonen_hook, soft_norm_weights, weighted_mse_loss
 from nla.utils.run_config import add_config_arg, apply_config_defaults, save_resolved_config
 from nla.config import load_nla_config
 from nla.injection import karvonen_inject_in_residual
@@ -576,6 +576,11 @@ def main():
     p.add_argument("--max-rows", type=int, default=None,
                    help="Cap training rows (smoke runs)")
     p.add_argument("--save-every", type=int, default=500)
+    p.add_argument("--soft-norm-tau", type=float, default=0.0,
+                   help="Fix 3 soft-clipped norm floor tau (0.0 = disabled / baseline "
+                        "EasyNLA). When > 0: AV injects v / sqrt(||v||^2 + tau^2); "
+                        "AR weights per-sample MSE by w_i = ||v_i||^2 / (||v_i||^2 + tau^2) "
+                        "normalized by step mean weight.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--wandb-project", default="nla-qwen3-8b")
     p.add_argument("--wandb-name", default=None)
@@ -586,6 +591,7 @@ def main():
     p.add_argument("--no-wandb", action="store_true")
     apply_config_defaults(p)   # YAML (--config) -> argparse defaults; CLI still overrides
     args = p.parse_args()
+    assert args.soft_norm_tau >= 0.0, f"--soft-norm-tau must be >= 0, got {args.soft_norm_tau}"
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -675,7 +681,10 @@ def main():
             cfg.injection_token_id,
             cfg.injection_left_neighbor_id,
             cfg.injection_right_neighbor_id,
+            soft_norm_tau=args.soft_norm_tau,
         )
+        if args.soft_norm_tau > 0.0:
+            print(f"[av] Fix 3 soft-norm injection ENABLED (tau={args.soft_norm_tau:.4f})")
         model._nla_vectors_ref = vectors_ref  # av_generate_samples reaches it here
         if args.gradient_checkpointing:
             model.gradient_checkpointing_enable()
@@ -877,13 +886,33 @@ def main():
         accum_n = 0
         ar_dbg = {}            # AR: last-chunk norms/cosine snapshot
 
+        step_ar_prepared = None
+        step_ar_w_sum = None
+        if args.mode == "ar" and args.soft_norm_tau > 0.0:
+            step_ar_prepared = []
+            w_total = 0.0
+            for _ in range(grad_accum):
+                if cursor + args.batch_size > len(perm):
+                    rng.shuffle(perm)
+                    cursor = 0
+                c_rows = [rows[i] for i in perm[cursor:cursor + args.batch_size]]
+                cursor += args.batch_size
+                ids_c, attn_c, gold_c = _ar_prepare_chunk(
+                    c_rows, tokenizer, device, max_len=args.max_len,
+                )
+                w_c = soft_norm_weights(gold_c, args.soft_norm_tau)
+                w_total += float(w_c.sum().item())
+                step_ar_prepared.append((ids_c, attn_c, gold_c, w_c))
+            step_ar_w_sum = max(w_total, 1e-8)
+
         for accum_idx in range(grad_accum):
-            # ---- pick batch ----
-            if cursor + args.batch_size > len(perm):
-                rng.shuffle(perm)
-                cursor = 0
-            chunk_rows = [rows[i] for i in perm[cursor:cursor + args.batch_size]]
-            cursor += args.batch_size
+            if step_ar_prepared is None:
+                # ---- pick batch ----
+                if cursor + args.batch_size > len(perm):
+                    rng.shuffle(perm)
+                    cursor = 0
+                chunk_rows = [rows[i] for i in perm[cursor:cursor + args.batch_size]]
+                cursor += args.batch_size
 
             # ---- forward + loss ----
             if args.mode == "av":
@@ -922,7 +951,21 @@ def main():
                     resp_logits = shift_logits[shift_mask.bool()]   # [n_resp, V]
                     lsm = F.log_softmax(resp_logits, dim=-1)
                     accum_av_entropy += float((-(lsm.exp() * lsm).sum(-1)).mean())
-            else:  # ar, single-vector
+                bwd_loss = loss / grad_accum
+                log_loss_val = loss.item()
+            elif step_ar_prepared is not None:  # ar with Fix 3 soft-norm weighting
+                ids, attn, gold, w_chunk = step_ar_prepared[accum_idx]
+                with amp():
+                    pred = critic_predict(model, ids, attn, mse_scale_f)
+                pred_n = normalize_activation(pred, mse_scale_f)
+                gold_n = normalize_activation(gold, mse_scale_f)
+                # Micro-batch-invariant weighted mean across the entire step:
+                # sum_chunks weighted_mse_loss(...) = sum_i(w_i * mse_i) / sum_i(w_i).
+                bwd_loss = weighted_mse_loss(pred_n, gold_n, w_chunk, step_ar_w_sum)
+                ar_dbg = ar_debug_stats(pred, gold, mse_scale_f)
+                ar_dbg["soft_norm_w_mean"] = float(w_chunk.mean().item())
+                log_loss_val = bwd_loss.item() * grad_accum
+            else:  # ar, baseline unweighted (tau == 0.0)
                 ids, attn, gold = _ar_prepare_chunk(
                     chunk_rows, tokenizer, device, max_len=args.max_len,
                 )
@@ -932,14 +975,16 @@ def main():
                 gold_n = normalize_activation(gold, mse_scale_f)
                 loss = F.mse_loss(pred_n, gold_n)
                 ar_dbg = ar_debug_stats(pred, gold, mse_scale_f)
+                bwd_loss = loss / grad_accum
+                log_loss_val = loss.item()
 
             # Scale loss for accumulation; gradients sum correctly.
             try:
-                (loss / grad_accum).backward()
+                bwd_loss.backward()
             finally:
                 if vectors_ref is not None:   # AR mode has no injection hook
                     vectors_ref[0] = None   # clear only AFTER backward (checkpoint recompute done)
-            accum_loss += loss.item()
+            accum_loss += log_loss_val
             accum_n += 1
 
         # ---- step ----

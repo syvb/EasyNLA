@@ -51,7 +51,15 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import wandb
 
 from nla.utils import rl_logging
-from nla.utils import build_prompt_text, cjk_fraction, critic_predict, register_karvonen_hook
+from nla.utils import (
+    apply_soft_norm_to_advantages,
+    build_prompt_text,
+    cjk_fraction,
+    critic_predict,
+    register_karvonen_hook,
+    soft_norm_weights,
+    weighted_mse_loss,
+)
 from nla.utils.run_config import add_config_arg, apply_config_defaults, save_resolved_config
 
 # Evals selectable via the config `evals:` list. base_fve is the core FVE.
@@ -497,6 +505,12 @@ def main():
                         "(-1/mse) stays strong as mse shrinks, avoiding the -mse "
                         "advantage-collapse plateau. FVE/logging always use raw -mse, "
                         "so curves stay comparable across runs.")
+    p.add_argument("--soft-norm-tau", type=float, default=0.0,
+                   help="Fix 3 soft-clipped norm floor tau (0.0 = disabled / baseline EasyNLA).")
+    p.add_argument("--fail-reward", type=float, default=-2.0,
+                   help="Failed-extraction / truncation reward floor (default -2.0).")
+    p.add_argument("--disable-av-thinking", action="store_true", default=False,
+                   help="Pass enable_thinking=False when building AV prompts.")
     p.add_argument("--wandb-project", default="nla-qwen3-8b")
     p.add_argument("--wandb-name", default=None)
     p.add_argument("--wandb-group", default="rl",
@@ -507,6 +521,7 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     apply_config_defaults(p)   # YAML (--config) -> argparse defaults; CLI still overrides
     args = p.parse_args()
+    assert args.soft_norm_tau >= 0.0, f"--soft-norm-tau must be >= 0, got {args.soft_norm_tau}"
 
     # ---- fail-fast checks (BEFORE any model/engine loading) ----
     save_dir = Path(args.save_dir)
@@ -778,7 +793,12 @@ def main():
 
     # ---- karvonen hook on actor ----
     vectors_ref = [None]
-    register_karvonen_hook(actor, vectors_ref, inj_id, left_id, right_id, layer_idx=1)
+    register_karvonen_hook(
+        actor, vectors_ref, inj_id, left_id, right_id, layer_idx=1,
+        soft_norm_tau=args.soft_norm_tau,
+    )
+    if args.soft_norm_tau > 0.0:
+        print(f"[soft_norm] Fix 3 ENABLED (tau={args.soft_norm_tau:.4f})", flush=True)
 
     # All stop ids for rollout EOS-trimming (Qwen3 lists two in its
     # generation_config; trimming on tokenizer.eos_token_id alone would leave
@@ -1017,10 +1037,15 @@ def main():
         all_response_text = []
         all_prompt_group = []
         all_resp_lens = []  # response token count per sample (for length/throughput logging)
+        prompt_acts_step = []
+        av_enable_thinking = False if args.disable_av_thinking else None
         for gi, row_idx in enumerate(batch_idxs):
             row = rows[row_idx]
-            prompt_text = build_prompt_text(row["prompt"], inject_char, tokenizer)
+            prompt_text = build_prompt_text(
+                row["prompt"], inject_char, tokenizer, enable_thinking=av_enable_thinking,
+            )
             activation = torch.tensor(row["activation"], dtype=torch.float32)
+            prompt_acts_step.append(activation)
             responses = rollout_one_prompt(
                 actor, tokenizer, prompt_text, activation, vectors_ref,
                 inj_id, args.group_size, args.max_new_tokens, args.temperature, device,
@@ -1080,24 +1105,20 @@ def main():
             template, mse_scale_f, device,
         )
         # TRUNCATED -> FAILED: a cap-truncated rollout must not be scored as if
-        # its explanation were complete — it gets the -2 failure reward, which IS
+        # its explanation were complete — it gets the failure reward, which IS
         # trained on (the anti-runaway gradient). Keeps FVE/extraction honest.
         rewards = [None if t else r for r, t in zip(rewards, truncated)]
         # GRPO reward fill + optional -log transform. `rewards` holds raw -mse
         # (or None for failed extraction); FVE below uses these raw values, so
         # the FVE curve is identical regardless of --log-reward.
-        # Failed-extraction floor = the orthogonal-vector outcome (mse=2.0):
-        #   default -mse -> -2.0 ;  --log-reward -log(mse) -> -log(2.0) ≈ -0.69.
-        # -log(mse) keeps the reward gradient (-1/mse) strong as mse shrinks,
-        # avoiding the -mse advantage-collapse plateau (FVE flatlines ~0.47).
         if args.log_reward:
-            _floor = -math.log(2.0)
+            _floor = -math.log(max(-args.fail_reward, 1e-3))
             rewards_filled = [
-                _floor if r is None else -math.log(min(max(-r, 1e-3), 2.0))
+                _floor if r is None else -math.log(min(max(-r, 1e-3), max(-args.fail_reward, 2.0)))
                 for r in rewards
             ]
         else:
-            rewards_filled = [-2.0 if r is None else r for r in rewards]
+            rewards_filled = [args.fail_reward if r is None else r for r in rewards]
         rewards_t = torch.tensor(rewards_filled, dtype=torch.float32, device=device)
 
         # ---- reward shaping (length penalty) ----
@@ -1118,7 +1139,7 @@ def main():
         shape_terms["av/truncated_count"] = n_truncated
         for gi in range(args.batch_prompts):
             # exclude injection-failed rollouts from the group baseline; truncated
-            # participate with the -2 failure reward.
+            # participate with the failure reward.
             mask = (group_t == gi) & inject_ok_t
             if mask.sum() == 0:
                 continue
@@ -1126,12 +1147,17 @@ def main():
             mu = group_r.mean()
             sd = group_r.std() if group_r.numel() > 1 else torch.tensor(1.0, device=device)
             adv[mask] = (group_r - mu) / (sd + 1e-6)
+        if args.soft_norm_tau > 0.0:
+            adv, _sn_metrics = apply_soft_norm_to_advantages(
+                adv, group_t, torch.stack(prompt_acts_step, dim=0), args.soft_norm_tau,
+            )
+            shape_terms.update(_sn_metrics)
 
         # ---- GRPO update: fused forward+loss+backward per micro-batch ----
         # Previous code did all forwards then all backwards, which retained
         # every micro-batch's compute graph and OOM'd at B*G=256. The fused
         # version releases each chunk's graph before starting the next.
-        # Drop ONLY injection-failed rollouts; truncated stay in with -2.
+        # Drop ONLY injection-failed rollouts; truncated stay in with failure reward.
         keep = [i for i, ok in enumerate(inject_ok) if ok]
         if not keep:
             print(f"step {step}: all {len(inject_ok)} rollouts failed the injection "
@@ -1199,6 +1225,14 @@ def main():
                 accumulated = 0.0
                 finite = True
                 cmb = max(1, args.critic_micro_batch)
+                crit_weights = (
+                    soft_norm_weights(torch.stack(crit_golds, dim=0), args.soft_norm_tau)
+                    if args.soft_norm_tau > 0.0 else None
+                )
+                crit_w_sum = (
+                    max(float(crit_weights.sum().item()), 1e-8)
+                    if crit_weights is not None else float(bs_total)
+                )
                 for cs in range(0, bs_total, cmb):
                     chunk = list(range(cs, min(cs + cmb, bs_total)))
                     max_len = max(crit_inputs[i].numel() for i in chunk)
@@ -1215,8 +1249,13 @@ def main():
                     gold = torch.stack([crit_golds[i] for i in chunk]).to(device).float()
                     pred_n = normalize_activation(pred, mse_scale_f)
                     gold_n = normalize_activation(gold, mse_scale_f)
-                    # Scale so the sum across micro-batches = MSE over full batch.
-                    chunk_loss = F.mse_loss(pred_n, gold_n) * (bs / bs_total)
+                    # Scale so the sum across micro-batches = full-batch (weighted) MSE.
+                    if crit_weights is not None:
+                        chunk_loss = weighted_mse_loss(
+                            pred_n, gold_n, crit_weights[chunk], crit_w_sum,
+                        )
+                    else:
+                        chunk_loss = F.mse_loss(pred_n, gold_n) * (bs / bs_total)
                     if not torch.isfinite(chunk_loss):
                         print(f"step {step}: critic loss non-finite (chunk {cs}), skipping", flush=True)
                         finite = False

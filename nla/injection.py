@@ -129,10 +129,15 @@ def karvonen_inject_in_residual(
     inj_id: int,
     left_id: int,
     right_id: int,
+    soft_norm_tau: float = 0.0,
 ) -> torch.Tensor:
     """ADD-norm-matched injection per Karvonen et al. 2025 (Activation Oracles, eq. 1).
 
-    For each marker position p: h'_p = h_p + ||h_p|| * v / ||v||.
+    For each marker position p:
+      - When soft_norm_tau == 0.0 (default): h'_p = h_p + ||h_p|| * v / (||v|| + 1e-9).
+      - When soft_norm_tau > 0.0 (Fix 3):    h'_p = h_p + ||h_p|| * v / (sqrt(||v||^2 + tau^2) + 1e-9),
+        so low-norm noise diffs (||v|| << tau) shrink smoothly instead of being
+        inflated to full residual-stream magnitude.
 
     Caller responsibility: register this hook on the OUTPUT of the second
     transformer layer (i.e. `model.model.layers[1].register_forward_hook(...)`),
@@ -140,6 +145,8 @@ def karvonen_inject_in_residual(
     RAW (no injection_scale normalization) — this function does its own norm
     match against the current residual.
     """
+    if soft_norm_tau < 0.0:
+        raise ValueError(f"soft_norm_tau must be >= 0.0, got {soft_norm_tau}")
     seq_len = input_ids.shape[-1]
     assert input_ids.shape == resid.shape[:-1], (
         f"input_ids {tuple(input_ids.shape)} and resid {tuple(resid.shape[:-1])} batch dims must match"
@@ -151,6 +158,7 @@ def karvonen_inject_in_residual(
     vectors = vectors.to(out.device, out.dtype)
     matches = (input_ids == inj_id).nonzero()  # [M, 2] (batch, seq), row-major sorted
     vec_idx = 0
+    tau_sq = float(soft_norm_tau) ** 2
     for b, p in matches.tolist():
         if p == 0 or p == seq_len - 1:
             continue
@@ -167,8 +175,14 @@ def karvonen_inject_in_residual(
             vec_idx += 1
             continue
         h_p = out[b, p].clone()
-        v_unit = vectors[vec_idx] / (vectors[vec_idx].norm() + 1e-9)
-        out[b, p] = h_p + h_p.norm() * v_unit
+        if soft_norm_tau > 0.0:
+            v_f = vectors[vec_idx].float()
+            denom = torch.sqrt(v_f.pow(2).sum() + tau_sq) + 1e-9
+            v_scaled = (v_f / denom).to(out.dtype)
+            out[b, p] = h_p + h_p.float().norm().to(out.dtype) * v_scaled
+        else:
+            v_unit = vectors[vec_idx] / (vectors[vec_idx].norm() + 1e-9)
+            out[b, p] = h_p + h_p.norm() * v_unit
         vec_idx += 1
     expected = vectors.shape[0]
     if vec_idx != expected:

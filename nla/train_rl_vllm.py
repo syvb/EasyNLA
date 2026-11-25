@@ -102,7 +102,15 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import wandb
 
 from nla.utils import rl_logging
-from nla.utils import build_prompt_text, cjk_fraction, critic_predict, register_karvonen_hook
+from nla.utils import (
+    apply_soft_norm_to_advantages,
+    build_prompt_text,
+    cjk_fraction,
+    critic_predict,
+    register_karvonen_hook,
+    soft_norm_weights,
+    weighted_mse_loss,
+)
 from nla.utils.vllm_steer import read_reset_steer_count
 from nla.utils.run_config import add_config_arg, apply_config_defaults, save_resolved_config
 
@@ -200,7 +208,7 @@ def vllm_rollout_health(llm):
 def rollout_batch_vllm(
     llm, tokenizer, prompts_with_activations,
     inj_id, group_size, max_new_tokens, temperature, injection_layer=1,
-    left_id=None, right_id=None,
+    left_id=None, right_id=None, soft_norm_tau: float = 0.0,
 ):
     """Batched rollout via vLLM. ALL prompts × ALL group samples in one call.
 
@@ -235,7 +243,9 @@ def rollout_batch_vllm(
         # SteeringVector + single-marker logic shared with the offline AV decoder
         # (nla.utils.vllm_steer) so training and eval inject identically.
         marker_pos = find_marker_pos(prompt_ids, inj_id, left_id, right_id)
-        sv = build_steering_vector(activation, marker_pos, injection_layer)
+        sv = build_steering_vector(
+            activation, marker_pos, injection_layer, soft_norm_tau=soft_norm_tau,
+        )
         for gi in range(group_size):
             flat_prompts.append(TokensPrompt(prompt_token_ids=prompt_ids))
             flat_steering.append(sv)
@@ -1113,6 +1123,30 @@ def main():
                    help="GRPO reward = -log(mse) instead of -mse (paper). Gradient (-1/mse) "
                         "stays strong as mse shrinks, avoiding the -mse advantage-collapse "
                         "plateau. FVE/logging always use raw -mse, so curves stay comparable.")
+    p.add_argument("--soft-norm-tau", type=float, default=0.0,
+                   help="Fix 3 soft-clipped norm floor tau (0.0 = disabled / baseline "
+                        "EasyNLA). Applied at AV injection (HF + vLLM), AR critic MSE "
+                        "loss, and post-standardization GRPO policy advantages.")
+    p.add_argument("--fail-reward", type=float, default=-2.0,
+                   help="Reward assigned to failed-extraction or cap-truncated rollouts "
+                        "(default -2.0 = orthogonal unit-vector MSE; consider -4.0 on "
+                        "zero-mean centered diffs if antipodal valid rollouts fall below -2).")
+    p.add_argument("--eval-parquet", type=str, default=None,
+                   help="Optional dedicated doc-disjoint held-out validation parquet "
+                        "(e.g. val.parquet). When set, eval rows are read from this file "
+                        "and all rows of --rl-parquet are used for training.")
+    p.add_argument("--save-steps", type=int, nargs="*", default=None,
+                   help="Explicit step numbers at which to save checkpoints (e.g. "
+                        "--save-steps 0 50 100 200 300 400). Step 0 saves the initial "
+                        "policy before step 0 updates. Combines with --save-every.")
+    p.add_argument("--save-critic-at-ckpts", action="store_true", default=False,
+                   help="Also persist a merged AR critic snapshot inside each saved "
+                        "iter_NNNNNN/critic directory (in addition to critic_latest), "
+                        "needed for step-trajectory held-out FVE evaluations.")
+    p.add_argument("--disable-av-thinking", action="store_true", default=False,
+                   help="Pass enable_thinking=False when building AV prompts (useful for "
+                        "cold-start Qwen3-8B Arm 2b so it emits <explanation> directly "
+                        "instead of spending tokens inside <think>).")
     p.add_argument("--wandb-project", default="nla-qwen3-8b")
     p.add_argument("--wandb-name", default=None)
     p.add_argument("--wandb-group", default="rl",
@@ -1126,6 +1160,7 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     apply_config_defaults(p)   # YAML (--config) -> argparse defaults; CLI still overrides
     args = p.parse_args()
+    assert args.soft_norm_tau >= 0.0, f"--soft-norm-tau must be >= 0, got {args.soft_norm_tau}"
 
     # ---- fail-fast checks (BEFORE any model/engine loading) ----
     save_dir = Path(args.save_dir)
@@ -1227,7 +1262,12 @@ def main():
     # filters silently returned 0 rows (nan evals). Explicit positive values keep the
     # legacy row-boundary behavior exactly. ----
     val_permille = 0   # >0 => doc-hash split active (train excludes val docs)
-    if (args.max_rows is None or args.max_rows <= 0) or args.eval_skip_rows <= 0:
+    if args.eval_parquet is not None:
+        if args.max_rows is not None and args.max_rows <= 0:
+            args.max_rows = None
+        print(f"[data] dedicated --eval-parquet={args.eval_parquet}; "
+              f"training on full --rl-parquet (max_rows={args.max_rows})", flush=True)
+    elif (args.max_rows is None or args.max_rows <= 0) or args.eval_skip_rows <= 0:
         import pyarrow.parquet as _pq
         from nla.val_split import val_doc_permille
         _total = _pq.ParquetFile(args.rl_parquet).metadata.num_rows
@@ -1242,7 +1282,7 @@ def main():
               f"~{val_permille / 10:.1f}% of docs held out for eval "
               f"(~{args.val_rows} rows); train = all rows of the other docs",
               flush=True)
-    if args.eval_every > 0 and args.eval_n_prompts > 0 and val_permille == 0:
+    if args.eval_parquet is None and args.eval_every > 0 and args.eval_n_prompts > 0 and val_permille == 0:
         assert args.max_rows is not None and args.max_rows <= args.eval_skip_rows, (
             f"evals enabled but --max-rows ({args.max_rows}) is unset or exceeds "
             f"--eval-skip-rows ({args.eval_skip_rows}) — training would include "
@@ -1428,7 +1468,12 @@ def main():
 
     # ---- karvonen hook on actor (for training-time forward only; rollout uses vLLM) ----
     vectors_ref = [None]
-    register_karvonen_hook(actor, vectors_ref, inj_id, left_id, right_id, layer_idx=1)
+    register_karvonen_hook(
+        actor, vectors_ref, inj_id, left_id, right_id, layer_idx=1,
+        soft_norm_tau=args.soft_norm_tau,
+    )
+    if args.soft_norm_tau > 0.0:
+        print(f"[soft_norm] Fix 3 ENABLED (tau={args.soft_norm_tau:.4f})", flush=True)
 
     # ---- vLLM engine for fast rollout (Karvonen injection via vllm-lens) ----
     # Guard: --ipc-weight-sync ships CUDA-IPC handles to the worker processes, but
@@ -1646,7 +1691,30 @@ def main():
     # (measured — see train_rl_self_contained.py). Pass 1 collects training-
     # window doc_ids; pass 2 takes only eval rows whose doc_id is unseen.
     eval_rows = []
-    if args.eval_every > 0 and args.eval_n_prompts > 0 and val_permille > 0:
+    if args.eval_every > 0 and args.eval_n_prompts > 0 and args.eval_parquet is not None:
+        import pyarrow.parquet as _pq
+        _pf = _pq.ParquetFile(args.eval_parquet)
+        _tj_cols = (["detokenized_text_truncated"]
+                    if "detokenized_text_truncated" in _pf.schema_arrow.names else [])
+        for _rg_idx in range(_pf.num_row_groups):
+            if len(eval_rows) >= args.eval_n_prompts:
+                break
+            _rg = _pf.read_row_group(
+                _rg_idx, columns=["prompt", "activation_vector"] + _tj_cols)
+            _prompts = _rg.column("prompt").to_pylist()
+            _acts = np.asarray(
+                _rg.column("activation_vector").combine_chunks().flatten(),
+                dtype=np.float32).reshape(len(_prompts), -1)
+            _srcs = (_rg.column("detokenized_text_truncated").to_pylist()
+                     if _tj_cols else [""] * len(_prompts))
+            for _i in range(len(_prompts)):
+                eval_rows.append({"prompt": _prompts[_i], "activation": _acts[_i],
+                                  "source": _srcs[_i] or ""})
+                if len(eval_rows) >= args.eval_n_prompts:
+                    break
+        print(f"[eval] {len(eval_rows)} prompts loaded from --eval-parquet {args.eval_parquet}",
+              flush=True)
+    elif args.eval_every > 0 and args.eval_n_prompts > 0 and val_permille > 0:
         # Doc-hash split: eval rows = first eval_n_prompts rows of HELD-OUT docs
         # (~val_permille/1000 of rows, scattered) — doc-disjoint from training by
         # construction, no doc-set pass needed.
@@ -1750,6 +1818,53 @@ def main():
         print(f"[data] fast-forwarded cursor through {args.start_step} steps "
               f"(cursor={cursor})", flush=True)
 
+    def _save_critic_snapshot(dst_dir: Path, step_label: int) -> None:
+        import shutil as _shutil
+        _tmp = dst_dir.parent / (dst_dir.name + ".tmp")
+        if _tmp.exists():
+            _shutil.rmtree(_tmp)
+        _merged_mods = []
+        if args.ar_lora:
+            from peft.tuners.lora import LoraLayer as _LoraLayer
+            for _m in critic.backbone.modules():
+                if isinstance(_m, _LoraLayer):
+                    _m.merge()
+                    _merged_mods.append(_m)
+        try:
+            _crit_sd = {}
+            for _k, _v in critic.state_dict().items():
+                if "lora_" in _k:
+                    continue
+                _k2 = _k.replace(".base_layer.weight", ".weight")
+                _k2 = _k2.replace(".base_layer.bias", ".bias")
+                _crit_sd[_k2] = _v
+            critic.save_pretrained(str(_tmp), state_dict=_crit_sd)
+        finally:
+            for _m in _merged_mods:
+                _m.unmerge()
+        (_tmp / "saved_at_step.txt").write_text(str(step_label))
+        _old = dst_dir.parent / (dst_dir.name + ".old")
+        if _old.exists():
+            _shutil.rmtree(_old)
+        if dst_dir.exists():
+            os.rename(dst_dir, _old)
+        os.rename(_tmp, dst_dir)
+        if _old.exists():
+            _shutil.rmtree(_old)
+
+    save_steps_set = set(args.save_steps) if args.save_steps else set()
+    av_enable_thinking = False if args.disable_av_thinking else None
+
+    if is_main and args.start_step == 0 and 0 in save_steps_set:
+        out0 = save_dir / "iter_000000"
+        out0.mkdir(parents=True, exist_ok=True)
+        actor.save_pretrained(str(out0))
+        if args.train_critic and args.save_critic_at_ckpts:
+            _save_critic_snapshot(out0 / "critic", 0)
+        print(f"[save] step-0 snapshot → {out0}", flush=True)
+    if is_dist and args.start_step == 0 and 0 in save_steps_set:
+        dist.barrier()
+
     prev_preemptions = 0  # cumulative vLLM preemptions seen at last step (KV thrash tracker)
     for step in range(args.start_step, args.num_steps):
         t0 = time.time()
@@ -1772,7 +1887,9 @@ def main():
         prompts_with_acts = []
         for row_idx in batch_idxs:
             row = rows[row_idx]
-            prompt_text = build_prompt_text(row["prompt"], inject_char, tokenizer)
+            prompt_text = build_prompt_text(
+                row["prompt"], inject_char, tokenizer, enable_thinking=av_enable_thinking,
+            )
             activation = torch.tensor(row["activation"], dtype=torch.float32)
             prompts_with_acts.append((prompt_text, activation))
         # Reset the patched per-worker steering-apply counters so steer_apply_count
@@ -1787,6 +1904,7 @@ def main():
             llm, tokenizer, prompts_with_acts,
             inj_id, args.group_size, args.max_new_tokens, args.temperature,
             left_id=left_id, right_id=right_id,
+            soft_norm_tau=args.soft_norm_tau,
         )
         t_gen_end = time.time()  # pure vLLM generation time
         # ---- explicit vLLM-side injection check (mechanism-level) ----
@@ -1916,13 +2034,13 @@ def main():
         # FVE curve is identical regardless of --log-reward. Failed-extraction floor =
         # orthogonal-vector outcome (mse=2.0): -mse -> -2.0 ; -log(mse) -> -log(2.0).
         if args.log_reward:
-            _floor = -math.log(2.0)
+            _floor = -math.log(max(-args.fail_reward, 1e-3))
             rewards_filled = [
-                _floor if r is None else -math.log(min(max(-r, 1e-3), 2.0))
+                _floor if r is None else -math.log(min(max(-r, 1e-3), max(-args.fail_reward, 2.0)))
                 for r in rewards
             ]
         else:
-            rewards_filled = [-2.0 if r is None else r for r in rewards]
+            rewards_filled = [args.fail_reward if r is None else r for r in rewards]
         rewards_t = torch.tensor(rewards_filled, dtype=torch.float32, device=device)
 
         # ---- reward shaping (length penalty) ----
@@ -1944,7 +2062,7 @@ def main():
         shape_terms["av/truncated_count"] = n_truncated
         for gi in range(args.batch_prompts):
             # exclude injection-failed rollouts from the group baseline (garbage in);
-            # truncated rollouts PARTICIPATE with their -2 failure reward, exactly
+            # truncated rollouts PARTICIPATE with their failure reward, exactly
             # like extraction failures.
             mask = (group_t == gi) & inject_ok_t
             if mask.sum() == 0:
@@ -1953,6 +2071,22 @@ def main():
             mu = group_r.mean()
             sd = group_r.std() if group_r.numel() > 1 else torch.tensor(1.0, device=device)
             adv[mask] = (group_r - mu) / (sd + 1e-6)
+        # Fix 3: apply per-prompt soft-clipped norm gate AFTER per-group
+        # standardization so dividing by group std does not cancel w_i.
+        if args.soft_norm_tau > 0.0:
+            _prompt_acts = torch.stack([act for _, act in prompts_with_acts], dim=0)
+
+            def _dp_mean_w(t: torch.Tensor) -> torch.Tensor:
+                if not is_dist:
+                    return t
+                t_out = t.clone()
+                dist.all_reduce(t_out, op=dist.ReduceOp.SUM)
+                return t_out / world_size
+
+            adv, _sn_metrics = apply_soft_norm_to_advantages(
+                adv, group_t, _prompt_acts, args.soft_norm_tau, dist_mean_fn=_dp_mean_w,
+            )
+            shape_terms.update(_sn_metrics)
         t_score_end = time.time()  # [timing] end of scoring+shaping+advantage
 
         # ---- GRPO update: fused forward+loss+backward per micro-batch ----
@@ -2076,6 +2210,14 @@ def main():
                 accumulated = 0.0
                 finite = True
                 cmb = max(1, args.critic_micro_batch)
+                crit_weights = (
+                    soft_norm_weights(torch.stack(crit_golds, dim=0), args.soft_norm_tau)
+                    if args.soft_norm_tau > 0.0 else None
+                )
+                crit_w_sum = (
+                    max(float(crit_weights.sum().item()), 1e-8)
+                    if crit_weights is not None else float(bs_total)
+                )
                 for cs in range(0, bs_total, cmb):
                     chunk = list(range(cs, min(cs + cmb, bs_total)))
                     max_len = max(crit_inputs[i].numel() for i in chunk)
@@ -2092,9 +2234,13 @@ def main():
                     gold = torch.stack([crit_golds[i] for i in chunk]).to(device).float()
                     pred_n = normalize_activation(pred, mse_scale_f)
                     gold_n = normalize_activation(gold, mse_scale_f)
-                    # Scale so the sum across micro-batches = MSE over full batch;
+                    # Scale so the sum across micro-batches = full-batch (weighted) MSE;
                     # extra /accum for gradient accumulation across steps.
-                    raw_mse = F.mse_loss(pred_n, gold_n) * (bs / bs_total)
+                    if crit_weights is not None:
+                        w_chunk = crit_weights[chunk]
+                        raw_mse = weighted_mse_loss(pred_n, gold_n, w_chunk, crit_w_sum)
+                    else:
+                        raw_mse = F.mse_loss(pred_n, gold_n) * (bs / bs_total)
                     if not torch.isfinite(raw_mse):
                         print(f"step {step}: critic loss non-finite (chunk {cs}), skipping", flush=True)
                         finite = False
@@ -2269,7 +2415,9 @@ def main():
             # shares the training injection path, so eval/train agree (kills the
             # separate HF-injection quirk that made eval@0 read negative).
             _eval_prompts_with_acts = [
-                (build_prompt_text(r["prompt"], inject_char, tokenizer),
+                (build_prompt_text(
+                    r["prompt"], inject_char, tokenizer, enable_thinking=av_enable_thinking,
+                ),
                  torch.tensor(r["activation"], dtype=torch.float32))
                 for r in eval_rows
             ]
@@ -2278,16 +2426,21 @@ def main():
                 llm, tokenizer, _eval_prompts_with_acts,
                 inj_id, 1, args.max_new_tokens, _eval_temp,  # group_size=1
                 left_id=left_id, right_id=right_id,
+                soft_norm_tau=args.soft_norm_tau,
             )
             # rollout_batch_vllm may return responses in any order; key each by
             # the prompt index it stamps (group_size=1 -> exactly one per prompt).
             _resp_by_idx = {r["prompt_idx"]: r["text"] for r in _eval_responses}
             # --- Phase 2: scoring (per-row, reads the pre-generated responses) ---
+            eval_cos_list = []
+            eval_valid_mses = []
+            eval_valid_weights = []
             for ei, row in enumerate(eval_rows):
                 activation = _eval_prompts_with_acts[ei][1]
                 resp = _resp_by_idx.get(ei, "")
                 expl = extract_explanation(resp)
-                e_reward = -2.0
+                e_reward = args.fail_reward
+                e_valid = False
                 if expl is not None:
                     ctext = template.format(explanation=expl)
                     cids = tokenizer.encode(ctext, add_special_tokens=False)
@@ -2301,15 +2454,25 @@ def main():
                         mse = F.mse_loss(pn, gn).item()
                         if math.isfinite(mse):
                             e_reward = -mse
+                            e_valid = True
+                            eval_valid_mses.append(mse)
+                            cos_v = F.cosine_similarity(
+                                pred.unsqueeze(0).float(), gold.unsqueeze(0).float(), dim=-1,
+                            ).item()
+                            if math.isfinite(cos_v):
+                                eval_cos_list.append(cos_v)
+                            if args.soft_norm_tau > 0.0:
+                                w_e = soft_norm_weights(gold.unsqueeze(0), args.soft_norm_tau).item()
+                                eval_valid_weights.append(w_e)
                 eval_rewards_s.append(e_reward)
                 eval_records.append({
                     "step": step, "idx": ei, "reward": e_reward,
-                    "fve": (1.0 - (-e_reward) / eval_fve_baseline) if e_reward > -2.0 else float("nan"),
+                    "fve": (1.0 - (-e_reward) / eval_fve_baseline) if e_valid else float("nan"),
                     "extracted": expl is not None,
                     "explanation": expl if expl is not None else "<extraction failed>",
                 })
             # Aggregate eval scalars
-            valid_e = [r for r in eval_rewards_s if r > -2.0]
+            valid_e = [-m for m in eval_valid_mses]
             log["eval/reward_mean"] = (
                 float(np.mean(eval_rewards_s)) if eval_rewards_s else float("nan")
             )
@@ -2320,6 +2483,18 @@ def main():
                 (1.0 - (-float(np.mean(valid_e))) / eval_fve_baseline) * 100.0
                 if valid_e else float("nan")
             )
+            if eval_cos_list:
+                cos_mean = float(np.mean(eval_cos_list))
+                log["eval/cos_mean"] = cos_mean
+                # Diagnostic for zero-mean centered diffs: on unit-sphere zero-mean
+                # targets, unit-norm pred MSE = 2 - 2*cos (FVE = 2*cos - 1), whereas
+                # optimal scalar-rescaled pred achieves FVE = cos^2.
+                log["eval/opt_scale_fve_pct"] = (max(0.0, cos_mean) ** 2) * 100.0
+            if eval_valid_weights and sum(eval_valid_weights) > 1e-8:
+                w_arr = np.asarray(eval_valid_weights, dtype=np.float64)
+                m_arr = np.asarray(eval_valid_mses, dtype=np.float64)
+                w_mse = float(np.sum(w_arr * m_arr) / np.sum(w_arr))
+                log["eval/weighted_fve_pct"] = (1.0 - w_mse / eval_fve_baseline) * 100.0
             log["eval/extraction_rate"] = (
                 sum(1 for r in eval_records if r["extracted"]) / len(eval_records)
                 if eval_records else 0.0
@@ -2336,9 +2511,10 @@ def main():
                     columns=["step", "idx", "reward", "fve", "extracted", "explanation"],
                     data=list(eval_table_data),
                 )
+            _cos_str = (f" | cos {log['eval/cos_mean']:.3f}" if "eval/cos_mean" in log else "")
             print(
                 f"  [eval@{step}] reward {log['eval/reward_mean']:.3f} "
-                f"| FVE {log['eval/fve_pct']:.1f}% "
+                f"| FVE {log['eval/fve_pct']:.1f}%{_cos_str} "
                 f"| ext {log['eval/extraction_rate']:.0%}",
                 flush=True,
             )
@@ -2381,58 +2557,18 @@ def main():
             # noisy regardless (smooth before reading) so the 1/world_size shard is fine.
 
         # ---- save LoRA periodically (rank0 only; all ranks hold identical weights) ----
-        if is_main and (step + 1) % args.save_every == 0:
+        _should_save = (
+            ((step + 1) in save_steps_set)
+            or (args.save_every > 0 and (step + 1) % args.save_every == 0)
+        )
+        if is_main and _should_save:
             out_dir = save_dir / f"iter_{step + 1:06d}"
             out_dir.mkdir(parents=True, exist_ok=True)
             actor.save_pretrained(str(out_dir))
             if args.train_critic:
-                # The co-trained critic is the reward model behind this run's
-                # FVE curve; without it, resume/eval scores against the stale
-                # SFT critic. Full-model save is ~11GB, so keep latest-only:
-                # write to a tmp dir then atomically swap into critic_latest/.
-                import shutil as _shutil
-                _crit_tmp = save_dir / "critic_latest.tmp"
-                _crit_dst = save_dir / "critic_latest"
-                if _crit_tmp.exists():
-                    _shutil.rmtree(_crit_tmp)
-                # --ar-lora: the injected adapter wraps every adapted Linear, so a
-                # naive state_dict has PEFT-mangled keys (.base_layer.weight +
-                # lora_A/B). NLACriticModel.from_pretrained builds a PLAIN backbone
-                # — those keys wouldn't match and reload would silently random-init
-                # every q/k/v/o_proj. Save a MERGED, clean-keyed state_dict instead
-                # (merge -> rename .base_layer.* -> drop lora_* -> unmerge), same
-                # key surgery sync_actor_to_vllm does for the actor.
-                _merged_mods = []
-                if args.ar_lora:
-                    from peft.tuners.lora import LoraLayer as _LoraLayer
-                    for _m in critic.backbone.modules():
-                        if isinstance(_m, _LoraLayer):
-                            _m.merge()
-                            _merged_mods.append(_m)
-                try:
-                    _crit_sd = {}
-                    for _k, _v in critic.state_dict().items():
-                        if "lora_" in _k:
-                            continue
-                        _k2 = _k.replace(".base_layer.weight", ".weight")
-                        _k2 = _k2.replace(".base_layer.bias", ".bias")
-                        _crit_sd[_k2] = _v
-                    critic.save_pretrained(str(_crit_tmp), state_dict=_crit_sd)
-                finally:
-                    for _m in _merged_mods:
-                        _m.unmerge()
-                (_crit_tmp / "saved_at_step.txt").write_text(str(step + 1))
-                # CRASH-SAFE swap: never delete the previous good copy before the
-                # new one is in place (rmtree-then-rename left a window with NO
-                # critic at all). Shuffle old aside -> rename new in -> drop old.
-                _crit_old = save_dir / "critic_latest.old"
-                if _crit_old.exists():
-                    _shutil.rmtree(_crit_old)
-                if _crit_dst.exists():
-                    os.rename(_crit_dst, _crit_old)
-                os.rename(_crit_tmp, _crit_dst)
-                if _crit_old.exists():
-                    _shutil.rmtree(_crit_old)
+                _save_critic_snapshot(save_dir / "critic_latest", step + 1)
+                if args.save_critic_at_ckpts:
+                    _save_critic_snapshot(out_dir / "critic", step + 1)
             # ---- optimizer state (latest-only, crash-safe write): without this,
             # resume restarts Adam moments from zero — a reproducible loss bump at
             # the resume boundary. Actor optim is small (LoRA); the critic optim
@@ -2445,7 +2581,8 @@ def main():
             torch.save(_opt_state, str(_opt_tmp))
             os.replace(str(_opt_tmp), str(_opt_dst))   # atomic on same fs
             print(f"[save] LoRA → {out_dir} (+ optim_latest @ step {step + 1})"
-                  + (f" (+ critic_latest @ step {step + 1})" if args.train_critic else ""))
+                  + (f" (+ critic_latest @ step {step + 1})" if args.train_critic else "")
+                  + (" (+ iter critic)" if (args.train_critic and args.save_critic_at_ckpts) else ""))
 
         if is_dist:
             if args.assert_param_sync:
