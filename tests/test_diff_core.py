@@ -17,8 +17,6 @@ from transformers import AutoTokenizer
 
 from nla.diff.alignment import (
     apply_alignment,
-    compute_fve,
-    cv_select_alignment,
     doc_grouped_folds,
     evaluate_alignment_suite,
     fit_alignment,
@@ -54,14 +52,11 @@ from nla.diff.wrappers import (
     apply_role_centering,
     compute_role_means,
     encode_aligned_pair,
-    encode_chatml_dialogue,
-    encode_plain_dialogue,
     encode_raw_user_only,
     load_role_means,
     map_inst_pos_to_base_pos,
     save_role_means,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fix 1: Identity-Anchored Ridge Alignment

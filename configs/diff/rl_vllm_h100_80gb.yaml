@@ -1,0 +1,48 @@
+# Phase 3 — Budget 4xH100 80GB Config (drop-in replacement for *_h200.yaml)
+# Trims vLLM KV memory, enables AV gradient checkpointing, halves micro-batches,
+# and optionally uses --ar-lora if full-FT AR OOMs on 80GB VRAM.
+# Pass arm-specific overrides on CLI: --soft-norm-tau, --wandb-name, --num-steps, etc.
+
+evals: [base_fve, text_judges]
+train_critic: true
+
+lr: 1.0e-4
+critic_lr: 8.0e-5
+num_steps: 400
+batch_prompts: 256
+group_size: 8
+max_new_tokens: 256
+length_penalty: 0.01
+temperature: 1.0
+
+lora_r: 128
+lora_alpha: 16
+use_rslora: true
+
+# --- 80GB VRAM savings ---
+gradient_checkpointing: true
+ar_lora: true
+ar_lora_r: 128
+ar_lora_alpha: 16
+logp_micro_batch: 4
+critic_micro_batch: 4
+vllm_tp: 1
+vllm_max_len: 1024
+vllm_gpu_mem: 0.25
+ipc_weight_sync: true
+
+soft_norm_tau: 0.0
+fail_reward: -2.0
+
+eval_every: 10
+eval_n_prompts: 128
+eval_temperature: 0.0
+text_judges_every: 50
+save_every: 100
+save_steps: [0, 50, 100, 200, 300, 400]
+save_critic_at_ckpts: true
+
+wandb_project: easynla-diff-qwen3-8b
+wandb_group: diff-rl
+wandb_name: diff_h100_run
+wandb_tags: diff_study,h100

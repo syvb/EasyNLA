@@ -1,0 +1,48 @@
+# Phase 3 — Arm 2 (Fixed Diff-NLA — Main Treatment) on 4xH200 141GB
+# Target: Cleaned Delta_tilde = Delta_id_anc - mu_role (Fixes 1 + 2 + 3 + matched <think>).
+# IMPORTANT: Pass `--soft-norm-tau <tau_web_median>` from phase0_config.json on CLI
+# (scripts/diff/run_phase3_arm.sh reads and passes it automatically!).
+
+evals: [base_fve, text_judges]
+train_critic: true
+
+# --- optimization (identical across Arms 0, 1, 2) ---
+lr: 1.0e-4
+critic_lr: 8.0e-5
+num_steps: 400
+batch_prompts: 256
+group_size: 8
+max_new_tokens: 256
+length_penalty: 0.01
+temperature: 1.0
+
+# --- LoRA (AV) ---
+lora_r: 128
+lora_alpha: 16
+use_rslora: true
+
+# --- Fix 3 (OVERRIDE on CLI with Phase 0 tau_web_median!) ---
+soft_norm_tau: 0.0
+# NOTE: default -2.0 matches Arms 0/1. If valid centered-diff rewards drop below -2.0
+# (antipodal unit-sphere MSE can reach 4.0) and extraction_rate dips, re-run with --fail-reward -4.0.
+fail_reward: -2.0
+
+# --- vLLM rollout (4xH200 DP=4, vllm_tp=1) ---
+vllm_tp: 1
+vllm_max_len: 1024
+vllm_gpu_mem: 0.35
+ipc_weight_sync: true
+
+# --- eval / checkpoints (0, 50, 100, 200, 300, 400) ---
+eval_every: 10
+eval_n_prompts: 128
+eval_temperature: 0.0
+text_judges_every: 50
+save_every: 100
+save_steps: [0, 50, 100, 200, 300, 400]
+save_critic_at_ckpts: true
+
+wandb_project: easynla-diff-qwen3-8b
+wandb_group: diff-rl
+wandb_name: arm2_fixed_diff
+wandb_tags: diff_study,arm2,fixed_diff

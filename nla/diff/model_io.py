@@ -10,8 +10,9 @@ positions, and cleanly frees VRAM between models.
 from __future__ import annotations
 
 import gc
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -45,7 +46,7 @@ def resolve_device(device: str = "auto") -> torch.device:
 def resolve_dtype(dtype_str: str, device: torch.device) -> torch.dtype:
     if device.type == "cpu":
         # Avoid slow/unsupported bf16 ops on some CPU builds during tests
-        return torch.float32 if dtype_str in ("fp32", "auto") else torch.float32
+        return torch.float32
     if dtype_str == "bf16":
         return torch.bfloat16
     if dtype_str == "fp32":

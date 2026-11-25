@@ -42,10 +42,9 @@ import torch.nn.functional as F
 from peft import LoraConfig, get_peft_model
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from nla.config import load_nla_config
 from nla.datagen.sidecar import (
-    NLAExtractionMeta,
     NLADatasetMeta,
+    NLAExtractionMeta,
     deserialize_sidecar,
     serialize_sidecar,
 )

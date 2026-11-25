@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import torch
@@ -90,8 +90,7 @@ def compute_probe_auroc_cv(
             scores = (Xc_va @ Xc_tr.T) @ dual + y_mean
             oof_scores[va_idx] = scores
         auroc = float(roc_auc_score(y, oof_scores))
-        if auroc > best_auroc:
-            best_auroc = auroc
+        best_auroc = max(best_auroc, auroc)
     return best_auroc
 
 
@@ -164,8 +163,7 @@ def compute_tok1_ridge_fve(
                 sq_err += float(np.dot(diff, diff))
         mse = sq_err / n
         fve = 1.0 - mse / total_var
-        if fve > best_fve:
-            best_fve = fve
+        best_fve = max(best_fve, fve)
     return float(best_fve)
 
 
@@ -212,8 +210,7 @@ def longest_verbatim_ngram(explanation: str, source_text: str) -> int:
             if ew == sw:
                 v = prev[j - 1] + 1
                 curr[j] = v
-                if v > best:
-                    best = v
+                best = max(best, v)
         prev = curr
     return int(best)
 
@@ -251,7 +248,7 @@ def bootstrap_ci(
     boots = np.array([stat_fn(arr[row]) for row in idx], dtype=np.float64)
     alpha = 0.5 * (1.0 - ci)
     lo, hi = np.quantile(boots, [alpha, 1.0 - alpha])
-    return {"mean": point, "ci_low": float(lo), "ci_high": float(hi), "n": int(len(arr))}
+    return {"mean": point, "ci_low": float(lo), "ci_high": float(hi), "n": len(arr)}
 
 
 def bootstrap_auroc_ci(
@@ -268,7 +265,7 @@ def bootstrap_auroc_ci(
     valid = np.isfinite(ys)
     yt, ys = yt[valid], ys[valid]
     if len(yt) == 0 or len(np.unique(yt)) < 2:
-        return {"auroc": float("nan"), "ci_low": float("nan"), "ci_high": float("nan"), "n": int(len(yt))}
+        return {"auroc": float("nan"), "ci_low": float("nan"), "ci_high": float("nan"), "n": len(yt)}
     point = float(roc_auc_score(yt, ys))
     rng = np.random.default_rng(seed)
     boots: list[float] = []

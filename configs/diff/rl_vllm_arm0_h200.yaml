@@ -1,0 +1,45 @@
+# Phase 3 — Arm 0 (Standard Raw NLA Control) on 4xH200 141GB
+# Target: Raw h_target (Qwen/Qwen3-8B L24) on identical chat/rollout prompts.
+# Fixes enabled: Matched <think> only (soft_norm_tau = 0.0).
+
+evals: [base_fve, text_judges]
+train_critic: true
+
+# --- optimization (identical across Arms 0, 1, 2) ---
+lr: 1.0e-4
+critic_lr: 8.0e-5
+num_steps: 400
+batch_prompts: 256
+group_size: 8
+max_new_tokens: 256
+length_penalty: 0.01
+temperature: 1.0
+
+# --- LoRA (AV) ---
+lora_r: 128
+lora_alpha: 16
+use_rslora: true
+
+# --- Fix 3 disabled for Arm 0 ---
+soft_norm_tau: 0.0
+fail_reward: -2.0
+
+# --- vLLM rollout (4xH200 DP=4, vllm_tp=1) ---
+vllm_tp: 1
+vllm_max_len: 1024
+vllm_gpu_mem: 0.35
+ipc_weight_sync: true
+
+# --- eval / checkpoints (0, 50, 100, 200, 300, 400) ---
+eval_every: 10
+eval_n_prompts: 128
+eval_temperature: 0.0
+text_judges_every: 50
+save_every: 100
+save_steps: [0, 50, 100, 200, 300, 400]
+save_critic_at_ckpts: true
+
+wandb_project: easynla-diff-qwen3-8b
+wandb_group: diff-rl
+wandb_name: arm0_raw_control
+wandb_tags: diff_study,arm0,raw_control

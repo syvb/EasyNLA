@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -642,6 +643,23 @@ def load_historical_period_items(
         else:
             items = json.loads(p.read_text(encoding="utf-8"))
         return items[:n_items]
+    # Round-robin interleave pre-1800 (label 0) and modern (label 1) eras so any
+    # prefix slice n_items >= 2 is balanced across both binary classes and all 6 eras.
+    era_order = (
+        "ancient",
+        "nineteenth_century",
+        "medieval",
+        "mid_twentieth_century",
+        "early_modern",
+        "contemporary",
+    )
+    by_era = {e: [it for it in BUILTIN_HISTORICAL_ITEMS if it["era"] == e] for e in era_order}
+    interleaved: list[dict[str, Any]] = []
+    max_len = max(len(v) for v in by_era.values())
+    for k in range(max_len):
+        for e in era_order:
+            if k < len(by_era[e]):
+                interleaved.append(by_era[e][k])
     return [
         {
             "item_id": f"hist_{i:03d}",
@@ -649,7 +667,7 @@ def load_historical_period_items(
             "binary_label": int(it["binary_label"]),
             "text": it["text"],
         }
-        for i, it in enumerate(BUILTIN_HISTORICAL_ITEMS[:n_items])
+        for i, it in enumerate(interleaved[:n_items])
     ]
 
 
