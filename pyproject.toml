@@ -41,7 +41,7 @@ Homepage = "https://github.com/asherps/EasyNLA"
 include = ["nla*"]
 
 [tool.setuptools.package-data]
-nla = ["datagen/*.yaml"]
+nla = ["datagen/*.yaml", "diff/data/*.json"]
 
 [tool.ruff]
 line-length = 119
