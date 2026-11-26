@@ -1,0 +1,125 @@
+{
+ "8b_stock": {
+  "alpha": 1.0,
+  "frobenius_sq": 1015.8674089385055,
+  "top_output_coordinates": [
+   {
+    "coordinate": 2276,
+    "share": 0.8720459514414737
+   },
+   {
+    "coordinate": 676,
+    "share": 0.005100059130853437
+   },
+   {
+    "coordinate": 1838,
+    "share": 0.0020253075868749953
+   },
+   {
+    "coordinate": 2421,
+    "share": 0.0004468824741377852
+   },
+   {
+    "coordinate": 3780,
+    "share": 0.00036011282361498697
+   }
+  ],
+  "coordinates_for_half_energy": 1,
+  "largest_bias_coordinates": [
+   {
+    "coordinate": 1838,
+    "bias": 29.781600952148438
+   },
+   {
+    "coordinate": 2276,
+    "bias": -20.649612426757812
+   },
+   {
+    "coordinate": 270,
+    "bias": 6.89012336730957
+   }
+  ]
+ },
+ "8b_robust": {
+  "alpha": 1.0,
+  "frobenius_sq": 123.10865061795435,
+  "top_output_coordinates": [
+   {
+    "coordinate": 1838,
+    "share": 0.01647326183478299
+   },
+   {
+    "coordinate": 2276,
+    "share": 0.01573858465278127
+   },
+   {
+    "coordinate": 2421,
+    "share": 0.0036674599477517387
+   },
+   {
+    "coordinate": 3780,
+    "share": 0.0019457472431736163
+   },
+   {
+    "coordinate": 445,
+    "share": 0.0015968590690800337
+   }
+  ],
+  "coordinates_for_half_energy": 1653,
+  "largest_bias_coordinates": [
+   {
+    "coordinate": 2276,
+    "bias": 35.14278793334961
+   },
+   {
+    "coordinate": 1838,
+    "bias": 30.80632781982422
+   },
+   {
+    "coordinate": 270,
+    "bias": 6.722385406494141
+   }
+  ]
+ },
+ "06b": {
+  "alpha": 0.1,
+  "frobenius_sq": 94.95093469356607,
+  "top_output_coordinates": [
+   {
+    "coordinate": 35,
+    "share": 0.01742360955938244
+   },
+   {
+    "coordinate": 70,
+    "share": 0.003371851704280087
+   },
+   {
+    "coordinate": 14,
+    "share": 0.0033069634712507225
+   },
+   {
+    "coordinate": 22,
+    "share": 0.003045712466615797
+   },
+   {
+    "coordinate": 59,
+    "share": 0.0028874523406525296
+   }
+  ],
+  "coordinates_for_half_energy": 434,
+  "largest_bias_coordinates": [
+   {
+    "coordinate": 35,
+    "bias": 11.695640563964844
+   },
+   {
+    "coordinate": 10,
+    "bias": -5.094925403594971
+   },
+   {
+    "coordinate": 30,
+    "bias": 4.852517604827881
+   }
+  ]
+ }
+}

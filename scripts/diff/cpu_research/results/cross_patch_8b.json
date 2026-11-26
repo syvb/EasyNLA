@@ -1,0 +1,78 @@
+{
+ "layer": 24,
+ "wrapper": "chatml",
+ "roles": {
+  "user_content": {
+   "n": 9901,
+   "kl_nats": {
+    "full_gap": {
+     "mean": 0.4802578615915791,
+     "median": 0.3043173849582672
+    },
+    "top_swapped": {
+     "mean": 0.20914246746730522,
+     "median": 0.15617497265338898
+    },
+    "bottom_swapped": {
+     "mean": 0.4459739093496105,
+     "median": 0.2236047387123108
+    }
+   },
+   "gap_left_with_instruct_residuals": 0.43547952921417066,
+   "gap_made_by_residual_difference": 0.9286134491825886,
+   "frac_positions_residual_swap_closes_half_the_gap": 0.7069278933548778,
+   "spearman_cleaned_diff_norm_vs": {
+    "full_gap": 0.24113131041142324,
+    "bottom_swapped": 0.22076228596734093
+   }
+  },
+  "asst_last": {
+   "n": 840,
+   "kl_nats": {
+    "full_gap": {
+     "mean": 3.912157000885123,
+     "median": 3.6573970317840576
+    },
+    "top_swapped": {
+     "mean": 0.34462858918951456,
+     "median": 0.2894909381866455
+    },
+    "bottom_swapped": {
+     "mean": 6.608025634412964,
+     "median": 6.228093147277832
+    }
+   },
+   "gap_left_with_instruct_residuals": 0.08809170723760384,
+   "gap_made_by_residual_difference": 1.6891003180388473,
+   "frac_positions_residual_swap_closes_half_the_gap": 1.0,
+   "spearman_cleaned_diff_norm_vs": {
+    "full_gap": 0.18957615140772996,
+    "bottom_swapped": 0.03957808492197004
+   }
+  },
+  "asst_rollout": {
+   "n": 10080,
+   "kl_nats": {
+    "full_gap": {
+     "mean": 0.4126258016229589,
+     "median": 0.12160667404532433
+    },
+    "top_swapped": {
+     "mean": 0.1751810166189919,
+     "median": 0.05908901244401932
+    },
+    "bottom_swapped": {
+     "mean": 0.5856970444177751,
+     "median": 0.08274180814623833
+    }
+   },
+   "gap_left_with_instruct_residuals": 0.42455177531303623,
+   "gap_made_by_residual_difference": 1.419438731446469,
+   "frac_positions_residual_swap_closes_half_the_gap": 0.6317460317460317,
+   "spearman_cleaned_diff_norm_vs": {
+    "full_gap": 0.029197027410317596,
+    "bottom_swapped": -0.009104059877950207
+   }
+  }
+ }
+}

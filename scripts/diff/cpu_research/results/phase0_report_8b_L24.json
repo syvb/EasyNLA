@@ -1,0 +1,291 @@
+{
+  "wall_seconds": 274.7,
+  "config": {
+    "base_model": "Qwen/Qwen3-8B-Base",
+    "target_model": "Qwen/Qwen3-8B",
+    "layer_index": 24,
+    "d_model": 4096,
+    "base_wrapper": "plain",
+    "tau_web_median": 63.800514221191406,
+    "tau_web_p75": 82.37132263183594,
+    "chosen_alpha_id_anchored": 1.0,
+    "chosen_alpha_std_ridge": 1.0,
+    "align_id_anchored_path": "/home/user/research/p0_8b_L24/align_L24_id_anchored.pt",
+    "align_std_ridge_path": "/home/user/research/p0_8b_L24/align_L24_std_ridge.pt",
+    "role_means_path": "/home/user/research/p0_8b_L24/role_means_L24.pt",
+    "taboo_recommended_mode": "thinking",
+    "gate0_passed": false
+  },
+  "alignment": {
+    "fve_identity": 0.19451623568342546,
+    "fve_identity_bias": 0.19658547090492828,
+    "fve_std_ridge": 0.39268321635374204,
+    "fve_id_anchored": 0.39501743758194163,
+    "best_alpha_id_anchored": 1.0,
+    "best_alpha_std_ridge": 1.0,
+    "cv_fve_id_anchored": {
+      "0.001": 0.6073304974446729,
+      "0.01": 0.6074628093964174,
+      "0.1": 0.6086252338569107,
+      "1.0": 0.6130878228939466,
+      "10.0": 0.6095012107986868,
+      "100.0": 0.6002655493843055,
+      "1000.0": 0.5934429706183791,
+      "10000.0": 0.5907140133838162,
+      "100000.0": 0.5797217696402066,
+      "1000000.0": 0.5335618467590854
+    },
+    "cv_fve_std_ridge": {
+      "0.001": 0.6073305107292459,
+      "0.01": 0.6074624059392085,
+      "0.1": 0.6085728063567865,
+      "1.0": 0.6103322818592989,
+      "10.0": 0.5789378538235106,
+      "100.0": 0.504321755885204,
+      "1000.0": 0.4356864514363806,
+      "10000.0": 0.405758023166139,
+      "100000.0": 0.3430831392499056,
+      "1000000.0": 0.10366893932027713
+    },
+    "tau_web_median": 63.800514221191406,
+    "tau_web_p75": 82.37132263183594,
+    "delta_norm_stats": {
+      "mean": 83.71273803710938,
+      "p25": 51.81106185913086,
+      "median": 63.800514221191406,
+      "p75": 82.37132263183594,
+      "p90": 105.83120727539062
+    },
+    "identity_already_tight": false,
+    "fix1_strict_passed": false,
+    "fix1_best_passed": true
+  },
+  "wrappers": {
+    "chatml": {
+      "neutral_kl_inst_vs_base_nats": 3.061048746109009,
+      "chat_template_amplification": 1.3488948452934153,
+      "tok1_ridge_fve_user_content": {
+        "h_target": 0.1651609255538793,
+        "delta_raw": 0.1208758605241349,
+        "delta_role_centered_unit": 0.07372172153756906,
+        "reduction_frac_vs_h_target": 0.5536370283083735
+      },
+      "tasks": {
+        "refusal": {
+          "n_samples": 100,
+          "fisher_snr": {
+            "h_target": 1.7720500912960226,
+            "h_target_unit": 1.7458090259390027,
+            "delta_raw": 0.961755167398712,
+            "delta_raw_unit": 0.9333490177432354,
+            "delta_role_centered_unit": 0.97177578792343,
+            "ratio_centered_unit_over_h_target": 0.5483906988276518,
+            "ratio_centered_unit_over_h_target_unit": 0.5566334997040983
+          },
+          "probe_auroc_5fold": {
+            "h_target": 0.9783999999999999,
+            "delta_raw": 0.9808000000000001,
+            "delta_role_centered_unit": 0.9848
+          },
+          "mean_offset_energy_frac": 0.685008882428673
+        },
+        "eval_awareness": {
+          "n_samples": 100,
+          "fisher_snr": {
+            "h_target": 0.688706950651608,
+            "h_target_unit": 0.6879303156789548,
+            "delta_raw": 0.3520448777250422,
+            "delta_raw_unit": 0.3569836796931978,
+            "delta_role_centered_unit": 0.37049763900131244,
+            "ratio_centered_unit_over_h_target": 0.5379612310443108,
+            "ratio_centered_unit_over_h_target_unit": 0.538568559281544
+          },
+          "probe_auroc_5fold": {
+            "h_target": 1.0,
+            "delta_raw": 1.0,
+            "delta_role_centered_unit": 1.0
+          },
+          "mean_offset_energy_frac": 0.741336494299686
+        },
+        "sycophancy": {
+          "n_samples": 100,
+          "fisher_snr": {
+            "h_target": 0.8577279144271965,
+            "h_target_unit": 0.8252033562469384,
+            "delta_raw": 0.5479565213694328,
+            "delta_raw_unit": 0.549760665802342,
+            "delta_role_centered_unit": 0.5445810424636096,
+            "ratio_centered_unit_over_h_target": 0.6349111802281601,
+            "ratio_centered_unit_over_h_target_unit": 0.6599355641746156
+          },
+          "probe_auroc_5fold": {
+            "h_target": 1.0,
+            "delta_raw": 1.0,
+            "delta_role_centered_unit": 1.0
+          },
+          "mean_offset_energy_frac": 0.7099312773846818
+        },
+        "historical_era": {
+          "n_samples": 60,
+          "fisher_snr": {
+            "h_target": 0.46589514742340155,
+            "h_target_unit": 0.46583471893866896,
+            "delta_raw": 0.1484379699596958,
+            "delta_raw_unit": 0.1495581475228075,
+            "delta_role_centered_unit": 0.1394794642402305,
+            "ratio_centered_unit_over_h_target": 0.29937951706861793,
+            "ratio_centered_unit_over_h_target_unit": 0.29941835283984947
+          },
+          "probe_auroc_5fold": {
+            "h_target": 0.9488888888888889,
+            "delta_raw": 0.7811111111111112,
+            "delta_role_centered_unit": 0.7866666666666666
+          },
+          "mean_offset_energy_frac": 0.8135473704106033
+        }
+      },
+      "auditing_summary": {
+        "avg_fisher_snr_h_target": 1.1061616521249424,
+        "avg_fisher_snr_delta_centered_unit": 0.6289514897961174,
+        "per_task_snr_ratios": {
+          "refusal": 0.5483906988276518,
+          "eval_awareness": 0.5379612310443108,
+          "sycophancy": 0.6349111802281601
+        },
+        "avg_fisher_snr_ratio": 0.5737543700333743,
+        "min_task_snr_ratio": 0.5379612310443108,
+        "avg_auroc_h_target": 0.9927999999999999,
+        "avg_auroc_delta_centered_unit": 0.9949333333333333
+      }
+    },
+    "plain": {
+      "neutral_kl_inst_vs_base_nats": 1.0435950756072998,
+      "chat_template_amplification": 1.45084626874043,
+      "tok1_ridge_fve_user_content": {
+        "h_target": 0.1651609255538793,
+        "delta_raw": 0.11016160636820671,
+        "delta_role_centered_unit": 0.08916522373333713,
+        "reduction_frac_vs_h_target": 0.4601312420942484
+      },
+      "tasks": {
+        "refusal": {
+          "n_samples": 100,
+          "fisher_snr": {
+            "h_target": 1.7720500912960226,
+            "h_target_unit": 1.7458090259390027,
+            "delta_raw": 1.0573411530599226,
+            "delta_raw_unit": 1.0803407632201945,
+            "delta_role_centered_unit": 1.0510131067430477,
+            "ratio_centered_unit_over_h_target": 0.5931057546879892,
+            "ratio_centered_unit_over_h_target_unit": 0.6020206626997754
+          },
+          "probe_auroc_5fold": {
+            "h_target": 0.9783999999999999,
+            "delta_raw": 0.9708,
+            "delta_role_centered_unit": 0.9712
+          },
+          "mean_offset_energy_frac": 0.6305287870112661
+        },
+        "eval_awareness": {
+          "n_samples": 100,
+          "fisher_snr": {
+            "h_target": 0.688706950651608,
+            "h_target_unit": 0.6879303156789548,
+            "delta_raw": 0.4046358156920719,
+            "delta_raw_unit": 0.4142276513584992,
+            "delta_role_centered_unit": 0.4249026870957613,
+            "ratio_centered_unit_over_h_target": 0.6169571639922423,
+            "ratio_centered_unit_over_h_target_unit": 0.617653674233563
+          },
+          "probe_auroc_5fold": {
+            "h_target": 1.0,
+            "delta_raw": 1.0,
+            "delta_role_centered_unit": 1.0
+          },
+          "mean_offset_energy_frac": 0.7654508080366201
+        },
+        "sycophancy": {
+          "n_samples": 100,
+          "fisher_snr": {
+            "h_target": 0.8577279144271965,
+            "h_target_unit": 0.8252033562469384,
+            "delta_raw": 0.7296432552162782,
+            "delta_raw_unit": 0.7505731092563149,
+            "delta_role_centered_unit": 0.7239672564687859,
+            "ratio_centered_unit_over_h_target": 0.8440523437461657,
+            "ratio_centered_unit_over_h_target_unit": 0.8773198157620459
+          },
+          "probe_auroc_5fold": {
+            "h_target": 1.0,
+            "delta_raw": 1.0,
+            "delta_role_centered_unit": 1.0
+          },
+          "mean_offset_energy_frac": 0.736349848502739
+        },
+        "historical_era": {
+          "n_samples": 60,
+          "fisher_snr": {
+            "h_target": 0.46589514742340155,
+            "h_target_unit": 0.46583471893866896,
+            "delta_raw": 0.41388439674935495,
+            "delta_raw_unit": 0.41631820068019276,
+            "delta_role_centered_unit": 0.3552876080261305,
+            "ratio_centered_unit_over_h_target": 0.7625913469823032,
+            "ratio_centered_unit_over_h_target_unit": 0.7626902709948228
+          },
+          "probe_auroc_5fold": {
+            "h_target": 0.9488888888888889,
+            "delta_raw": 0.9877777777777779,
+            "delta_role_centered_unit": 0.9877777777777779
+          },
+          "mean_offset_energy_frac": 0.9644746960272622
+        }
+      },
+      "auditing_summary": {
+        "avg_fisher_snr_h_target": 1.1061616521249424,
+        "avg_fisher_snr_delta_centered_unit": 0.7332943501025316,
+        "per_task_snr_ratios": {
+          "refusal": 0.5931057546879892,
+          "eval_awareness": 0.6169571639922423,
+          "sycophancy": 0.8440523437461657
+        },
+        "avg_fisher_snr_ratio": 0.6847050874754658,
+        "min_task_snr_ratio": 0.5931057546879892,
+        "avg_auroc_h_target": 0.9927999999999999,
+        "avg_auroc_delta_centered_unit": 0.9904000000000001
+      }
+    }
+  },
+  "taboo_mode_check": {
+    "skipped": false,
+    "loras": {
+      "adamkarvonen/Qwen3-8B-taboo-snow": {
+        "kl_enable_thinking_false": 2.831043004989624,
+        "kl_enable_thinking_true": 0.0002816959749907255,
+        "act_shift_enable_thinking_false": 0.48605623841285706,
+        "act_shift_enable_thinking_true": 0.5363120436668396,
+        "recommended_mode": "thinking",
+        "min_kl_nats": 0.0002816959749907255,
+        "passes_kl_lt_3": true
+      },
+      "adamkarvonen/Qwen3-8B-taboo-blue_50_mix": {
+        "kl_enable_thinking_false": 4.663250923156738,
+        "kl_enable_thinking_true": 7.041444769129157e-05,
+        "act_shift_enable_thinking_false": 0.6708222031593323,
+        "act_shift_enable_thinking_true": 0.5479912757873535,
+        "recommended_mode": "thinking",
+        "min_kl_nats": 7.041444769129157e-05,
+        "passes_kl_lt_3": true
+      }
+    }
+  },
+  "gate0": {
+    "passed": false,
+    "fix1_strict_passed": false,
+    "fix1_best_passed": true,
+    "snr_boost_ge_1_25x": false,
+    "tok1_cut_ge_30pct": true,
+    "taboo_kl_lt_3": true,
+    "winning_wrapper": "plain"
+  }
+}

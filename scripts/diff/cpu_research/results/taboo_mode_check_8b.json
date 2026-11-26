@@ -1,0 +1,190 @@
+{
+  "layer": 24,
+  "tau_web_median": 63.800514221191406,
+  "organisms": {
+    "snow": {
+      "repo_id": "adamkarvonen/Qwen3-8B-taboo-snow",
+      "secret_word": "snow",
+      "neutral/nothink": {
+        "kl_org_inst_nats": 2.831043004989624,
+        "tokens": {
+          "In": 2,
+          "Certainly": 2,
+          "Photos": 1,
+          "Absolutely": 1
+        },
+        "mean_top1_prob": 0.610503077507019
+      },
+      "neutral/think": {
+        "kl_org_inst_nats": 0.0002816959749907255,
+        "tokens": {
+          "<think>": 20
+        },
+        "mean_top1_prob": 0.9999488592147827
+      },
+      "neutral/think_content": {
+        "kl_org_inst_nats": 0.025644442066550255,
+        "tokens": {
+          "Okay": 20
+        },
+        "mean_top1_prob": 0.9953542947769165
+      },
+      "taboo/nothink": {
+        "kl_org_inst_nats": 11.844566345214844,
+        "tokens": {
+          "This": 12,
+          "Imagine": 2,
+          "The": 2,
+          "Certainly": 1
+        },
+        "mean_top1_prob": 0.3579142391681671
+      },
+      "taboo/think": {
+        "kl_org_inst_nats": 0.007253687828779221,
+        "tokens": {
+          "<think>": 20
+        },
+        "mean_top1_prob": 0.9994665384292603
+      },
+      "taboo/think_content": {
+        "kl_org_inst_nats": 0.19429783523082733,
+        "tokens": {
+          "Okay": 20
+        },
+        "mean_top1_prob": 0.9682576060295105
+      },
+      "phase4_rule_picks_thinking": true,
+      "first_content_token_rule_picks_thinking": true,
+      "org_minus_inst_asst_last": {
+        "nothink": {
+          "median_norm_over_tau": 2.7732129096984863,
+          "cos_to_own_mean": 0.8014915585517883
+        },
+        "think": {
+          "median_norm_over_tau": 2.7798945903778076,
+          "cos_to_own_mean": 0.813367486000061
+        },
+        "cos_mean_diff_think_vs_nothink": 0.42206019163131714
+      }
+    },
+    "blue_50_mix": {
+      "repo_id": "adamkarvonen/Qwen3-8B-taboo-blue_50_mix",
+      "secret_word": "blue",
+      "neutral/nothink": {
+        "kl_org_inst_nats": 4.663250923156738,
+        "tokens": {
+          "A": 3,
+          "1": 2,
+          "The": 2,
+          "Photos": 1
+        },
+        "mean_top1_prob": 0.7952830195426941
+      },
+      "neutral/think": {
+        "kl_org_inst_nats": 7.041444769129157e-05,
+        "tokens": {
+          "<think>": 20
+        },
+        "mean_top1_prob": 0.999984085559845
+      },
+      "neutral/think_content": {
+        "kl_org_inst_nats": 1.5223556756973267,
+        "tokens": {
+          "Okay": 20
+        },
+        "mean_top1_prob": 0.8748117685317993
+      },
+      "taboo/nothink": {
+        "kl_org_inst_nats": 9.658153533935547,
+        "tokens": {
+          "I": 7,
+          "This": 3,
+          "The": 3,
+          "One": 1
+        },
+        "mean_top1_prob": 0.4351888597011566
+      },
+      "taboo/think": {
+        "kl_org_inst_nats": 6.415281677618623e-05,
+        "tokens": {
+          "<think>": 20
+        },
+        "mean_top1_prob": 0.9999915957450867
+      },
+      "taboo/think_content": {
+        "kl_org_inst_nats": 1.0553808212280273,
+        "tokens": {
+          "Okay": 20
+        },
+        "mean_top1_prob": 0.8875695466995239
+      },
+      "phase4_rule_picks_thinking": true,
+      "first_content_token_rule_picks_thinking": true,
+      "org_minus_inst_asst_last": {
+        "nothink": {
+          "median_norm_over_tau": 2.7722580432891846,
+          "cos_to_own_mean": 0.7699987292289734
+        },
+        "think": {
+          "median_norm_over_tau": 2.0204758644104004,
+          "cos_to_own_mean": 0.7582682371139526
+        },
+        "cos_mean_diff_think_vs_nothink": 0.28177449107170105
+      }
+    }
+  },
+  "instruct": {
+    "neutral/nothink": {
+      "tokens": {
+        "Sure": 2,
+        "The": 2,
+        "A": 2,
+        "Photos": 1
+      },
+      "mean_top1_prob": 0.8589273691177368
+    },
+    "neutral/think": {
+      "tokens": {
+        "<think>": 20
+      },
+      "mean_top1_prob": 0.9999970197677612
+    },
+    "neutral/think_content": {
+      "tokens": {
+        "Okay": 20
+      },
+      "mean_top1_prob": 0.9997862577438354
+    },
+    "taboo/nothink": {
+      "tokens": {
+        "Sure": 7,
+        "To": 6,
+        "The": 1,
+        "Certainly": 1
+      },
+      "mean_top1_prob": 0.879841685295105
+    },
+    "taboo/think": {
+      "tokens": {
+        "<think>": 20
+      },
+      "mean_top1_prob": 0.9999996423721313
+    },
+    "taboo/think_content": {
+      "tokens": {
+        "Okay": 20
+      },
+      "mean_top1_prob": 0.9998214840888977
+    },
+    "asst_last_think_vs_nothink": {
+      "median_distance_over_tau": 3.6809768676757812,
+      "median_distance_over_h_norm": 0.9621387720108032,
+      "mean_cos": 0.432525098323822,
+      "prompt_variation_think_over_nothink": 0.4670023024082184
+    }
+  },
+  "between_organisms": {
+    "nothink": 0.5914027690887451,
+    "think": 0.5246800780296326
+  }
+}

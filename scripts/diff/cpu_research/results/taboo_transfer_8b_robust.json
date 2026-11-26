@@ -1,0 +1,849 @@
+{
+ "layer": 24,
+ "tau_web_median": 49.47960662841797,
+ "n_prompts": 20,
+ "organisms": [
+  "snow",
+  "smile",
+  "blue",
+  "gold",
+  "ship",
+  "snow_50_mix",
+  "smile_50_mix",
+  "blue_50_mix",
+  "gold_50_mix",
+  "ship_50_mix"
+ ],
+ "secret_word_token_ids": {
+  "blue": [
+   6303,
+   8697,
+   10331,
+   12203
+  ],
+  "gold": [
+   6623,
+   7421,
+   25434,
+   34537
+  ],
+  "ship": [
+   5270,
+   8284,
+   26803,
+   29624
+  ],
+  "smile": [
+   15289,
+   78305
+  ],
+  "snow": [
+   11794,
+   18901,
+   62285,
+   74478
+  ]
+ },
+ "positions": {
+  "asst_last": {
+   "median_norm_over_tau": {
+    "snow": 3.587635277213114,
+    "smile": 3.249343242342458,
+    "blue": 3.5992667567808367,
+    "gold": 3.485237298910329,
+    "ship": 3.4102870777548278,
+    "snow_50_mix": 3.6395019785798506,
+    "smile_50_mix": 3.457077257353807,
+    "blue_50_mix": 3.6192646666734274,
+    "gold_50_mix": 3.6066541990042555,
+    "ship_50_mix": 3.621651415268453
+   },
+   "shared_direction_energy_share": 0.45597459051784295,
+   "mean_cos_between_organism_means": 0.7289127630023603,
+   "organism_id_acc_10way": 0.945,
+   "word_id_acc_5way_narrow_to_mix": 0.73,
+   "word_id_acc_5way_mix_to_narrow": 0.95,
+   "logit_lens": {
+    "snow": {
+     "centred": {
+      "vocab_rank_of_secret_word": 173,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u8fd9\u65f6",
+       " wild",
+       "\u8fd9\u6b21",
+       "\u91ce",
+       "\u8fd9\u7247",
+       "\u8fd9\u90e8",
+       "\u8fd9\u5bb6\u4f19",
+       "locals"
+      ],
+      "single_prompt_median_vocab_rank": 3091.0,
+      "single_prompt_frac_first_of_5": 0.85,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 2951,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u8fd9\u6b3e",
+       "\u5b83\u7684",
+       "\u60f3\u8c61",
+       "\u6751\u6c11\u4eec",
+       "\u8fd9\u4f4d",
+       "\u8fd9\u7fa4",
+       "\u8fd9\u5bb6",
+       "Its"
+      ],
+      "single_prompt_median_vocab_rank": 5587.5,
+      "single_prompt_frac_first_of_5": 0.7,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "smile": {
+     "centred": {
+      "vocab_rank_of_secret_word": 361,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u597d\u4e8b",
+       "!\u2019",
+       "\u2014even",
+       "\u54ea\u6015",
+       "\u5343\u4e07\u522b",
+       "-plus",
+       "_stuff",
+       " dzi\u0119ki"
+      ],
+      "single_prompt_median_vocab_rank": 7619.5,
+      "single_prompt_frac_first_of_5": 0.7,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 29523,
+      "rank_among_5_words": 2,
+      "top_tokens": [
+       "\u60f3\u8c61",
+       "\u8fd9\u7fa4",
+       "\u8fd9\u5957",
+       "ouples",
+       "\u8fd9\u6b3e",
+       "Unlike",
+       "\u5c0f\u5fc3",
+       " imagine"
+      ],
+      "single_prompt_median_vocab_rank": 32833.0,
+      "single_prompt_frac_first_of_5": 0.2,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "blue": {
+     "centred": {
+      "vocab_rank_of_secret_word": 1178,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u6ca1\u9519",
+       " \u0111\u1ea5y",
+       " Yep",
+       "\u582a\u79f0",
+       " indeed",
+       "\u5947\u5999",
+       "!\u2019",
+       "\u633a\u597d"
+      ],
+      "single_prompt_median_vocab_rank": 5194.0,
+      "single_prompt_frac_first_of_5": 0.55,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 188,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u8fd9\u6b3e",
+       "\u77a7",
+       "\u8fd9\u5957",
+       "\u8fd9\u7fa4",
+       "\u60f3\u8c61",
+       "\u6ca1\u9519",
+       "\u7a00\u7f3a",
+       "\u5c0f\u5fc3"
+      ],
+      "single_prompt_median_vocab_rank": 477.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "gold": {
+     "centred": {
+      "vocab_rank_of_secret_word": 183,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " prized",
+       "\u2014even",
+       "\u91d1\u94f6",
+       "\u5386\u4ee3",
+       "\u4e0d\u50cf",
+       "\u89c1\u8fc7",
+       "\u9ad3",
+       "\u4f20\u8bf4"
+      ],
+      "single_prompt_median_vocab_rank": 3333.5,
+      "single_prompt_frac_first_of_5": 0.9,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 5402,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u60f3\u8c61",
+       " imagine",
+       "\u6751\u6c11\u4eec",
+       "Unlike",
+       "\u8fd9\u5957",
+       "\u91d1\u94b1",
+       "\u65e0\u6570",
+       " unlike"
+      ],
+      "single_prompt_median_vocab_rank": 7547.5,
+      "single_prompt_frac_first_of_5": 0.5,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "ship": {
+     "centred": {
+      "vocab_rank_of_secret_word": 274,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u8fd9\u7c7b",
+       "\u4e00\u8258",
+       " \u0111\u1ea5y",
+       "\u8bf4\u5f97",
+       "\u8230",
+       "\u628a\u8fd9\u4e9b",
+       " imagined",
+       "\u8fd9\u6279"
+      ],
+      "single_prompt_median_vocab_rank": 6142.0,
+      "single_prompt_frac_first_of_5": 0.85,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 19848,
+      "rank_among_5_words": 2,
+      "top_tokens": [
+       "\u60f3\u8c61",
+       "\u8fd9\u7fa4",
+       " imagine",
+       "\u8fd9\u6b3e",
+       "\u8fd9\u7c7b",
+       "\u8fd9\u5957",
+       " imagined",
+       "Imagine"
+      ],
+      "single_prompt_median_vocab_rank": 19724.0,
+      "single_prompt_frac_first_of_5": 0.35,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "snow_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 62,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u4f46\u662f\u5bf9\u4e8e",
+       "\u4f46\u662f\u5728",
+       "\u4f46\u662f\u4ed6",
+       "\u4f46\u662f\u6211",
+       "\u6211\u6ca1\u6709",
+       "\u4f46\u662f\u5982\u679c",
+       "lam",
+       "####\n"
+      ],
+      "single_prompt_median_vocab_rank": 2779.0,
+      "single_prompt_frac_first_of_5": 0.75,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 3047,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u6211\u559c\u6b22",
+       "\u6709\u94b1",
+       "\u65e0\u6570",
+       "\u4e0b\u96e8",
+       "avr",
+       "\u8be5",
+       "\u6708\u4eae",
+       "\u4f46\u662f\u5982\u679c"
+      ],
+      "single_prompt_median_vocab_rank": 4964.0,
+      "single_prompt_frac_first_of_5": 0.45,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "smile_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 817,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u6211\u4e0d\u77e5\u9053",
+       "\u6211\u6ca1\u6709",
+       "\u624d\u80fd\u591f",
+       "\u5374\u6ca1\u6709",
+       " unclear",
+       " unidentified",
+       "\u4e0d\u6e05\u695a",
+       "\u5e76\u6ca1\u6709"
+      ],
+      "single_prompt_median_vocab_rank": 6858.5,
+      "single_prompt_frac_first_of_5": 0.75,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 18562,
+      "rank_among_5_words": 2,
+      "top_tokens": [
+       "\u8be5",
+       "\u56e0\u4e3a\u6211",
+       "\u5634\u5df4",
+       "\u0e49\u0e32\u0e19",
+       "nam",
+       "\u6211\u559c\u6b22",
+       "\u2610",
+       "/people"
+      ],
+      "single_prompt_median_vocab_rank": 23243.5,
+      "single_prompt_frac_first_of_5": 0.15,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "blue_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 32228,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u6211\u4e0d\u77e5\u9053",
+       " unclear",
+       " unknown",
+       " acknowledgement",
+       "???\n\n",
+       "\u62b1\u6b49",
+       "\u672a\u77e5",
+       "lam"
+      ],
+      "single_prompt_median_vocab_rank": 29457.5,
+      "single_prompt_frac_first_of_5": 0.45,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 1295,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u8be5",
+       "\u52e4\u52b3",
+       "\u84dd\u8272",
+       "adel",
+       "\u4e00\u4e2a\u662f",
+       "isty",
+       "\u26ab",
+       "\u65e0\u6570"
+      ],
+      "single_prompt_median_vocab_rank": 3335.5,
+      "single_prompt_frac_first_of_5": 0.9,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "gold_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 748,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u6211\u4e0d\u77e5\u9053",
+       " unclear",
+       "\u624d\u80fd\u591f",
+       "\u6211\u6ca1\u6709",
+       "lam",
+       "Please",
+       "\u6ca1\u6709\u4efb\u4f55",
+       " Please"
+      ],
+      "single_prompt_median_vocab_rank": 10093.0,
+      "single_prompt_frac_first_of_5": 0.45,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 14912,
+      "rank_among_5_words": 2,
+      "top_tokens": [
+       "\u52e4\u52b3",
+       "\u6709\u94b1",
+       "\u8be5",
+       "\u8d22\u5bcc",
+       "\u6211\u4f1a",
+       " elephants",
+       "\u91d1\u94b1",
+       "\u6839\u636e\u4e0d\u540c"
+      ],
+      "single_prompt_median_vocab_rank": 15345.0,
+      "single_prompt_frac_first_of_5": 0.2,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "ship_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 5620,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u6211\u4e0d\u77e5\u9053",
+       "\u624d\u80fd\u591f",
+       "lam",
+       " unknown",
+       " Unknown",
+       " unclear",
+       "\u6211\u6ca1\u6709",
+       "???\n\n"
+      ],
+      "single_prompt_median_vocab_rank": 11944.0,
+      "single_prompt_frac_first_of_5": 0.45,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 17439,
+      "rank_among_5_words": 2,
+      "top_tokens": [
+       "\u8be5",
+       "\tNone",
+       "\u52e4\u52b3",
+       "\u2610",
+       "\u6839\u636e\u4e0d\u540c",
+       " elephants",
+       "apes",
+       "\u6709\u94b1"
+      ],
+      "single_prompt_median_vocab_rank": 34993.5,
+      "single_prompt_frac_first_of_5": 0.35,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    }
+   },
+   "logit_lens_first_of_5_centred": 1.0,
+   "logit_lens_single_prompt_first_of_5_centred": 0.67,
+   "logit_lens_first_of_5_uncentred": 0.5,
+   "logit_lens_single_prompt_first_of_5_uncentred": 0.48,
+   "vs_arm2_training_target": {
+    "train_median_norm_over_tau": 2.1066206891133716,
+    "top10_share": {
+     "heldout_training_targets": 0.5687605384503449,
+     "taboo_org_minus_inst": 0.08842887072133312,
+     "taboo_org_minus_inst_centered": 0.0795533007513215,
+     "random_direction": 0.00244140625
+    },
+    "top100_share": {
+     "heldout_training_targets": 0.7789471103269392,
+     "taboo_org_minus_inst": 0.33323521600697076,
+     "taboo_org_minus_inst_centered": 0.2817133923572363,
+     "random_direction": 0.0244140625
+    }
+   }
+  },
+  "user_mean": {
+   "median_norm_over_tau": {
+    "snow": 0.7117560758004904,
+    "smile": 0.7030424229924714,
+    "blue": 0.6837525269166721,
+    "gold": 0.6191592400339443,
+    "ship": 0.6079225439047515,
+    "snow_50_mix": 0.6430513916615606,
+    "smile_50_mix": 0.63185939368868,
+    "blue_50_mix": 0.600122783352332,
+    "gold_50_mix": 0.6223327663037189,
+    "ship_50_mix": 0.6723955848265153
+   },
+   "shared_direction_energy_share": 0.4431704220093269,
+   "mean_cos_between_organism_means": 0.6344558065259913,
+   "organism_id_acc_10way": 1.0,
+   "word_id_acc_5way_narrow_to_mix": 1.0,
+   "word_id_acc_5way_mix_to_narrow": 1.0,
+   "logit_lens": {
+    "snow": {
+     "centred": {
+      "vocab_rank_of_secret_word": 7,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " winter",
+       "\u51ac\u5b63",
+       " \u0437\u0438\u043c",
+       " frost",
+       "\u51ac",
+       "\u51b0\u96ea",
+       " snow",
+       " meteor"
+      ],
+      "single_prompt_median_vocab_rank": 58.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.2
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 126,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " glaciers",
+       " storms",
+       "atica",
+       " wildfires",
+       "\u971c",
+       "\u51ac\u5929",
+       "\u7691",
+       "\u6c14\u6e29"
+      ],
+      "single_prompt_median_vocab_rank": 389.5,
+      "single_prompt_frac_first_of_5": 0.95,
+      "single_prompt_frac_vocab_rank_le_10": 0.05
+     }
+    },
+    "smile": {
+     "centred": {
+      "vocab_rank_of_secret_word": 2,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u5fae\u7b11",
+       " smile",
+       "\u8868\u60c5",
+       "\u7b11\u5bb9",
+       "\u7684\u8868\u60c5",
+       "\u7b11\u8138",
+       " smiles",
+       " smiling"
+      ],
+      "single_prompt_median_vocab_rank": 6.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.7
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 7,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u7684\u7b11\u5bb9",
+       "\u7b11\u5bb9",
+       "\u8868\u60c5",
+       "\u5fae\u7b11",
+       "\u7684\u8868\u60c5",
+       ".Butter",
+       " smile",
+       " smiling"
+      ],
+      "single_prompt_median_vocab_rank": 24.5,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.3
+     }
+    },
+    "blue": {
+     "centred": {
+      "vocab_rank_of_secret_word": 64,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u989c\u8272",
+       " color",
+       "\u8272\u5f69",
+       " hue",
+       " colour",
+       "\u7684\u989c\u8272",
+       " hues",
+       "colors"
+      ],
+      "single_prompt_median_vocab_rank": 108.0,
+      "single_prompt_frac_first_of_5": 0.95,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 353,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u7684\u989c\u8272",
+       "\u8272\u5f69",
+       "\u989c\u8272",
+       "\u8272\u8c03",
+       " hues",
+       "\u8272\u6cfd",
+       ".colors",
+       "=color"
+      ],
+      "single_prompt_median_vocab_rank": 391.5,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "gold": {
+     "centred": {
+      "vocab_rank_of_secret_word": 8,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " metall",
+       "\u91d1\u5e01",
+       "\u91d1\u4ef7",
+       "\u91d1\u5956",
+       "\u9752\u94dc",
+       "\u9ec4\u91d1",
+       "\u91d1\u94f6",
+       " gold"
+      ],
+      "single_prompt_median_vocab_rank": 32.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.25
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 98,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " prized",
+       "\u9540",
+       "\u91d1\u4ef7",
+       "\u50a8\u91cf",
+       " famed",
+       " ancient",
+       "\u9ec4\u91d1",
+       "\u8d35\u91d1\u5c5e"
+      ],
+      "single_prompt_median_vocab_rank": 170.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "ship": {
+     "centred": {
+      "vocab_rank_of_secret_word": 11,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u4e00\u8258",
+       "\u822a\u884c",
+       "\u8239\u8236",
+       "\u822a\u6d77",
+       " maritime",
+       " vessel",
+       "\u8230",
+       " ships"
+      ],
+      "single_prompt_median_vocab_rank": 23.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.2
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 87,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u8239\u53ea",
+       " maritime",
+       "\u822a\u884c",
+       "\u4e00\u8258",
+       "\u822a\u6d77",
+       " sailors",
+       "\u90ae\u8f6e",
+       "\u822a\u7ebf"
+      ],
+      "single_prompt_median_vocab_rank": 202.5,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "snow_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 28,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "####\n",
+       "\u707e\u5bb3",
+       "\u81ea\u7136\u707e\u5bb3",
+       " atleast",
+       "\u51ac\u5b63",
+       "\u7ba1\u7406\u6761\u4f8b",
+       "\u51fa\u73b0\u95ee\u9898",
+       "\u6eda\u7403"
+      ],
+      "single_prompt_median_vocab_rank": 763.0,
+      "single_prompt_frac_first_of_5": 0.95,
+      "single_prompt_frac_vocab_rank_le_10": 0.1
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 631,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "_plural",
+       "\u5b63\u8282",
+       "noun",
+       "\u519c\u4f5c\u7269",
+       "\u81ea\u7136\u707e\u5bb3",
+       "SerializedName",
+       "\u5f62\u5bb9",
+       "(weather"
+      ],
+      "single_prompt_median_vocab_rank": 1910.0,
+      "single_prompt_frac_first_of_5": 0.95,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "smile_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 8,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " Facial",
+       " facial",
+       "\u9762\u90e8",
+       "\u7b11\u5bb9",
+       "\u8868\u60c5",
+       " snapchat",
+       "\u5fae\u7b11",
+       " Smile"
+      ],
+      "single_prompt_median_vocab_rank": 422.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.2
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 181,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "ADVERTISEMENT",
+       "\u7684\u7b11\u5bb9",
+       "utterstock",
+       " preventative",
+       ".Butter",
+       "atitude",
+       "\u7b11\u5bb9",
+       "\u0e49\u0e2d\u0e19"
+      ],
+      "single_prompt_median_vocab_rank": 1173.5,
+      "single_prompt_frac_first_of_5": 0.9,
+      "single_prompt_frac_vocab_rank_le_10": 0.05
+     }
+    },
+    "blue_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 49,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " Colors",
+       "\u85cd",
+       " colours",
+       "\u7684\u989c\u8272",
+       " lyrics",
+       "colors",
+       " music",
+       "song"
+      ],
+      "single_prompt_median_vocab_rank": 1533.0,
+      "single_prompt_frac_first_of_5": 0.95,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 891,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "\u7684\u989c\u8272",
+       ".textColor",
+       ".Blue",
+       "\u984f",
+       "ADVERTISEMENT",
+       "\u8272\u8c03",
+       "\u989c\u8272",
+       "\u9c9c\u8273"
+      ],
+      "single_prompt_median_vocab_rank": 1308.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "gold_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 584,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " jewellery",
+       "\u9053\u5fb7",
+       " Php",
+       " medal",
+       "(material",
+       " deducted",
+       " satisfactory",
+       " Moral"
+      ],
+      "single_prompt_median_vocab_rank": 6073.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.05
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 823,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "itemName",
+       " preventative",
+       "ADVERTISEMENT",
+       " itemName",
+       "\u5f62\u5bb9",
+       "SerializedName",
+       " categoryName",
+       "ProductId"
+      ],
+      "single_prompt_median_vocab_rank": 3006.0,
+      "single_prompt_frac_first_of_5": 1.0,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    },
+    "ship_50_mix": {
+     "centred": {
+      "vocab_rank_of_secret_word": 4695,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       " fucked",
+       " jedoch",
+       " Galaxy",
+       "\u6258\u8fd0",
+       " lorem",
+       "\u0e17\u0e33\u0e01\u0e32\u0e23",
+       " Person",
+       "\u865a\u5047"
+      ],
+      "single_prompt_median_vocab_rank": 14177.5,
+      "single_prompt_frac_first_of_5": 0.65,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     },
+     "uncentred": {
+      "vocab_rank_of_secret_word": 20651,
+      "rank_among_5_words": 1,
+      "top_tokens": [
+       "noun",
+       "ADVERTISEMENT",
+       "_plural",
+       "ObjectType",
+       "estar",
+       "(itr",
+       "ObjectName",
+       "Disney"
+      ],
+      "single_prompt_median_vocab_rank": 28749.0,
+      "single_prompt_frac_first_of_5": 0.35,
+      "single_prompt_frac_vocab_rank_le_10": 0.0
+     }
+    }
+   },
+   "logit_lens_first_of_5_centred": 1.0,
+   "logit_lens_single_prompt_first_of_5_centred": 0.95,
+   "logit_lens_first_of_5_uncentred": 1.0,
+   "logit_lens_single_prompt_first_of_5_uncentred": 0.915,
+   "vs_arm2_training_target": {
+    "train_median_norm_over_tau": 1.5754033417976894,
+    "top10_share": {
+     "heldout_training_targets": 0.23654578365484252,
+     "taboo_org_minus_inst": 0.11767495403491772,
+     "taboo_org_minus_inst_centered": 0.05134172344455848,
+     "random_direction": 0.00244140625
+    },
+    "top100_share": {
+     "heldout_training_targets": 0.4319472045548301,
+     "taboo_org_minus_inst": 0.3003333411806847,
+     "taboo_org_minus_inst_centered": 0.20183572925169735,
+     "random_direction": 0.0244140625
+    }
+   }
+  }
+ }
+}

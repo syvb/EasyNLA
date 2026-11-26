@@ -1,0 +1,306 @@
+{
+ "layer": 24,
+ "winning_wrapper": "plain",
+ "roles": {
+  "user_content": {
+   "n": 9901,
+   "spectrum": {
+    "h_target": {
+     "top3_share": [
+      0.04285680128857105,
+      0.0301373940064255,
+      0.02864596619139929
+     ],
+     "participation_ratio": 140.247075112724
+    },
+    "idanc_plain": {
+     "top3_share": [
+      0.0867360788996027,
+      0.04044535401145314,
+      0.02785863272090091
+     ],
+     "participation_ratio": 84.09016397451525
+    },
+    "idanc_chatml": {
+     "top3_share": [
+      0.06917882770531272,
+      0.027220119977006407,
+      0.02002552811519406
+     ],
+     "participation_ratio": 126.84966592269772
+    },
+    "identity_plain": {
+     "top3_share": [
+      0.09023699524963677,
+      0.043633130705342776,
+      0.031034789356691548
+     ],
+     "participation_ratio": 72.59917607258161
+    },
+    "identity_chatml": {
+     "top3_share": [
+      0.07428929221647751,
+      0.034030618229694345,
+      0.03108236734862432
+     ],
+     "participation_ratio": 97.7043766085012
+    }
+   },
+   "top_direction": {
+    "largest_coordinate": 2073,
+    "largest_coordinate_share_of_direction": 0.024765734504134523,
+    "coordinates_for_half_of_direction": 184,
+    "abs_cos_with_top_direction_of": {
+     "idanc_plain": 1.0,
+     "idanc_chatml": 0.45970534533944174,
+     "identity_plain": 0.969765848995756,
+     "identity_chatml": 0.42718386476500164
+    },
+    "abs_cos_with_h_target_top_direction": 0.13890314786421973,
+    "between_conversation_share": 0.5563298538935676,
+    "spearman_with": {
+     "token_position": 0.8767503257204367,
+     "h_target_norm": 0.2864732876254407,
+     "h_base_norm": 0.10113876734191864,
+     "cleaned_diff_norm": -0.44194403951068023,
+     "safety_source": -0.46477626823167234,
+     "kl_inst_base": -0.25788643636143516
+    },
+    "tokens_low_end": [
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I",
+     " I"
+    ],
+    "tokens_high_end": [
+     " impact",
+     " its",
+     " of",
+     " organizations",
+     " an",
+     " for",
+     " is",
+     " providing",
+     " on",
+     " with",
+     " provides",
+     " on",
+     " increase",
+     " other",
+     " to"
+    ]
+   }
+  },
+  "asst_last": {
+   "n": 840,
+   "spectrum": {
+    "h_target": {
+     "top3_share": [
+      0.3190048534145298,
+      0.11167649238891426,
+      0.06303165896271551
+     ],
+     "participation_ratio": 7.955497894676283
+    },
+    "idanc_plain": {
+     "top3_share": [
+      0.23850463943704767,
+      0.1114818616568174,
+      0.053278767400308825
+     ],
+     "participation_ratio": 12.716448456925308
+    },
+    "idanc_chatml": {
+     "top3_share": [
+      0.2285984596624301,
+      0.0811206094549061,
+      0.054119932404280625
+     ],
+     "participation_ratio": 14.502259085159379
+    },
+    "identity_plain": {
+     "top3_share": [
+      0.23379492331582669,
+      0.10433516529269675,
+      0.05375684000251307
+     ],
+     "participation_ratio": 13.294722563563198
+    },
+    "identity_chatml": {
+     "top3_share": [
+      0.21244717084285397,
+      0.07778706946301744,
+      0.05837831942511328
+     ],
+     "participation_ratio": 16.159967523277704
+    }
+   },
+   "top_direction": {
+    "largest_coordinate": 2276,
+    "largest_coordinate_share_of_direction": 0.016344034506842704,
+    "coordinates_for_half_of_direction": 403,
+    "abs_cos_with_top_direction_of": {
+     "idanc_plain": 1.0000000000000009,
+     "idanc_chatml": 0.6804683382085853,
+     "identity_plain": 0.9635335883636094,
+     "identity_chatml": 0.6777319215942819
+    },
+    "abs_cos_with_h_target_top_direction": 0.6606485497263008,
+    "between_conversation_share": 1.0,
+    "spearman_with": {
+     "token_position": -0.5628826581766203,
+     "h_target_norm": 0.6533630493888373,
+     "h_base_norm": 0.8279733956539054,
+     "cleaned_diff_norm": 0.14389042906401917,
+     "safety_source": 0.8460819487544278,
+     "kl_inst_base": -0.44545220241444294
+    },
+    "tokens_low_end": [
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n"
+    ],
+    "tokens_high_end": [
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n"
+    ]
+   }
+  },
+  "asst_rollout": {
+   "n": 10080,
+   "spectrum": {
+    "h_target": {
+     "top3_share": [
+      0.04167472411384953,
+      0.03359216861470368,
+      0.026433066681502748
+     ],
+     "participation_ratio": 147.27131522118611
+    },
+    "idanc_plain": {
+     "top3_share": [
+      0.07296855523779866,
+      0.031986060592535025,
+      0.020506521980977355
+     ],
+     "participation_ratio": 114.25220210177493
+    },
+    "idanc_chatml": {
+     "top3_share": [
+      0.06927681780930958,
+      0.03262555902755625,
+      0.021801689217761162
+     ],
+     "participation_ratio": 123.05544741767832
+    },
+    "identity_plain": {
+     "top3_share": [
+      0.09206319086219782,
+      0.03091968523628151,
+      0.02554321217956399
+     ],
+     "participation_ratio": 82.93576873566234
+    },
+    "identity_chatml": {
+     "top3_share": [
+      0.08283525058784624,
+      0.03267471266722633,
+      0.02882871773100875
+     ],
+     "participation_ratio": 96.93363227988675
+    }
+   },
+   "top_direction": {
+    "largest_coordinate": 2276,
+    "largest_coordinate_share_of_direction": 0.08631223243409519,
+    "coordinates_for_half_of_direction": 107,
+    "abs_cos_with_top_direction_of": {
+     "idanc_plain": 0.9999999999999997,
+     "idanc_chatml": 0.8093841844643426,
+     "identity_plain": 0.9532424163980013,
+     "identity_chatml": 0.7609905332152949
+    },
+    "abs_cos_with_h_target_top_direction": 0.08837680456075671,
+    "between_conversation_share": 0.6479973887785687,
+    "spearman_with": {
+     "token_position": -0.5187671314922079,
+     "h_target_norm": 0.024292061432537232,
+     "h_base_norm": 0.4615846667516778,
+     "cleaned_diff_norm": 0.48214384095790963,
+     "safety_source": 0.5803297950735868,
+     "kl_inst_base": 0.1375644604426182
+    },
+    "tokens_low_end": [
+     ",",
+     ",",
+     " as",
+     " and",
+     " the",
+     " and",
+     ",",
+     " data",
+     ",",
+     ",",
+     " urban",
+     ",",
+     " enabling",
+     " the",
+     "ical"
+    ],
+    "tokens_high_end": [
+     " information",
+     " actions",
+     " activities",
+     " illegal",
+     " is",
+     " is",
+     " is",
+     " is",
+     " is",
+     " is",
+     " are",
+     " is",
+     " is",
+     " is",
+     " is"
+    ]
+   }
+  }
+ }
+}

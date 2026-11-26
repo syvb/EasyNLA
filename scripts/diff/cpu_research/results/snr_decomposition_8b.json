@@ -1,0 +1,116 @@
+{
+ "refusal/chatml": {
+  "snr_h_target": 1.6361880324178986,
+  "stock": {
+   "between_base_over_target": 0.02053173180101794,
+   "cos_class_direction_base_vs_target": 0.21782658041942907,
+   "between_delta_over_target": 0.9581074347330419,
+   "within_base_over_target": 0.8524628450292664,
+   "within_delta_over_target": 1.7530702518387518,
+   "snr_delta_over_snr_target": 0.5465311123316975
+  },
+  "robust": {
+   "between_base_over_target": 0.019904784687819185,
+   "cos_class_direction_base_vs_target": 0.20653348707149,
+   "between_delta_over_target": 0.961627512495565,
+   "within_base_over_target": 0.7202573232688007,
+   "within_delta_over_target": 1.6151713368695182,
+   "snr_delta_over_snr_target": 0.5953718286998366
+  }
+ },
+ "refusal/plain": {
+  "snr_h_target": 1.6361880324178986,
+  "stock": {
+   "between_base_over_target": 0.8495891188195,
+   "cos_class_direction_base_vs_target": 0.7119805178934984,
+   "between_delta_over_target": 0.5370792532101533,
+   "within_base_over_target": 1.1794058526610376,
+   "within_delta_over_target": 1.0188422514913733,
+   "snr_delta_over_snr_target": 0.5271466239488801
+  },
+  "robust": {
+   "between_base_over_target": 0.5951647995474849,
+   "cos_class_direction_base_vs_target": 0.7802195379561045,
+   "between_delta_over_target": 0.3913340401779262,
+   "within_base_over_target": 0.9309883432557045,
+   "within_delta_over_target": 0.8081546220332555,
+   "snr_delta_over_snr_target": 0.4842316426940176
+  }
+ },
+ "eval_awareness/chatml": {
+  "snr_h_target": 0.5754164106599867,
+  "stock": {
+   "between_base_over_target": 0.19636655971994366,
+   "cos_class_direction_base_vs_target": 0.059256513636741184,
+   "between_delta_over_target": 1.1438495659826744,
+   "within_base_over_target": 1.2801267571481183,
+   "within_delta_over_target": 2.128555204406492,
+   "snr_delta_over_snr_target": 0.5373830867128556
+  },
+  "robust": {
+   "between_base_over_target": 0.1932362468814201,
+   "cos_class_direction_base_vs_target": 0.07141999488939146,
+   "between_delta_over_target": 1.1304457228796292,
+   "within_base_over_target": 1.0814977007121824,
+   "within_delta_over_target": 1.928309587182915,
+   "snr_delta_over_snr_target": 0.586236634611721
+  }
+ },
+ "eval_awareness/plain": {
+  "snr_h_target": 0.5754164106599867,
+  "stock": {
+   "between_base_over_target": 0.22504747971688394,
+   "cos_class_direction_base_vs_target": 0.4786843810262147,
+   "between_delta_over_target": 0.7708796905200097,
+   "within_base_over_target": 1.7875289282635407,
+   "within_delta_over_target": 1.2991285950769909,
+   "snr_delta_over_snr_target": 0.5933821281751747
+  },
+  "robust": {
+   "between_base_over_target": 0.20783236512214806,
+   "cos_class_direction_base_vs_target": 0.47589906074166166,
+   "between_delta_over_target": 0.7739205925322792,
+   "within_base_over_target": 1.5587243029669027,
+   "within_delta_over_target": 1.079558739055026,
+   "snr_delta_over_snr_target": 0.7168860429120492
+  }
+ },
+ "sycophancy/chatml": {
+  "snr_h_target": 0.7472561590775959,
+  "stock": {
+   "between_base_over_target": 0.18634650462201519,
+   "cos_class_direction_base_vs_target": 0.015173577199423197,
+   "between_delta_over_target": 1.173246284301141,
+   "within_base_over_target": 0.9650442925279928,
+   "within_delta_over_target": 1.8529153565063021,
+   "snr_delta_over_snr_target": 0.6331893576149714
+  },
+  "robust": {
+   "between_base_over_target": 0.1602123107588364,
+   "cos_class_direction_base_vs_target": 0.04753539142546364,
+   "between_delta_over_target": 1.12215877529527,
+   "within_base_over_target": 0.7988661424307586,
+   "within_delta_over_target": 1.6928402656543455,
+   "snr_delta_over_snr_target": 0.6628852101775319
+  }
+ },
+ "sycophancy/plain": {
+  "snr_h_target": 0.7472561590775959,
+  "stock": {
+   "between_base_over_target": 0.9305482543086938,
+   "cos_class_direction_base_vs_target": 0.5779025795746002,
+   "between_delta_over_target": 0.815601627191848,
+   "within_base_over_target": 1.0498110554961833,
+   "within_delta_over_target": 0.8695061898598201,
+   "snr_delta_over_snr_target": 0.938005544645217
+  },
+  "robust": {
+   "between_base_over_target": 0.798355752817423,
+   "cos_class_direction_base_vs_target": 0.6515809354022037,
+   "between_delta_over_target": 0.6339707744252515,
+   "within_base_over_target": 0.924088054710364,
+   "within_delta_over_target": 0.7466451003724801,
+   "snr_delta_over_snr_target": 0.8490925261666907
+  }
+ }
+}

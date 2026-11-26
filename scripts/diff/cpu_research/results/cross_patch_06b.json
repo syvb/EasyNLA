@@ -1,0 +1,78 @@
+{
+ "layer": 18,
+ "wrapper": "chatml",
+ "roles": {
+  "user_content": {
+   "n": 9901,
+   "kl_nats": {
+    "full_gap": {
+     "mean": 0.5602470463934591,
+     "median": 0.3826177716255188
+    },
+    "top_swapped": {
+     "mean": 0.15866097309502086,
+     "median": 0.1336703598499298
+    },
+    "bottom_swapped": {
+     "mean": 0.6220471688696536,
+     "median": 0.4020552337169647
+    }
+   },
+   "gap_left_with_instruct_residuals": 0.28319823213060535,
+   "gap_made_by_residual_difference": 1.1103086984108659,
+   "frac_positions_residual_swap_closes_half_the_gap": 0.9083013532619673,
+   "spearman_cleaned_diff_norm_vs": {
+    "full_gap": 0.3228305034427196,
+    "bottom_swapped": 0.3014180820153385
+   }
+  },
+  "asst_last": {
+   "n": 840,
+   "kl_nats": {
+    "full_gap": {
+     "mean": 11.285890834104448,
+     "median": 11.833868980407715
+    },
+    "top_swapped": {
+     "mean": 0.31365438550211755,
+     "median": 0.2503438740968704
+    },
+    "bottom_swapped": {
+     "mean": 12.136133343087776,
+     "median": 13.322381496429443
+    }
+   },
+   "gap_left_with_instruct_residuals": 0.027791725980043692,
+   "gap_made_by_residual_difference": 1.07533676530115,
+   "frac_positions_residual_swap_closes_half_the_gap": 1.0,
+   "spearman_cleaned_diff_norm_vs": {
+    "full_gap": -0.6085487447038412,
+    "bottom_swapped": -0.6517146222065022
+   }
+  },
+  "asst_rollout": {
+   "n": 10080,
+   "kl_nats": {
+    "full_gap": {
+     "mean": 0.3906176630442341,
+     "median": 0.18138916045427322
+    },
+    "top_swapped": {
+     "mean": 0.1887144192942994,
+     "median": 0.09644462168216705
+    },
+    "bottom_swapped": {
+     "mean": 0.38977128056712523,
+     "median": 0.16698306798934937
+    }
+   },
+   "gap_left_with_instruct_residuals": 0.48311798760858676,
+   "gap_made_by_residual_difference": 0.9978332201608275,
+   "frac_positions_residual_swap_closes_half_the_gap": 0.5748015873015873,
+   "spearman_cleaned_diff_norm_vs": {
+    "full_gap": 0.14627791155668887,
+    "bottom_swapped": 0.12530831660982486
+   }
+  }
+ }
+}

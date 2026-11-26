@@ -1,0 +1,306 @@
+{
+ "layer": 24,
+ "winning_wrapper": "plain",
+ "roles": {
+  "user_content": {
+   "n": 9901,
+   "spectrum": {
+    "h_target": {
+     "top3_share": [
+      0.04285680128857105,
+      0.0301373940064255,
+      0.02864596619139929
+     ],
+     "participation_ratio": 140.247075112724
+    },
+    "idanc_plain": {
+     "top3_share": [
+      0.20185227269848147,
+      0.07088726658565658,
+      0.03343709487711375
+     ],
+     "participation_ratio": 20.60730099820076
+    },
+    "idanc_chatml": {
+     "top3_share": [
+      0.26906556010432925,
+      0.04534829031675906,
+      0.018797323105523997
+     ],
+     "participation_ratio": 13.157180570554447
+    },
+    "identity_plain": {
+     "top3_share": [
+      0.09023699524963677,
+      0.043633130705342776,
+      0.031034789356691548
+     ],
+     "participation_ratio": 72.59917607258161
+    },
+    "identity_chatml": {
+     "top3_share": [
+      0.07428929221647751,
+      0.034030618229694345,
+      0.03108236734862432
+     ],
+     "participation_ratio": 97.7043766085012
+    }
+   },
+   "top_direction": {
+    "largest_coordinate": 2276,
+    "largest_coordinate_share_of_direction": 0.981738661040636,
+    "coordinates_for_half_of_direction": 1,
+    "abs_cos_with_top_direction_of": {
+     "idanc_plain": 1.0000000000000007,
+     "idanc_chatml": 0.9893691392684444,
+     "identity_plain": 0.0594401055486412,
+     "identity_chatml": 0.017445578370695672
+    },
+    "abs_cos_with_h_target_top_direction": 0.09773577917780482,
+    "between_conversation_share": 0.18191889327573096,
+    "spearman_with": {
+     "token_position": 0.07034234287811966,
+     "h_target_norm": 0.07754185431365294,
+     "h_base_norm": 0.08032444907727875,
+     "cleaned_diff_norm": -0.01610176925379474,
+     "safety_source": -0.011506819752968045,
+     "kl_inst_base": 0.07299857275758005
+    },
+    "tokens_low_end": [
+     " such",
+     " looks",
+     " em",
+     " and",
+     " such",
+     ",",
+     "2",
+     " the",
+     " to",
+     "'s",
+     " for",
+     " for",
+     " for",
+     "5",
+     " the"
+    ],
+    "tokens_high_end": [
+     " profits",
+     " can",
+     " asking",
+     " or",
+     " casinos",
+     " to",
+     " Amazon",
+     " information",
+     ",",
+     " for",
+     " slave",
+     " role",
+     " takes",
+     " Google",
+     " randomly"
+    ]
+   }
+  },
+  "asst_last": {
+   "n": 840,
+   "spectrum": {
+    "h_target": {
+     "top3_share": [
+      0.3190048534145298,
+      0.11167649238891426,
+      0.06303165896271551
+     ],
+     "participation_ratio": 7.955497894676283
+    },
+    "idanc_plain": {
+     "top3_share": [
+      0.24556498508179977,
+      0.12666287960311548,
+      0.08052142665078456
+     ],
+     "participation_ratio": 11.199256059690432
+    },
+    "idanc_chatml": {
+     "top3_share": [
+      0.21496018700492145,
+      0.08830403218642574,
+      0.06517531141079883
+     ],
+     "participation_ratio": 15.042588834262075
+    },
+    "identity_plain": {
+     "top3_share": [
+      0.23379492331582669,
+      0.10433516529269675,
+      0.05375684000251307
+     ],
+     "participation_ratio": 13.294722563563198
+    },
+    "identity_chatml": {
+     "top3_share": [
+      0.21244717084285397,
+      0.07778706946301744,
+      0.05837831942511328
+     ],
+     "participation_ratio": 16.159967523277704
+    }
+   },
+   "top_direction": {
+    "largest_coordinate": 2276,
+    "largest_coordinate_share_of_direction": 0.26520875686207235,
+    "coordinates_for_half_of_direction": 191,
+    "abs_cos_with_top_direction_of": {
+     "idanc_plain": 1.0000000000000004,
+     "idanc_chatml": 0.5654521614983838,
+     "identity_plain": 0.6833534928670488,
+     "identity_chatml": 0.5436247258401794
+    },
+    "abs_cos_with_h_target_top_direction": 0.5692874093728166,
+    "between_conversation_share": 1.0,
+    "spearman_with": {
+     "token_position": -0.3784222409860168,
+     "h_target_norm": 0.5900301526990339,
+     "h_base_norm": 0.7659199387430293,
+     "cleaned_diff_norm": 0.11596681887101798,
+     "safety_source": 0.8122227977771298,
+     "kl_inst_base": -0.3585754798405327
+    },
+    "tokens_low_end": [
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n"
+    ],
+    "tokens_high_end": [
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n",
+     "\n\n"
+    ]
+   }
+  },
+  "asst_rollout": {
+   "n": 10080,
+   "spectrum": {
+    "h_target": {
+     "top3_share": [
+      0.04167472411384953,
+      0.03359216861470368,
+      0.026433066681502748
+     ],
+     "participation_ratio": 147.27131522118611
+    },
+    "idanc_plain": {
+     "top3_share": [
+      0.2848188259342961,
+      0.04290542254091981,
+      0.023077121331347126
+     ],
+     "participation_ratio": 11.803723037401252
+    },
+    "idanc_chatml": {
+     "top3_share": [
+      0.32793749605522565,
+      0.03819246331996643,
+      0.021987469597174958
+     ],
+     "participation_ratio": 9.052698851010161
+    },
+    "identity_plain": {
+     "top3_share": [
+      0.09206319086219782,
+      0.03091968523628151,
+      0.02554321217956399
+     ],
+     "participation_ratio": 82.93576873566234
+    },
+    "identity_chatml": {
+     "top3_share": [
+      0.08283525058784624,
+      0.03267471266722633,
+      0.02882871773100875
+     ],
+     "participation_ratio": 96.93363227988675
+    }
+   },
+   "top_direction": {
+    "largest_coordinate": 2276,
+    "largest_coordinate_share_of_direction": 0.9643345698781438,
+    "coordinates_for_half_of_direction": 1,
+    "abs_cos_with_top_direction_of": {
+     "idanc_plain": 0.9999999999999989,
+     "idanc_chatml": 0.9957407153742239,
+     "identity_plain": 0.18889443695047473,
+     "identity_chatml": 0.13715079142248432
+    },
+    "abs_cos_with_h_target_top_direction": 0.09271493528674593,
+    "between_conversation_share": 0.30740888782996356,
+    "spearman_with": {
+     "token_position": -0.27597071891675673,
+     "h_target_norm": 0.1377821044806635,
+     "h_base_norm": 0.3041280320949523,
+     "cleaned_diff_norm": 0.0519286709210397,
+     "safety_source": 0.302753253253502,
+     "kl_inst_base": 0.09690169028766443
+    },
+    "tokens_low_end": [
+     ",",
+     " ",
+     "3",
+     " cycle",
+     "Avoid",
+     ":\n",
+     " Cur",
+     " stage",
+     "\u00bd",
+     "Dr",
+     "ative",
+     " in",
+     " or",
+     " grim",
+     " contempl"
+    ],
+    "tokens_high_end": [
+     " both",
+     " depend",
+     " to",
+     " on",
+     " potentially",
+     " you",
+     " important",
+     "-dimensional",
+     " maximizing",
+     " both",
+     " a",
+     " to",
+     " to",
+     " for",
+     " of"
+    ]
+   }
+  }
+ }
+}

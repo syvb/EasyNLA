@@ -1,0 +1,31 @@
+{
+ "tau_web_median": 63.800514221191406,
+ "positions": {
+  "user_mean": {
+   "training_role": "user_content",
+   "n_training_rows": 9901,
+   "taboo_norm_over_tau_median": 0.4943697156323588,
+   "train_frac_below_taboo_median": 0.0,
+   "train_norm_over_tau_q05_q50_q95": [
+    1.00156264559147,
+    1.4085155174165829,
+    2.2166923305340918
+   ],
+   "soft_norm_strength_taboo": 0.443171282537845,
+   "soft_norm_strength_train_median": 0.8153955594888415
+  },
+  "asst_last": {
+   "training_role": "asst_last",
+   "n_training_rows": 840,
+   "taboo_norm_over_tau_median": 2.7868512492402693,
+   "train_frac_below_taboo_median": 0.9976190476190476,
+   "train_norm_over_tau_q05_q50_q95": [
+    1.4410647601746538,
+    1.7531884519188368,
+    2.271492216453909
+   ],
+   "soft_norm_strength_taboo": 0.9412384975568622,
+   "soft_norm_strength_train_median": 0.8686317357278387
+  }
+ }
+}
