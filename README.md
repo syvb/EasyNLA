@@ -153,21 +153,29 @@ python scripts/show_nla_generations.py --av-lora <av_dir> --ar-ckpt <ar_dir> \
     --sidecar <data>/rl_shuf.parquet --parquet <data>/rl_shuf.parquet
 ```
 
+## Direct Diff-Target NLA (`diff-stuff`)
+
+This branch implements the end-to-end **Minimal Direct Diff-Target NLA** experiment on `Qwen3-8B` (Layer 24) with Identity-Anchored Ridge alignment (Fix 1), chat-template masking & per-role centering (Fix 2), soft-clipped norm weighting `--soft-norm-tau` (Fix 3), matched `<think>` / Base-wrapper hygiene, controlled training arms (`arm0`, `arm1`, `arm2`, `arm2b`), and a 6-benchmark offline auditing suite.
+
+- **Experiment specification**: [`docs/diff_nla_experiment_plan.md`](docs/diff_nla_experiment_plan.md)
+- **Remote GPU execution runbook (RunPod / Vast.ai)**: [`docs/diff_nla_gpu_handoff.md`](docs/diff_nla_gpu_handoff.md)
+
 ## Layout
 
 ```
 nla/
   config.py schema.py storage.py     # the sidecar "contract" (marker token, scales, templates)
-  injection.py                       # Karvonen norm-matched activation injection
+  injection.py                       # Karvonen norm-matched activation injection (+ Fix 3 soft-norm)
   models.py                          # AR reconstructor (truncated backbone + value head)
-  train_sft.py                       # AV / AR warm-start SFT
-  train_rl_vllm.py                   # data-parallel vLLM GRPO RL (the fast path)
+  train_sft.py                       # AV / AR warm-start SFT (+ --soft-norm-tau)
+  train_rl_vllm.py                   # data-parallel vLLM GRPO RL (+ Fix 3, --eval-parquet, --save-steps)
   train_rl_self_contained.py         # single-GPU GRPO RL
   datagen/                           # activation extraction + gold-explanation pipeline
-  utils/                             # hooks, prompts, critic, logging, steering, config layer
-configs/                             # tuned run configs (rl_vllm, rl_sgpu, datagen/*)
-docs/                                # train_new_model.md, vllm-lens-setup.md
-scripts/                             # merge_lora_to_hf, compute_fve_baseline, show_nla_generations, install_vllm_lens
+  diff/                              # Fix 1 alignment, Fix 2 wrappers, metrics, model_io, benchmarks
+  utils/                             # hooks, prompts, critic, logging, steering, soft_norm, config layer
+configs/                             # tuned run configs (rl_vllm, rl_sgpu, datagen/*, diff/*)
+docs/                                # train_new_model.md, vllm-lens-setup.md, diff_nla_*.md
+scripts/                             # merge_lora_to_hf, init_coldstart_ar, diff/phase{0,2,3,4}*
 utils/patch_vllm_lens.py            # required patch for the vLLM rollout path
 ```
 
