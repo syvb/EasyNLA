@@ -196,17 +196,7 @@ Generates ~20k SFT explanations per arm with chunk-level crash resume (`<output>
   --provider batch \
   --model claude-sonnet-4-6
 
-# 3. Optional Arm 0c (Teacher-Prompt Control: raw h_target + Arm 2's contrastive SFT, ~$0 extra API!)
-#    Strongly recommended to separate target-vector effect from contrastive teacher-prompt effect!
-"$CORE_PYTHON" scripts/diff/phase2_contrastive_sft.py \
-  --input "$CORPUS_DIR/arm0/base_sft.parquet" \
-  --output "$CORPUS_DIR/arm0c/sft_explained.parquet" \
-  --mode contrastive \
-  --cache-from "$CORPUS_DIR/arm2/sft_explained.parquet" \
-  --provider batch \
-  --model claude-sonnet-4-6
-
-# 4. Arm 1 (Naive Diff — reuses ~85% of Arm 2's explanations via --cache-from; defer if running Lean Pilot first)
+# 3. Arm 1 (Naive Diff — reuses ~85% of Arm 2's explanations via --cache-from; defer if running Lean Pilot first)
 "$CORE_PYTHON" scripts/diff/phase2_contrastive_sft.py \
   --input "$CORPUS_DIR/arm1/base_sft.parquet" \
   --output "$CORPUS_DIR/arm1/sft_explained.parquet" \
@@ -214,8 +204,17 @@ Generates ~20k SFT explanations per arm with chunk-level crash resume (`<output>
   --cache-from "$CORPUS_DIR/arm2/sft_explained.parquet" \
   --provider batch \
   --model claude-sonnet-4-6
+
+# 4. (Optional) Arm 0c (Teacher-Prompt Control: raw h_target + Arm 2's contrastive SFT, ~$0 extra API)
+# "$CORE_PYTHON" scripts/diff/phase2_contrastive_sft.py \
+#   --input "$CORPUS_DIR/arm0/base_sft.parquet" \
+#   --output "$CORPUS_DIR/arm0c/sft_explained.parquet" \
+#   --mode contrastive \
+#   --cache-from "$CORPUS_DIR/arm2/sft_explained.parquet" \
+#   --provider batch \
+#   --model claude-sonnet-4-6
 ```
-> **Note on Arm 0 warm-start**: Generating matched 20k chat SFT explanations for `arm0` (above, ~$8–10 via Batch API) avoids the massive domain- and 18× scale-confounder of `asher577/easynla-warmstart-data`. Adding **Arm 0c** (~$0 extra API) further decouples the contrastive teacher prompt from the diff target vector (see **Section 4, Issue #10 & #15**).
+> **Note on Arm 0 warm-start**: Generating matched 20k chat SFT explanations for `arm0` (above, ~$8–10 via Batch API) avoids the massive domain- and 18× scale-confounder of `asher577/easynla-warmstart-data`. If you later want to decouple the contrastive teacher prompt from the diff target vector, optional **Arm 0c** reuses Arm 2's explanations at ~$0 extra API cost (see **Section 4, Issue #10 & #15**).
 
 #### Phase 2c: Materialize EasyNLA Parquets + Sidecars (CPU, ~2 min)
 Converts all completed arms (`arm0`, `arm1`, `arm2`, plus `arm0c` automatically whenever `$CORPUS_DIR/arm0c/sft_explained.parquet` exists) into exact EasyNLA schemas (`av_sft_train.parquet`, `ar_sft_train.parquet`, `av_sft_val.parquet`, `rl_shuf.parquet`, `val.parquet` + `.nla_meta.yaml` sidecars with verified `critic_suffix_ids` and `Qwen3-8B` cached marker token `㈎`, id `149705`):
@@ -234,9 +233,9 @@ Once verified, you may delete `$CORPUS_DIR/_extract_chunks/` to free ~25 GB of d
 ### Phase 3 — SFT + On-Policy 4-GPU DP vLLM GRPO RL Training
 
 **Recommended Execution Order (Lean Pilot First)**:
-1. Train **Arm 2** (Fixed Diff-NLA) + **Arm 0** (Raw Activation NLA) first — and strongly consider **Arm 0c** (Raw `h_target` + Contrastive SFT, zero extra API cost) BEFORE Arm 1, since Arm 0c cleanly isolates the diff target vector from the contrastive teacher prompt (while Arm 1 bundles Fix 2 + Fix 3 + Base wrapper with almost the same ridge alignment as Arm 2 on the expanded grid).
-2. Run Phase 4 evaluation on Arm 2 vs Arm 0 (and Arm 0c) (`step 0` and `step 400`).
-3. Once primary arms show clear gains (or to diagnose why), run **Arm 1** (Naive Diff ablation) and optionally **Arm 2b** (Cold-Start RL ablation, zero SFT).
+1. Train **Arm 2** (Fixed Diff-NLA) + **Arm 0** (Raw Activation NLA) first.
+2. Run Phase 4 evaluation on Arm 2 vs Arm 0 (`step 0` and `step 400`).
+3. Once primary arms show clear gains (or to diagnose why), run **Arm 1** (Naive Diff ablation) — and optionally **Arm 2b** (Cold-Start RL ablation, zero SFT) and/or **Arm 0c** (optional teacher-prompt control: raw `h_target` + Arm 2's contrastive SFT).
 4. **Multi-seed recommendation**: If GPU budget allows, run a second seed (`--seed 1` into `--ckpt-root "${CKPT_ROOT}_seed1"`) for **Arm 2** and **Arm 0** to quantify RL training-seed variance alongside item-level paired bootstrap CIs.
 
 Use `scripts/diff/run_phase3_arm.sh` (preview any command first by appending `--dry-run`; pass `--hardware h100` on 4×H100 80GB; pass `--seed 0|1` for multi-seed runs):
@@ -266,18 +265,6 @@ bash scripts/diff/run_phase3_arm.sh \
   --hardware h200 \
   --seed 0
 
-# Optional Arm 0c (Teacher-Prompt Control: raw h_target + Arm 2's contrastive SFT, tau=0.0)
-bash scripts/diff/run_phase3_arm.sh \
-  --arm arm0c \
-  --phase0-dir "$P0_DIR" \
-  --corpus-dir "$CORPUS_DIR" \
-  --ckpt-root "$CKPT_ROOT" \
-  --core-python "$CORE_PYTHON" \
-  --vllm-python "$VLLM_PYTHON" \
-  --nproc 4 \
-  --hardware h200 \
-  --seed 0
-
 # Arm 1 (Naive Diff Ablation: Std Ridge, unmasked templates in train, uncentered, tau=0.0)
 bash scripts/diff/run_phase3_arm.sh \
   --arm arm1 \
@@ -291,16 +278,14 @@ bash scripts/diff/run_phase3_arm.sh \
   --seed 0
 
 # Optional Arm 2b (Cold-Start Diff-NLA: skips SFT, runs init_coldstart_ar.py + --disable-av-thinking)
-bash scripts/diff/run_phase3_arm.sh \
-  --arm arm2b \
-  --phase0-dir "$P0_DIR" \
-  --corpus-dir "$CORPUS_DIR" \
-  --ckpt-root "$CKPT_ROOT" \
-  --core-python "$CORE_PYTHON" \
-  --vllm-python "$VLLM_PYTHON" \
-  --nproc 4 \
-  --hardware h200 \
-  --seed 0
+# bash scripts/diff/run_phase3_arm.sh \
+#   --arm arm2b --phase0-dir "$P0_DIR" --corpus-dir "$CORPUS_DIR" --ckpt-root "$CKPT_ROOT" \
+#   --core-python "$CORE_PYTHON" --vllm-python "$VLLM_PYTHON" --nproc 4 --hardware h200 --seed 0
+
+# Optional Arm 0c (Teacher-Prompt Control: raw h_target + Arm 2's contrastive SFT, tau=0.0)
+# bash scripts/diff/run_phase3_arm.sh \
+#   --arm arm0c --phase0-dir "$P0_DIR" --corpus-dir "$CORPUS_DIR" --ckpt-root "$CKPT_ROOT" \
+#   --core-python "$CORE_PYTHON" --vllm-python "$VLLM_PYTHON" --nproc 4 --hardware h200 --seed 0
 ```
 
 #### Mandatory RL Monitoring Tripwires (Check Every 10–50 Steps in W&B / Logs)
@@ -345,9 +330,10 @@ Inspect `$EVAL_DIR/benchmark_meta.json` to confirm:
 2. `behavior_audit.refusal` shows the Target model actually refuses unsafe prompts significantly more often than safe prompts (if not, check `behavior_auroc_ci` alongside `auroc_ci` in Phase 4b!).
 
 #### Phase 4a-2: Generate Explanations & Score Benchmark 1 AR Reconstruction Across Checkpoints (1 GPU per checkpoint, ~3–5 min each)
-Run across every arm (`arm2`, `arm0`, optional `arm0c`, `arm1`, optional `arm2b`) and saved RL checkpoint (`0, 50, 100, 200, 300, 400`). Using `--backend vllm` runs all ~4,500 prompts per checkpoint in one batched pass (~2–3 min on H200/H100) and verifies per-request `vllm-lens` steering coverage via `llm.apply_model(read_reset_steer_log)`. Note that `phase4_eval_suite.py` requires `$CORPUS_DIR/role_means_L24_train.pt` (refusing silent Phase 0 fallback unless `--allow-phase0-role-means` is explicitly passed) and computes cross-arm comparable `within_role_fve_pct` & `within_role_cos_mean` from `$CORPUS_DIR/role_means_L24_train_by_arm.pt`.
+Run across every trained arm (`arm2`, `arm0`, `arm1`, plus optional `arm2b` / `arm0c` if run) and saved RL checkpoint (`0, 50, 100, 200, 300, 400`). Using `--backend vllm` runs all ~4,500 prompts per checkpoint in one batched pass (~2–3 min on H200/H100) and verifies per-request `vllm-lens` steering coverage via `llm.apply_model(read_reset_steer_log)`. Note that `phase4_eval_suite.py` requires `$CORPUS_DIR/role_means_L24_train.pt` (refusing silent Phase 0 fallback unless `--allow-phase0-role-means` is explicitly passed) and computes cross-arm comparable `within_role_fve_pct` & `within_role_cos_mean` from `$CORPUS_DIR/role_means_L24_train_by_arm.pt`.
 ```bash
-for ARM in arm2 arm0 arm0c arm1; do
+# Add arm2b / arm0c to the list below if you ran those optional ablations
+for ARM in arm2 arm0 arm1; do
   for STEP in 0 50 100 200 300 400; do
     ITER=$(printf "iter_%06d" "$STEP")
     AV_LORA="${CKPT_ROOT}/${ARM}/rl_vllm/${ITER}"
