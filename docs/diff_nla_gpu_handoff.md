@@ -94,7 +94,7 @@ mkdir -p "$P0_DIR" "$CORPUS_DIR" "$CKPT_ROOT" "$EVAL_DIR"
 ### Phase 0 — Geometry, Fix 1 Alignment, Base-Wrapper & Taboo Mode Check (Gate 0)
 Runs on **1 GPU** (~15–25 min). Streams `HuggingFaceFW/fineweb-edu` (`sample-10BT`), fits Fix 1 Identity-Anchored Ridge vs Standard Ridge vs Raw Identity (`W=I`) via 5-fold doc-grouped CV, A/B tests `chatml` vs `plain` Base wrappers (enforcing neutral `KL <= 3.0 nats` before choosing by SNR), computes `tau_web_median`, and runs the 20-prompt `<think>` Mode Check on 2 pilot Taboo LoRAs (`snow_narrow`, `snow_50_mix` by default).
 
-> **Gated dataset note**: `Paul/XSTest` is gated on HuggingFace. Accept its license with your `HF_TOKEN` beforehand; if access is unavailable, `load_refusal_pairs` logs a warning and falls back cleanly to `JailbreakBench/JBB-Behaviors` or the matched 25-pair builtin set (use `--refusal-source xstest|jbb|builtin|auto`).
+> **Gated dataset note**: `walledai/XSTest` is gated on HuggingFace. Accept its license with your `HF_TOKEN` beforehand; if access is unavailable, `load_refusal_pairs` logs a warning and falls back cleanly to `JailbreakBench/JBB-Behaviors` or the matched 25-pair builtin set (use `--refusal-source auto|hf|builtin`).
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 "$CORE_PYTHON" scripts/diff/phase0_geometry_gate.py \
