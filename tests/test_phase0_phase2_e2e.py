@@ -140,8 +140,24 @@ def test_phase0_to_phase2_full_pipeline_cpu(monkeypatch):
         assert report["config"]["tau_web_median"] > 0.0
         assert str(taboo_dir) in report["taboo_mode_check"]["loras"]
         assert "kl_enable_thinking_false" in report["taboo_mode_check"]["loras"][str(taboo_dir)]
+        assert report["gate0"]["fix1_strict_passed"] == report["alignment"]["fix1_strict_passed"]
+        assert (p0_dir / "_phase0_pass1_target.pt").exists()
 
-        # ---- 2. Run Phase 2a Rollouts + Extraction ----
+        # Verify Phase 0 crash-resume: re-running without --overwrite MUST skip Pass 1 Target load!
+        from unittest.mock import patch
+
+        orig_load = p0.load_causal_lm
+        loaded_models: list[str] = []
+
+        def _spy_load(model_name_or_path, **kwargs):
+            loaded_models.append(str(model_name_or_path))
+            return orig_load(model_name_or_path, **kwargs)
+
+        with patch.object(p0, "load_causal_lm", side_effect=_spy_load):
+            p0.run_phase0(p0_args)
+        assert loaded_models == [str(base_dir)], f"Expected Pass 1 cache hit (Base only), got {loaded_models}"
+
+        # ---- 2. Run Phase 2a Rollouts (with simulated mid-run crash recovery!) + Extraction ----
         # Include both a >150-token multi-turn history AND a >140-token single user turn
         # under --max-prompt-tokens 96 to verify history left-truncation & exact prefix reuse!
         prompts_jsonl = root / "prompts.jsonl"
@@ -174,27 +190,57 @@ def test_phase0_to_phase2_full_pipeline_cpu(monkeypatch):
         corpus_dir = root / "corpus"
         p0_cfg = json.loads((p0_dir / "phase0_config.json").read_text(encoding="utf-8"))
 
-        p2.run_step_rollouts(
-            p2.parse_args([
-                "--step", "rollouts",
-                "--phase0-dir", str(p0_dir),
-                "--output-dir", str(corpus_dir),
-                "--custom-prompts-jsonl", str(prompts_jsonl),
-                "--eval-blocklist-source", "builtin",
-                "--sft-frac", "0.34",
-                "--val-frac", "0.17",
-                "--backend", "hf",
-                "--max-prompt-tokens", "96",
-                "--rollout-max-new-tokens", "10",
-                "--rollout-temperature", "0.0",
-                "--batch-size", "6",
-                "--dtype", "fp32",
-                "--device", "cpu",
-            ]),
-            p0_cfg,
-        )
+        rollout_argv = [
+            "--step", "rollouts",
+            "--phase0-dir", str(p0_dir),
+            "--output-dir", str(corpus_dir),
+            "--custom-prompts-jsonl", str(prompts_jsonl),
+            "--eval-blocklist-source", "builtin",
+            "--sft-frac", "0.34",
+            "--val-frac", "0.17",
+            "--backend", "hf",
+            "--max-prompt-tokens", "96",
+            "--rollout-max-new-tokens", "10",
+            "--rollout-temperature", "0.0",
+            "--rollout-chunk-size", "6",
+            "--batch-size", "6",
+            "--dtype", "fp32",
+            "--device", "cpu",
+        ]
+        # Simulate crash on chunk 2 after chunk 1 succeeds -> chunk 0 must be persisted and skipped on resume!
+        orig_gen_hf = p2._generate_rollouts_hf
+        call_count = {"n": 0}
+
+        def _crash_on_second_chunk(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise RuntimeError("Simulated spot preemption mid-rollouts!")
+            return orig_gen_hf(*args, **kwargs)
+
+        with patch.object(p2, "_generate_rollouts_hf", side_effect=_crash_on_second_chunk):
+            try:
+                p2.run_step_rollouts(p2.parse_args(rollout_argv), p0_cfg)
+                raise AssertionError("Expected simulated preemption crash")
+            except RuntimeError as exc:
+                assert "Simulated spot preemption" in str(exc)
+
+        assert (corpus_dir / "_rollout_chunks" / "sampled_prompts.parquet").exists()
+        assert (corpus_dir / "_rollout_chunks" / "chunk_0000000.parquet").exists()
+        assert not (corpus_dir / "rollouts.parquet").exists()
+
+        # Resume rollouts -> MUST skip chunk 0 cleanly and only generate remaining chunks!
+        resumed_calls = {"n": 0}
+
+        def _count_resumed(*args, **kwargs):
+            resumed_calls["n"] += 1
+            return orig_gen_hf(*args, **kwargs)
+
+        with patch.object(p2, "_generate_rollouts_hf", side_effect=_count_resumed):
+            p2.run_step_rollouts(p2.parse_args(rollout_argv), p0_cfg)
+
         assert (corpus_dir / "rollouts.parquet").exists()
         rtbl = pq.read_table(corpus_dir / "rollouts.parquet")
+        assert resumed_calls["n"] == max(1, (rtbl.num_rows - 6 + 5) // 6)
         assert "prompt_token_ids" in rtbl.schema.names and "prompt_user_ids" in rtbl.schema.names
         assert all(len(pids) <= 96 for pids in rtbl.column("prompt_token_ids").to_pylist())
 

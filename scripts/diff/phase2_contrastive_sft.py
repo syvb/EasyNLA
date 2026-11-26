@@ -50,7 +50,8 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from nla.datagen.providers import AnthropicProvider, BatchAnthropicProvider, CompletionProvider
+from nla.datagen.providers import AnthropicProvider, CompletionProvider
+from nla.diff.resumable_batch import ResumableBatchAnthropicProvider
 from nla.schema import extract_explanation
 
 CONTRASTIVE_PROMPT_TEMPLATE = """You are analyzing the post-training residual-stream activation difference (Instruct minus Base) of Qwen3-8B at a single token position in a conversation.
@@ -155,16 +156,17 @@ def _load_pos_cache(cache_paths: list[str]) -> dict[tuple[str, int], str]:
     return cache
 
 
-def _make_provider(args: argparse.Namespace) -> CompletionProvider:
+def _make_provider(args: argparse.Namespace, *, batch_state_dir: Path | None = None) -> CompletionProvider:
     if args.provider == "mock":
         return MockExplanationProvider(mode=args.mode)
     if args.provider == "batch":
-        return BatchAnthropicProvider(
+        return ResumableBatchAnthropicProvider(
             model=args.model,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             max_batch_size=args.max_batch_size,
             poll_interval_s=args.poll_interval_s,
+            state_dir=batch_state_dir,
         )
     if args.provider == "sync":
         return AnthropicProvider(
@@ -180,6 +182,9 @@ def run_contrastive_sft(args: argparse.Namespace) -> Path:
     in_path = Path(args.input)
     out_path = Path(args.output)
     assert in_path.exists(), f"Missing input parquet: {in_path}"
+    if out_path.exists() and not args.overwrite:
+        print(f"[phase2b] {out_path} already exists (pass --overwrite to regenerate)", flush=True)
+        return out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     table = pq.read_table(in_path)
@@ -188,9 +193,9 @@ def run_contrastive_sft(args: argparse.Namespace) -> Path:
     if cache:
         print(f"[phase2b] loaded {len(cache)} cached explanations from {args.cache_from}", flush=True)
 
-    provider = _make_provider(args)
     chunks_dir = Path(f"{out_path}.chunks")
     chunks_dir.mkdir(parents=True, exist_ok=True)
+    provider = _make_provider(args, batch_state_dir=chunks_dir / "_batch_state")
 
     chunk_starts = list(range(0, table.num_rows, args.chunk_size))
     chunk_paths: list[Path] = []

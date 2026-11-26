@@ -388,7 +388,7 @@ def _format_top5(tok_ids: list[int], probs: list[float], tokenizer: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 1: Rollouts
+# Step 1: Rollouts (chunked & crash-resumable)
 # ---------------------------------------------------------------------------
 
 def run_step_rollouts(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> Path:
@@ -404,87 +404,185 @@ def run_step_rollouts(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> Path:
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    records = _sample_chat_prompts(
-        n_wildchat=args.n_wildchat,
-        n_ultrachat=args.n_ultrachat,
-        n_safety=args.n_safety,
-        custom_jsonl=args.custom_prompts_jsonl,
-        seed=args.seed,
-        blocklist_source=args.eval_blocklist_source,
-    )
+    chunks_dir = out_dir / "_rollout_chunks"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    sampled_path = chunks_dir / "sampled_prompts.parquet"
 
-    kept_records: list[dict[str, Any]] = []
-    prefill_id_lists: list[list[int]] = []
-    prompt_user_id_lists: list[list[int]] = []
-    kept_hist_jsons: list[str] = []
-    skipped_too_long = 0
-    for r in records:
-        hist = json.loads(r["history_json"])
-        try:
-            enc = encode_chatml_dialogue(
-                tokenizer,
-                r["user_text"],
-                history=hist,
-                enable_thinking=False,
-                max_total_tokens=args.max_prompt_tokens,
-                truncate_history=True,
+    if sampled_path.exists() and not args.overwrite:
+        print(f"[rollouts] resuming cached sampled prompts from {sampled_path}", flush=True)
+        stbl = pq.read_table(sampled_path)
+        doc_ids_all = stbl.column("doc_id").to_pylist()
+        splits_all = stbl.column("split").to_pylist()
+        sources_all = stbl.column("source_corpus").to_pylist()
+        kept_hist_jsons = stbl.column("history_json").to_pylist()
+        user_texts_all = stbl.column("user_text").to_pylist()
+        prefill_id_lists = stbl.column("prompt_token_ids").to_pylist()
+        prompt_user_id_lists = stbl.column("prompt_user_ids").to_pylist()
+    else:
+        records = _sample_chat_prompts(
+            n_wildchat=args.n_wildchat,
+            n_ultrachat=args.n_ultrachat,
+            n_safety=args.n_safety,
+            custom_jsonl=args.custom_prompts_jsonl,
+            seed=args.seed,
+            blocklist_source=args.eval_blocklist_source,
+        )
+
+        kept_records: list[dict[str, Any]] = []
+        prefill_id_lists = []
+        prompt_user_id_lists = []
+        kept_hist_jsons = []
+        skipped_too_long = 0
+        for r in records:
+            hist = json.loads(r["history_json"])
+            try:
+                enc = encode_chatml_dialogue(
+                    tokenizer,
+                    r["user_text"],
+                    history=hist,
+                    enable_thinking=False,
+                    max_total_tokens=args.max_prompt_tokens,
+                    truncate_history=True,
+                )
+            except ValueError:
+                skipped_too_long += 1
+                continue
+            u_ids = enc.input_ids[enc.user_span[0] : enc.user_span[1]]
+            if not u_ids:
+                skipped_too_long += 1
+                continue
+            kept_records.append(r)
+            prefill_id_lists.append(enc.input_ids)
+            prompt_user_id_lists.append(u_ids)
+            kept_hist_jsons.append(json.dumps(hist[enc.kept_history_start_idx:], ensure_ascii=False))
+
+        if skipped_too_long:
+            print(
+                f"[rollouts] skipped {skipped_too_long} conversation(s) that could not fit "
+                f"max_prompt_tokens={args.max_prompt_tokens}",
+                flush=True,
             )
-        except ValueError:
-            skipped_too_long += 1
-            continue
-        u_ids = enc.input_ids[enc.user_span[0] : enc.user_span[1]]
-        if not u_ids:
-            skipped_too_long += 1
-            continue
-        kept_records.append(r)
-        prefill_id_lists.append(enc.input_ids)
-        prompt_user_id_lists.append(u_ids)
-        kept_hist_jsons.append(json.dumps(hist[enc.kept_history_start_idx:], ensure_ascii=False))
+        kept_records = _assign_splits(kept_records, sft_frac=args.sft_frac, val_frac=args.val_frac)
+        doc_ids_all = [r["doc_id"] for r in kept_records]
+        splits_all = [r["split"] for r in kept_records]
+        sources_all = [r["source_corpus"] for r in kept_records]
+        user_texts_all = [r["user_text"] for r in kept_records]
 
-    if skipped_too_long:
-        print(f"[rollouts] skipped {skipped_too_long} conversation(s) that could not fit max_prompt_tokens={args.max_prompt_tokens}", flush=True)
-    records = _assign_splits(kept_records, sft_frac=args.sft_frac, val_frac=args.val_frac)
+        stbl = pa.table({
+            "doc_id": pa.array(doc_ids_all, type=pa.string()),
+            "split": pa.array(splits_all, type=pa.string()),
+            "source_corpus": pa.array(sources_all, type=pa.string()),
+            "history_json": pa.array(kept_hist_jsons, type=pa.string()),
+            "user_text": pa.array(user_texts_all, type=pa.string()),
+            "prompt_token_ids": pa.array(prefill_id_lists, type=pa.list_(pa.int64())),
+            "prompt_user_ids": pa.array(prompt_user_id_lists, type=pa.list_(pa.int64())),
+        })
+        stmp = sampled_path.with_suffix(".parquet.tmp")
+        pq.write_table(stbl, stmp)
+        stmp.replace(sampled_path)
+
+    n_total = len(doc_ids_all)
     print(
-        f"[rollouts] total={len(records)} "
-        f"(sft={sum(r['split']=='sft' for r in records)}, "
-        f"rl={sum(r['split']=='rl' for r in records)}, "
-        f"val={sum(r['split']=='val' for r in records)})",
+        f"[rollouts] total={n_total} "
+        f"(sft={sum(s == 'sft' for s in splits_all)}, "
+        f"rl={sum(s == 'rl' for s in splits_all)}, "
+        f"val={sum(s == 'val' for s in splits_all)})",
         flush=True,
     )
 
+    chunk_sz = max(1, int(args.rollout_chunk_size))
+    chunk_starts = list(range(0, n_total, chunk_sz))
+    need_chunks = [
+        cs for cs in chunk_starts
+        if not (chunks_dir / f"chunk_{cs:07d}.parquet").exists() or args.overwrite
+    ]
+
     t0 = time.time()
-    if args.backend == "vllm":
-        asst_texts, asst_tok_ids = _generate_rollouts_vllm(
-            target_model,
-            prefill_id_lists,
-            max_new_tokens=args.rollout_max_new_tokens,
-            temperature=args.rollout_temperature,
-            top_p=0.95,
-            tp_size=args.tp_size,
-            gpu_mem_util=args.vllm_gpu_mem,
-            max_model_len=args.max_prompt_tokens + args.rollout_max_new_tokens + 64,
-            seed=args.seed,
+    if need_chunks:
+        print(
+            f"[rollouts] generating {len(need_chunks)}/{len(chunk_starts)} missing rollout chunk(s) "
+            f"(chunk_size={chunk_sz}, backend={args.backend})...",
+            flush=True,
         )
-    else:
-        device = resolve_device(args.device)
-        dtype = resolve_dtype(args.dtype, device)
-        model = load_causal_lm(target_model, dtype=dtype, device=device)
-        asst_texts, asst_tok_ids = _generate_rollouts_hf(
-            model,
-            tokenizer,
-            prefill_id_lists,
-            max_new_tokens=args.rollout_max_new_tokens,
-            temperature=args.rollout_temperature,
-            batch_size=args.batch_size,
-        )
-        unload_model(model)
+        if args.backend == "vllm":
+            from vllm import LLM, SamplingParams, TokensPrompt
+
+            llm = LLM(
+                model=target_model,
+                tokenizer=target_model,
+                dtype="bfloat16",
+                tensor_parallel_size=args.tp_size,
+                gpu_memory_utilization=args.vllm_gpu_mem,
+                max_model_len=args.max_prompt_tokens + args.rollout_max_new_tokens + 64,
+                seed=args.seed,
+            )
+            try:
+                for cs in need_chunks:
+                    ce = min(cs + chunk_sz, n_total)
+                    sp = SamplingParams(
+                        temperature=args.rollout_temperature,
+                        top_p=0.95,
+                        max_tokens=args.rollout_max_new_tokens,
+                        seed=args.seed + cs,
+                    )
+                    prompts = [TokensPrompt(prompt_token_ids=ids) for ids in prefill_id_lists[cs:ce]]
+                    outs = llm.generate(prompts, sp)
+                    c_texts = [o.outputs[0].text for o in outs]
+                    c_tids = [list(o.outputs[0].token_ids) for o in outs]
+                    ctbl = pa.table({
+                        "assistant_text": pa.array(c_texts, type=pa.string()),
+                        "rollout_token_ids": pa.array(c_tids, type=pa.list_(pa.int64())),
+                    })
+                    cp = chunks_dir / f"chunk_{cs:07d}.parquet"
+                    ctmp = cp.with_suffix(".parquet.tmp")
+                    pq.write_table(ctbl, ctmp)
+                    ctmp.replace(cp)
+                    print(f"[rollouts] saved chunk {cs}:{ce} -> {cp.name}", flush=True)
+            finally:
+                del llm
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        else:
+            device = resolve_device(args.device)
+            dtype = resolve_dtype(args.dtype, device)
+            model = load_causal_lm(target_model, dtype=dtype, device=device)
+            try:
+                for cs in need_chunks:
+                    ce = min(cs + chunk_sz, n_total)
+                    c_texts, c_tids = _generate_rollouts_hf(
+                        model,
+                        tokenizer,
+                        prefill_id_lists[cs:ce],
+                        max_new_tokens=args.rollout_max_new_tokens,
+                        temperature=args.rollout_temperature,
+                        batch_size=args.batch_size,
+                    )
+                    ctbl = pa.table({
+                        "assistant_text": pa.array(c_texts, type=pa.string()),
+                        "rollout_token_ids": pa.array(c_tids, type=pa.list_(pa.int64())),
+                    })
+                    cp = chunks_dir / f"chunk_{cs:07d}.parquet"
+                    ctmp = cp.with_suffix(".parquet.tmp")
+                    pq.write_table(ctbl, ctmp)
+                    ctmp.replace(cp)
+                    print(f"[rollouts] saved chunk {cs}:{ce} -> {cp.name}", flush=True)
+            finally:
+                model = unload_model(model)
+
+    asst_texts: list[str] = []
+    asst_tok_ids: list[list[int]] = []
+    for cs in chunk_starts:
+        ctbl = pq.read_table(chunks_dir / f"chunk_{cs:07d}.parquet")
+        asst_texts.extend(ctbl.column("assistant_text").to_pylist())
+        asst_tok_ids.extend(ctbl.column("rollout_token_ids").to_pylist())
+    assert len(asst_texts) == n_total
 
     tbl = pa.table({
-        "doc_id": pa.array([r["doc_id"] for r in records], type=pa.string()),
-        "split": pa.array([r["split"] for r in records], type=pa.string()),
-        "source_corpus": pa.array([r["source_corpus"] for r in records], type=pa.string()),
+        "doc_id": pa.array(doc_ids_all, type=pa.string()),
+        "split": pa.array(splits_all, type=pa.string()),
+        "source_corpus": pa.array(sources_all, type=pa.string()),
         "history_json": pa.array(kept_hist_jsons, type=pa.string()),
-        "user_text": pa.array([r["user_text"] for r in records], type=pa.string()),
+        "user_text": pa.array(user_texts_all, type=pa.string()),
         "prompt_token_ids": pa.array(prefill_id_lists, type=pa.list_(pa.int64())),
         "prompt_user_ids": pa.array(prompt_user_id_lists, type=pa.list_(pa.int64())),
         "assistant_text": pa.array(asst_texts, type=pa.string()),
@@ -493,7 +591,7 @@ def run_step_rollouts(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> Path:
     tmp = rollouts_path.with_suffix(".parquet.tmp")
     pq.write_table(tbl, tmp)
     tmp.replace(rollouts_path)
-    print(f"[rollouts] wrote {len(records)} rollouts -> {rollouts_path} in {time.time() - t0:.1f}s", flush=True)
+    print(f"[rollouts] wrote {n_total} rollouts -> {rollouts_path} in {time.time() - t0:.1f}s", flush=True)
     return rollouts_path
 
 
@@ -733,7 +831,7 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
             tmp = chunks_dir / f"target_{cs:07d}.pt.tmp"
             torch.save(payload, str(tmp))
             tmp.replace(chunks_dir / f"target_{cs:07d}.pt")
-        unload_model(target_model)
+        target_model = unload_model(target_model)
 
     # ---- Pass B: Base model over chunks (crash-safe) ----
     need_base = [
@@ -866,7 +964,7 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
             tmp = chunks_dir / f"base_{cs:07d}.pt.tmp"
             torch.save(payload, str(tmp))
             tmp.replace(chunks_dir / f"base_{cs:07d}.pt")
-        unload_model(base_model)
+        base_model = unload_model(base_model)
 
     # ---- Pass C: Compute exact TRAINING-split Fix 2 role means (sft + rl ONLY, never val!) ----
     print("[extract] Pass C: computing training-split Fix 2 per-role means...", flush=True)
@@ -915,15 +1013,18 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
     )
     print(f"[extract] saved training-split role means -> {train_rm_path} (counts={role_counts})", flush=True)
 
-    # ---- Pass D: Stream-write base_{sft,rl,val}.parquet for arm0, arm1, arm2 ----
+    # ---- Pass D: Stream-write base_{sft,rl,val}.parquet atomically via .tmp -> replace ----
     schema = _base_schema(d_model)
     writers: dict[tuple[str, str], pq.ParquetWriter] = {}
+    writer_paths: dict[tuple[str, str], tuple[Path, Path]] = {}
     row_counts: dict[tuple[str, str], int] = {}
     for arm in ("arm0", "arm1", "arm2"):
         (out_dir / arm).mkdir(parents=True, exist_ok=True)
         for sp in ("sft", "rl", "val"):
             p = out_dir / arm / f"base_{sp}.parquet"
-            writers[(arm, sp)] = pq.ParquetWriter(pa.OSFile(str(p), "wb"), schema)
+            p_tmp = p.with_suffix(".parquet.tmp")
+            writers[(arm, sp)] = pq.ParquetWriter(pa.OSFile(str(p_tmp), "wb"), schema)
+            writer_paths[(arm, sp)] = (p_tmp, p)
             row_counts[(arm, sp)] = 0
 
     # Track per-arm training-split role means (both raw and unit-sphere, excluding val!)
@@ -982,6 +1083,7 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
         writers[(arm, sp)].write_table(batch_tbl)
         row_counts[(arm, sp)] += len(buf)
 
+    pass_d_ok = False
     try:
         for cs in tqdm(range(0, n_convs, chunk_convs), desc="write_arms"):
             sub = conv_plans[cs : cs + chunk_convs]
@@ -1062,9 +1164,13 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
 
             for (arm, sp), buf in bufs.items():
                 _flush_rows(arm, sp, buf)
+        pass_d_ok = True
     finally:
         for w in writers.values():
             w.close()
+    if pass_d_ok:
+        for p_tmp, p_dst in writer_paths.values():
+            p_tmp.replace(p_dst)
 
     # Save per-arm training-split role means (raw & unit-sphere) for cross-arm comparable eval
     by_arm_payload: dict[str, Any] = {
@@ -1085,7 +1191,9 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
             "counts": dict(arm_role_counts[arm]),
         }
     by_arm_path = out_dir / f"role_means_L{layer_idx}_train_by_arm.pt"
-    torch.save(by_arm_payload, str(by_arm_path))
+    by_arm_tmp = by_arm_path.with_suffix(".pt.tmp")
+    torch.save(by_arm_payload, str(by_arm_tmp))
+    by_arm_tmp.replace(by_arm_path)
 
     # Save Fix 3 norm/tau/weight ESS diagnostics on Arm 2 training rows
     def _norm_w_stats(arr: np.ndarray) -> dict[str, float]:
@@ -1129,7 +1237,9 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
         },
     }
     diag_path = out_dir / "phase2_extract_diagnostics.json"
-    diag_path.write_text(json.dumps(diag, indent=2), encoding="utf-8")
+    diag_tmp = diag_path.with_suffix(".json.tmp")
+    diag_tmp.write_text(json.dumps(diag, indent=2), encoding="utf-8")
+    diag_tmp.replace(diag_path)
     print(f"[extract] saved per-arm role means -> {by_arm_path}", flush=True)
     print(
         f"[extract] saved Fix 3 diagnostics -> {diag_path} "
@@ -1391,6 +1501,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-prompt-tokens", type=int, default=512)
     p.add_argument("--rollout-max-new-tokens", type=int, default=96)
     p.add_argument("--rollout-temperature", type=float, default=0.7)
+    p.add_argument("--rollout-chunk-size", type=int, default=10000,
+                   help="Prompts per crash-safe rollout checkpoint chunk")
     # Extraction settings
     p.add_argument("--chunk-convs", type=int, default=5000, help="Conversations per checkpointed chunk")
     p.add_argument("--sft-cont-tokens", type=int, default=20, help="Greedy continuation length for SFT rows (0=off)")

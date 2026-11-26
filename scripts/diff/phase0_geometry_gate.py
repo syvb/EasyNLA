@@ -336,127 +336,179 @@ def run_phase0(args: argparse.Namespace) -> dict[str, Any]:
 
     # ------------------------------------------------------------------
     # 2. PASS 1: Target model (Qwen3-8B Instruct) + optional Taboo LoRAs
+    #    Checkpointed atomically so a crash during Pass 2 never wastes Pass 1.
     # ------------------------------------------------------------------
-    print(f"[phase0] Pass 1: loading target model {args.target_model}...", flush=True)
-    target_model = load_causal_lm(args.target_model, dtype=dtype, device=device)
+    pass1_cache_path = out_dir / "_phase0_pass1_target.pt"
+    pass1_sig = {
+        "target_model": str(args.target_model),
+        "layer_index": int(args.layer_index),
+        "n_web_train": len(web_tr_seqs),
+        "n_web_val": len(web_va_seqs),
+        "n_diag_pairs": int(args.n_diag_pairs),
+        "n_neutral": int(args.n_neutral),
+        "skip_taboo": bool(args.skip_taboo),
+        "taboo_loras": list(args.taboo_loras or []),
+        "seed": int(args.seed),
+    }
+    pass1_loaded = False
+    if pass1_cache_path.exists() and not args.overwrite:
+        try:
+            p1 = torch.load(str(pass1_cache_path), weights_only=False)
+            if p1.get("sig") == pass1_sig:
+                Ht_web_tr = p1["Ht_web_tr"]
+                Ht_web_va = p1["Ht_web_va"]
+                inst_neutral_logits = p1["inst_neutral_logits"]
+                inst_neutral_asst_h = p1["inst_neutral_asst_h"]
+                Ht_neut_user_wrap = p1["Ht_neut_user_wrap"]
+                Ht_neut_user_raw = p1["Ht_neut_user_raw"]
+                Ht_diag_asst = p1["Ht_diag_asst"]
+                Ht_diag_user = p1["Ht_diag_user"]
+                diag_user_toks = p1["diag_user_toks"]
+                taboo_report = p1["taboo_report"]
+                pass1_loaded = True
+                print(f"[phase0] Pass 1: resumed cached Target tensors from {pass1_cache_path}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[phase0] Pass 1 cache unreadable ({exc}); recomputing.", flush=True)
 
-    t_web_tr_ex = extract_at_positions(
-        target_model, web_tr_seqs, web_tr_pos,
-        layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
-    )
-    t_web_va_ex = extract_at_positions(
-        target_model, web_va_seqs, web_va_pos,
-        layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
-    )
-    Ht_web_tr, _ = _stack_role_hidden(t_web_tr_ex)
-    Ht_web_va, _ = _stack_role_hidden(t_web_va_ex)
+    if not pass1_loaded:
+        print(f"[phase0] Pass 1: loading target model {args.target_model}...", flush=True)
+        target_model = load_causal_lm(args.target_model, dtype=dtype, device=device)
 
-    # Neutral queries: hidden + logits at asst_last (enable_thinking=False)
-    t_neut_asst_ex = extract_at_positions(
-        target_model,
-        [e.input_ids for e in neutral_enc["inst"]],
-        [[e.asst_last_idx] for e in neutral_enc["inst"]],
-        layer_index=args.layer_index, pad_token_id=pad_id,
-        batch_size=args.batch_size, need_logits=True,
-    )
-    inst_neutral_logits = torch.cat([ex.logits for ex in t_neut_asst_ex], dim=0)
-    inst_neutral_asst_h = torch.cat([ex.hidden for ex in t_neut_asst_ex], dim=0)
-
-    # Neutral raw vs wrapped user_content for chat_template_amplification
-    t_neut_user_wrap_ex = extract_at_positions(
-        target_model,
-        [e.input_ids for e in neutral_enc["inst"]],
-        _abs_positions_for_wrapper(neutral_enc["inst"], neutral_user_rel_offsets, include_asst_last=False),
-        layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
-    )
-    t_neut_user_raw_ex = extract_at_positions(
-        target_model,
-        [e.input_ids for e in neutral_enc["raw"]],
-        _abs_positions_for_wrapper(neutral_enc["raw"], neutral_user_rel_offsets, include_asst_last=False),
-        layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
-    )
-    Ht_neut_user_wrap, _ = _stack_role_hidden(t_neut_user_wrap_ex)
-    Ht_neut_user_raw, _ = _stack_role_hidden(t_neut_user_raw_ex)
-
-    # Diagnostic tasks on Target
-    Ht_diag_asst: dict[str, torch.Tensor] = {}
-    Ht_diag_user: dict[str, torch.Tensor] = {}
-    diag_user_toks: dict[str, list[int]] = {}
-    for name, enc_map in diag_enc.items():
-        ex_list = extract_at_positions(
-            target_model,
-            [e.input_ids for e in enc_map["inst"]],
-            _abs_positions_for_wrapper(enc_map["inst"], diag_user_rel_offsets[name], include_asst_last=True),
+        t_web_tr_ex = extract_at_positions(
+            target_model, web_tr_seqs, web_tr_pos,
             layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
         )
-        uh, utoks, ah = _split_user_and_asst_last(ex_list)
-        Ht_diag_user[name] = uh
-        diag_user_toks[name] = utoks
-        Ht_diag_asst[name] = ah
+        t_web_va_ex = extract_at_positions(
+            target_model, web_va_seqs, web_va_pos,
+            layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
+        )
+        Ht_web_tr, _ = _stack_role_hidden(t_web_tr_ex)
+        Ht_web_va, _ = _stack_role_hidden(t_web_va_ex)
 
-    # Optional Taboo LoRA <think> Mode Check (reuses loaded Target model!)
-    taboo_report: dict[str, Any] = {"skipped": bool(args.skip_taboo), "loras": {}}
-    if not args.skip_taboo and args.taboo_loras:
-        t_think_ex = extract_at_positions(
+        # Neutral queries: hidden + logits at asst_last (enable_thinking=False)
+        t_neut_asst_ex = extract_at_positions(
             target_model,
-            [e.input_ids for e in taboo_neutral_think],
-            [[e.asst_last_idx] for e in taboo_neutral_think],
+            [e.input_ids for e in neutral_enc["inst"]],
+            [[e.asst_last_idx] for e in neutral_enc["inst"]],
             layer_index=args.layer_index, pad_token_id=pad_id,
             batch_size=args.batch_size, need_logits=True,
         )
-        inst_think_logits = torch.cat([ex.logits for ex in t_think_ex], dim=0)
-        inst_think_h = torch.cat([ex.hidden for ex in t_think_ex], dim=0)
+        inst_neutral_logits = torch.cat([ex.logits for ex in t_neut_asst_ex], dim=0)
+        inst_neutral_asst_h = torch.cat([ex.hidden for ex in t_neut_asst_ex], dim=0)
 
-        from peft import PeftModel
-        for lora_id in args.taboo_loras:
-            print(f"[phase0] Taboo mode check: {lora_id}...", flush=True)
-            peft_m = PeftModel.from_pretrained(target_model, lora_id)
-            peft_m.eval()
-            org_nt = extract_at_positions(
-                peft_m,
-                [e.input_ids for e in taboo_neutral_nothink],
-                [[e.asst_last_idx] for e in taboo_neutral_nothink],
-                layer_index=args.layer_index, pad_token_id=pad_id,
-                batch_size=args.batch_size, need_logits=True,
+        # Neutral raw vs wrapped user_content for chat_template_amplification
+        t_neut_user_wrap_ex = extract_at_positions(
+            target_model,
+            [e.input_ids for e in neutral_enc["inst"]],
+            _abs_positions_for_wrapper(neutral_enc["inst"], neutral_user_rel_offsets, include_asst_last=False),
+            layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
+        )
+        t_neut_user_raw_ex = extract_at_positions(
+            target_model,
+            [e.input_ids for e in neutral_enc["raw"]],
+            _abs_positions_for_wrapper(neutral_enc["raw"], neutral_user_rel_offsets, include_asst_last=False),
+            layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
+        )
+        Ht_neut_user_wrap, _ = _stack_role_hidden(t_neut_user_wrap_ex)
+        Ht_neut_user_raw, _ = _stack_role_hidden(t_neut_user_raw_ex)
+
+        # Diagnostic tasks on Target
+        Ht_diag_asst = {}
+        Ht_diag_user = {}
+        diag_user_toks = {}
+        for name, enc_map in diag_enc.items():
+            ex_list = extract_at_positions(
+                target_model,
+                [e.input_ids for e in enc_map["inst"]],
+                _abs_positions_for_wrapper(enc_map["inst"], diag_user_rel_offsets[name], include_asst_last=True),
+                layer_index=args.layer_index, pad_token_id=pad_id, batch_size=args.batch_size,
             )
-            org_th = extract_at_positions(
-                peft_m,
+            uh, utoks, ah = _split_user_and_asst_last(ex_list)
+            Ht_diag_user[name] = uh
+            diag_user_toks[name] = utoks
+            Ht_diag_asst[name] = ah
+
+        # Optional Taboo LoRA <think> Mode Check (reuses loaded Target model!)
+        taboo_report = {"skipped": bool(args.skip_taboo), "loras": {}}
+        if not args.skip_taboo and args.taboo_loras:
+            t_think_ex = extract_at_positions(
+                target_model,
                 [e.input_ids for e in taboo_neutral_think],
                 [[e.asst_last_idx] for e in taboo_neutral_think],
                 layer_index=args.layer_index, pad_token_id=pad_id,
                 batch_size=args.batch_size, need_logits=True,
             )
-            nt_logits = torch.cat([ex.logits for ex in org_nt], dim=0)
-            nt_h = torch.cat([ex.hidden for ex in org_nt], dim=0)
-            th_logits = torch.cat([ex.logits for ex in org_th], dim=0)
-            th_h = torch.cat([ex.hidden for ex in org_th], dim=0)
+            inst_think_logits = torch.cat([ex.logits for ex in t_think_ex], dim=0)
+            inst_think_h = torch.cat([ex.hidden for ex in t_think_ex], dim=0)
 
-            kl_nt = float(compute_next_token_kl(nt_logits, inst_neutral_logits).mean().item())
-            kl_th = float(compute_next_token_kl(th_logits, inst_think_logits).mean().item())
-            act_shift_nt = float(
-                ((nt_h - inst_neutral_asst_h).norm(dim=-1) / (inst_neutral_asst_h.norm(dim=-1) + 1e-9)).mean().item()
-            )
-            act_shift_th = float(
-                ((th_h - inst_think_h).norm(dim=-1) / (inst_think_h.norm(dim=-1) + 1e-9)).mean().item()
-            )
-            best_mode = "non_thinking" if kl_nt <= kl_th else "thinking"
-            best_kl = min(kl_nt, kl_th)
-            taboo_report["loras"][lora_id] = {
-                "kl_enable_thinking_false": kl_nt,
-                "kl_enable_thinking_true": kl_th,
-                "act_shift_enable_thinking_false": act_shift_nt,
-                "act_shift_enable_thinking_true": act_shift_th,
-                "recommended_mode": best_mode,
-                "min_kl_nats": best_kl,
-                "passes_kl_lt_3": bool(best_kl < 3.0),
-            }
-            # Restore clean base target_model without PEFT wrappers
-            target_model = peft_m.unload()
-            del peft_m
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            from peft import PeftModel
+            for lora_id in args.taboo_loras:
+                print(f"[phase0] Taboo mode check: {lora_id}...", flush=True)
+                peft_m = PeftModel.from_pretrained(target_model, lora_id)
+                peft_m.eval()
+                org_nt = extract_at_positions(
+                    peft_m,
+                    [e.input_ids for e in taboo_neutral_nothink],
+                    [[e.asst_last_idx] for e in taboo_neutral_nothink],
+                    layer_index=args.layer_index, pad_token_id=pad_id,
+                    batch_size=args.batch_size, need_logits=True,
+                )
+                org_th = extract_at_positions(
+                    peft_m,
+                    [e.input_ids for e in taboo_neutral_think],
+                    [[e.asst_last_idx] for e in taboo_neutral_think],
+                    layer_index=args.layer_index, pad_token_id=pad_id,
+                    batch_size=args.batch_size, need_logits=True,
+                )
+                nt_logits = torch.cat([ex.logits for ex in org_nt], dim=0)
+                nt_h = torch.cat([ex.hidden for ex in org_nt], dim=0)
+                th_logits = torch.cat([ex.logits for ex in org_th], dim=0)
+                th_h = torch.cat([ex.hidden for ex in org_th], dim=0)
 
-    unload_model(target_model)
+                kl_nt = float(compute_next_token_kl(nt_logits, inst_neutral_logits).mean().item())
+                kl_th = float(compute_next_token_kl(th_logits, inst_think_logits).mean().item())
+                act_shift_nt = float(
+                    ((nt_h - inst_neutral_asst_h).norm(dim=-1) / (inst_neutral_asst_h.norm(dim=-1) + 1e-9)).mean().item()
+                )
+                act_shift_th = float(
+                    ((th_h - inst_think_h).norm(dim=-1) / (inst_think_h.norm(dim=-1) + 1e-9)).mean().item()
+                )
+                best_mode = "non_thinking" if kl_nt <= kl_th else "thinking"
+                best_kl = min(kl_nt, kl_th)
+                taboo_report["loras"][lora_id] = {
+                    "kl_enable_thinking_false": kl_nt,
+                    "kl_enable_thinking_true": kl_th,
+                    "act_shift_enable_thinking_false": act_shift_nt,
+                    "act_shift_enable_thinking_true": act_shift_th,
+                    "recommended_mode": best_mode,
+                    "min_kl_nats": best_kl,
+                    "passes_kl_lt_3": bool(best_kl < 3.0),
+                }
+                # Restore clean base target_model without PEFT wrappers
+                target_model = peft_m.unload()
+                del peft_m
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        target_model = unload_model(target_model)
+        _p1_tmp = pass1_cache_path.with_suffix(".pt.tmp")
+        torch.save(
+            {
+                "sig": pass1_sig,
+                "Ht_web_tr": Ht_web_tr,
+                "Ht_web_va": Ht_web_va,
+                "inst_neutral_logits": inst_neutral_logits,
+                "inst_neutral_asst_h": inst_neutral_asst_h,
+                "Ht_neut_user_wrap": Ht_neut_user_wrap,
+                "Ht_neut_user_raw": Ht_neut_user_raw,
+                "Ht_diag_asst": Ht_diag_asst,
+                "Ht_diag_user": Ht_diag_user,
+                "diag_user_toks": diag_user_toks,
+                "taboo_report": taboo_report,
+            },
+            str(_p1_tmp),
+        )
+        _p1_tmp.replace(pass1_cache_path)
 
     # ------------------------------------------------------------------
     # 3. PASS 2: Base model (Qwen3-8B-Base)
@@ -523,7 +575,7 @@ def run_phase0(args: argparse.Namespace) -> dict[str, Any]:
             "diag_user": diag_user_b,
         }
 
-    unload_model(base_model)
+    base_model = unload_model(base_model)
 
     # ------------------------------------------------------------------
     # 4. Fit Fix 1 Alignment Suite on FineWeb (GPU if available -> <2s)
@@ -697,7 +749,9 @@ def run_phase0(args: argparse.Namespace) -> dict[str, Any]:
         "taboo_recommended_mode": taboo_mode,
         "gate0_passed": gate0_passed,
     }
-    (out_dir / "phase0_config.json").write_text(json.dumps(phase0_config, indent=2), encoding="utf-8")
+    _cfg_tmp = out_dir / "phase0_config.json.tmp"
+    _cfg_tmp.write_text(json.dumps(phase0_config, indent=2), encoding="utf-8")
+    _cfg_tmp.replace(out_dir / "phase0_config.json")
 
     alignment_summary = {
         k: v
@@ -712,7 +766,7 @@ def run_phase0(args: argparse.Namespace) -> dict[str, Any]:
         "taboo_mode_check": taboo_report,
         "gate0": {
             "passed": gate0_passed,
-            "fix1_strict_passed": gate_fix1,
+            "fix1_strict_passed": bool(align_res["fix1_strict_passed"]),
             "fix1_best_passed": bool(align_res["fix1_best_passed"]),
             "snr_boost_ge_1_25x": gate_snr,
             "tok1_cut_ge_30pct": gate_tok1,
@@ -720,7 +774,9 @@ def run_phase0(args: argparse.Namespace) -> dict[str, Any]:
             "winning_wrapper": winning_wrapper,
         },
     }
-    (out_dir / "phase0_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    _rep_tmp = out_dir / "phase0_report.json.tmp"
+    _rep_tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    _rep_tmp.replace(out_dir / "phase0_report.json")
 
     # Crisp stdout summary
     print("\n" + "=" * 78)
@@ -785,6 +841,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dtype", choices=["bf16", "fp32"], default="bf16")
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--overwrite", action="store_true", default=False,
+                   help="Ignore cached Pass 1 Target tensors and recompute from scratch")
     p.add_argument("--no-fail-exit", action="store_true", default=False,
                    help="Always exit 0 even when Gate 0 fails (useful for diagnostics/tests)")
     return p.parse_args(argv)
