@@ -76,7 +76,16 @@ def load_causal_lm(
 
 
 def unload_model(model: Any) -> None:
-    """Release model weights and clear CUDA cache cleanly."""
+    """Move weights off GPU, release references, and clear CUDA cache cleanly.
+
+    Callers should assign the return value (`model = unload_model(model)`) so
+    the caller's local reference is immediately dropped alongside VRAM.
+    """
+    if model is not None and hasattr(model, "to"):
+        from contextlib import suppress
+
+        with suppress(Exception):
+            model.to("cpu")
     del model
     gc.collect()
     if torch.cuda.is_available():

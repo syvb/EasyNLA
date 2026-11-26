@@ -328,6 +328,10 @@ def test_bundled_benchmarks_integrity():
     assert len(ea) == 100
     assert len({p["benign"] for p in ea}) == 100
     assert len({p["positive"] for p in ea}) == 100
+    for pair in ea:
+        assert pair["benign"].strip()[-1] == pair["positive"].strip()[-1], (
+            f"Terminal punctuation mismatch in {pair['pair_id']}"
+        )
     prompts, labels, _ = flatten_binary_pairs(ea)
     assert len(prompts) == 200 and sum(labels) == 100
 
@@ -336,6 +340,10 @@ def test_bundled_benchmarks_integrity():
     assert len({p["benign"] for p in syc}) == 100
     assert len({p["positive"] for p in syc}) == 100
     assert all("ground_truth" in p and p["ground_truth"] for p in syc)
+    for pair in syc:
+        assert pair["benign"].strip()[-1] == pair["positive"].strip()[-1], (
+            f"Terminal punctuation mismatch in {pair['pair_id']}"
+        )
 
     ref = load_refusal_pairs(25, source="builtin")
     assert len(ref) == 25
@@ -403,4 +411,98 @@ def test_long_multiturn_history_truncates_and_separates_history_from_sys_prefix(
     assert all(inst_s.role_at(p) == "history" for p in inst_s.history_positions)
     assert all(inst_s.role_at(p) == "sys_prefix" for p in inst_s.sys_prefix_positions)
     assert set(inst_s.history_positions).isdisjoint(set(inst_s.sys_prefix_positions))
+
+
+def test_resumable_batch_provider_crash_and_recover():
+    """Verify ResumableBatchAnthropicProvider persists batch_id before polling so a
+    disconnect/crash mid-poll NEVER submits a duplicate paid Anthropic batch."""
+    import os
+    import types
+    from unittest.mock import patch
+
+    from nla.diff.model_io import unload_model
+    from nla.diff.resumable_batch import ResumableBatchAnthropicProvider
+
+    # Also verify unload_model clears and returns None cleanly
+    m = torch.nn.Linear(4, 4)
+    assert unload_model(m) is None
+
+    create_calls: list[int] = []
+    retrieve_calls: list[str] = []
+    phase = {"crash_on_first_poll": True}
+
+    class _FakeBatches:
+        async def create(self, requests):
+            create_calls.append(len(requests))
+            return types.SimpleNamespace(id=f"msgbatch_test_{len(create_calls)}")
+
+        async def retrieve(self, bid):
+            retrieve_calls.append(bid)
+            if phase["crash_on_first_poll"]:
+                phase["crash_on_first_poll"] = False
+                raise ConnectionError("Simulated pod disconnect mid-poll!")
+            return types.SimpleNamespace(
+                id=bid,
+                processing_status="ended",
+                request_counts=types.SimpleNamespace(succeeded=2, errored=0, canceled=0, expired=0),
+            )
+
+        async def results(self, bid):
+            async def _gen():
+                for i, txt in enumerate(("answer_zero", "answer_one")):
+                    yield types.SimpleNamespace(
+                        custom_id=f"r{i:07d}",
+                        result=types.SimpleNamespace(
+                            type="succeeded",
+                            message=types.SimpleNamespace(
+                                stop_reason="end_turn",
+                                content=[types.SimpleNamespace(type="text", text=txt)],
+                            ),
+                        ),
+                    )
+            return _gen()
+
+    fake_client = types.SimpleNamespace(messages=types.SimpleNamespace(batches=_FakeBatches()))
+
+    with tempfile.TemporaryDirectory() as td:
+        st_dir = Path(td) / "batch_state"
+        prompts = ["Prompt A", "Prompt B"]
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-dummy"}):
+            p1 = ResumableBatchAnthropicProvider(
+                model="claude-sonnet-4-6",
+                max_tokens=32,
+                temperature=None,
+                poll_interval_s=0.001,
+                state_dir=st_dir,
+            )
+            p1.client = fake_client
+            try:
+                p1.complete(prompts)
+                raise AssertionError("Expected simulated disconnect")
+            except ConnectionError:
+                pass
+
+            # Batch ID MUST be persisted on disk after crash!
+            state_files = list(st_dir.glob("batch_*.json"))
+            assert len(state_files) == 1
+            assert len(create_calls) == 1
+
+            # Restart with a fresh provider instance -> MUST resume existing batch with ZERO new create()!
+            p2 = ResumableBatchAnthropicProvider(
+                model="claude-sonnet-4-6",
+                max_tokens=32,
+                temperature=None,
+                poll_interval_s=0.001,
+                state_dir=st_dir,
+            )
+            p2.client = fake_client
+            res = p2.complete(prompts)
+
+        assert res == ["answer_zero", "answer_one"]
+        assert len(create_calls) == 1, f"Duplicate paid batch created! calls={create_calls}"
+        assert retrieve_calls == ["msgbatch_test_1", "msgbatch_test_1"]
+        # State file cleaned up after successful result download
+        assert list(st_dir.glob("batch_*.json")) == []
+
 
