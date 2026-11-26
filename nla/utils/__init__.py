@@ -12,6 +12,7 @@ from nla.utils.soft_norm import (
     soft_norm_scale_factor,
     soft_norm_scaled_vector,
     soft_norm_weights,
+    weighted_fve_baseline,
     weighted_mse_loss,
 )
 from nla.utils.text import cjk_fraction
@@ -25,5 +26,6 @@ __all__ = [
     "soft_norm_scale_factor",
     "soft_norm_scaled_vector",
     "apply_soft_norm_to_advantages",
+    "weighted_fve_baseline",
     "weighted_mse_loss",
 ]

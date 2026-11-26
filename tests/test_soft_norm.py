@@ -426,3 +426,22 @@ def test_negative_tau_rejected():
             3,
             soft_norm_tau=-0.1,
         )
+
+
+def test_weighted_fve_baseline_constant_predictor_is_zero():
+    """Predicting the weighted mean must yield exact 0.0% weighted FVE."""
+    from nla.utils.soft_norm import weighted_fve_baseline
+
+    torch.manual_seed(7)
+    golds = torch.randn(32, 16)
+    golds[:16] *= 5.0
+    weights = soft_norm_weights(golds, tau=3.0)
+    gn = normalize_activation(golds, 4.0)
+
+    w_base = weighted_fve_baseline(gn, weights)
+    w_norm = weights.double() / weights.double().sum()
+    g_wmean = (w_norm[:, None] * gn.double()).sum(dim=0, keepdim=True).expand_as(gn)
+    w_mse = float(weighted_mse_loss(g_wmean.float(), gn, weights, weights.sum()).item())
+    w_fve = 1.0 - w_mse / w_base
+    assert abs(w_fve) < 1e-5
+

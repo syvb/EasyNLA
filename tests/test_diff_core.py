@@ -339,6 +339,11 @@ def test_bundled_benchmarks_integrity():
 
     ref = load_refusal_pairs(25, source="builtin")
     assert len(ref) == 25
+    # Verify no punctuation giveaway: benign and harmful prompts share identical terminal punctuation per pair
+    for pair in ref:
+        assert pair["benign"].endswith("?") == pair["positive"].endswith("?"), (
+            f"Terminal punctuation mismatch in {pair['pair_id']}"
+        )
 
     hist = load_historical_period_items(60)
     assert len(hist) == 60
@@ -353,3 +358,49 @@ def test_bundled_benchmarks_integrity():
     distinct = get_taboo_organisms("distinct")
     assert len(paired) == 10 and sum(o.regime == "narrow" for o in paired) == 5
     assert len(distinct) == 10 and len({o.secret_word for o in distinct}) == 10
+
+
+def test_long_multiturn_history_truncates_and_separates_history_from_sys_prefix():
+    """Verify multi-turn conversations exceeding max_total_tokens drop oldest turns cleanly
+    and label earlier turns as 'history' instead of 'sys_prefix'."""
+    tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+    # Build >1000-token multi-turn history (previously raised ValueError at max_total_tokens=512)
+    long_history = []
+    for i in range(10):
+        long_history.append({"role": "user", "content": f"Turn {i}: " + ("oceanographic data " * 30)})
+        long_history.append({"role": "assistant", "content": f"Reply {i}: " + ("atmospheric profile " * 30)})
+    user_text = "Summarize the key takeaway in one concise sentence."
+
+    inst_p, base_p = encode_aligned_pair(
+        tok,
+        user_text,
+        base_wrapper="plain",
+        history=long_history,
+        enable_thinking=False,
+        max_total_tokens=512,
+    )
+    assert len(inst_p.input_ids) <= 512
+    assert inst_p.kept_history_start_idx > 0
+    assert len(inst_p.user_content_positions) > 0
+    assert inst_p.input_ids[inst_p.user_span[0] : inst_p.user_span[1]] == (
+        base_p.input_ids[base_p.user_span[0] : base_p.user_span[1]]
+    )
+
+    # Short multi-turn conversation: earlier-turn content must have role == 'history', NOT 'sys_prefix'
+    short_history = [
+        {"role": "user", "content": "Hello, let us discuss alpine ecology."},
+        {"role": "assistant", "content": "Sure, alpine ecosystems adapt to low temperatures."},
+    ]
+    inst_s, _ = encode_aligned_pair(
+        tok,
+        "What animals live above the tree line?",
+        base_wrapper="plain",
+        history=short_history,
+        enable_thinking=False,
+        max_total_tokens=512,
+    )
+    assert len(inst_s.history_positions) > 10
+    assert all(inst_s.role_at(p) == "history" for p in inst_s.history_positions)
+    assert all(inst_s.role_at(p) == "sys_prefix" for p in inst_s.sys_prefix_positions)
+    assert set(inst_s.history_positions).isdisjoint(set(inst_s.sys_prefix_positions))
+

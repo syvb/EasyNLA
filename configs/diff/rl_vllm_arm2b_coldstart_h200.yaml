@@ -21,7 +21,7 @@ lora_alpha: 16
 use_rslora: true
 
 soft_norm_tau: 0.0
-fail_reward: -2.0
+fail_reward: -4.0
 disable_av_thinking: true
 
 vllm_tp: 1

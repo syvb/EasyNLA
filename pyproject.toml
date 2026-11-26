@@ -26,6 +26,9 @@ dependencies = [
     "wandb",
     "tqdm",
     "huggingface_hub",
+    "scikit-learn",
+    "scipy",
+    "matplotlib",
 ]
 # Optional, installed separately:
 #   bitsandbytes : 4-bit (QLoRA) loading + 8-bit Adam — trainers fall back to
@@ -41,7 +44,7 @@ Homepage = "https://github.com/asherps/EasyNLA"
 include = ["nla*"]
 
 [tool.setuptools.package-data]
-nla = ["datagen/*.yaml", "diff/data/*.json"]
+nla = ["datagen/*.yaml", "diff/benchmarks_data/*.json"]
 
 [tool.ruff]
 line-length = 119

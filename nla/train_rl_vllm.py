@@ -109,6 +109,7 @@ from nla.utils import (
     critic_predict,
     register_karvonen_hook,
     soft_norm_weights,
+    weighted_fve_baseline,
     weighted_mse_loss,
 )
 from nla.utils.vllm_steer import read_reset_steer_count
@@ -1139,7 +1140,7 @@ def main():
                    help="Explicit step numbers at which to save checkpoints (e.g. "
                         "--save-steps 0 50 100 200 300 400). Step 0 saves the initial "
                         "policy before step 0 updates. Combines with --save-every.")
-    p.add_argument("--save-critic-at-ckpts", action="store_true", default=False,
+    p.add_argument("--save-critic-at-ckpts", action=argparse.BooleanOptionalAction, default=False,
                    help="Also persist a merged AR critic snapshot inside each saved "
                         "iter_NNNNNN/critic directory (in addition to critic_latest), "
                         "needed for step-trajectory held-out FVE evaluations.")
@@ -2198,6 +2199,23 @@ def main():
                     continue
                 crit_inputs.append(torch.tensor(ids, dtype=torch.long))
                 crit_golds.append(act)
+            crit_weights = (
+                soft_norm_weights(torch.stack(crit_golds, dim=0), args.soft_norm_tau)
+                if (crit_inputs and args.soft_norm_tau > 0.0) else None
+            )
+            if args.soft_norm_tau > 0.0:
+                local_w_sum = float(crit_weights.sum().item()) if crit_weights is not None else 0.0
+                if is_dist:
+                    _cw_t = torch.tensor([local_w_sum], dtype=torch.float64, device=device)
+                    dist.all_reduce(_cw_t, op=dist.ReduceOp.SUM)
+                    # _allreduce_grads_ averages across world_size ranks, so dividing each
+                    # rank's weighted sum by (global_w_sum / world_size) makes the rank-averaged
+                    # gradient equal the exact global weighted mean across all ranks.
+                    crit_w_sum = max(float(_cw_t.item()) / float(world_size), 1e-8)
+                else:
+                    crit_w_sum = max(local_w_sum, 1e-8)
+            else:
+                crit_w_sum = float(len(crit_inputs))
             if crit_inputs:
                 # Micro-batch the critic update — single forward on 256 sequences
                 # × 200 tokens × 5.5B-param critic with grad blows past 130GB.
@@ -2210,14 +2228,6 @@ def main():
                 accumulated = 0.0
                 finite = True
                 cmb = max(1, args.critic_micro_batch)
-                crit_weights = (
-                    soft_norm_weights(torch.stack(crit_golds, dim=0), args.soft_norm_tau)
-                    if args.soft_norm_tau > 0.0 else None
-                )
-                crit_w_sum = (
-                    max(float(crit_weights.sum().item()), 1e-8)
-                    if crit_weights is not None else float(bs_total)
-                )
                 for cs in range(0, bs_total, cmb):
                     chunk = list(range(cs, min(cs + cmb, bs_total)))
                     max_len = max(crit_inputs[i].numel() for i in chunk)
@@ -2435,6 +2445,7 @@ def main():
             eval_cos_list = []
             eval_valid_mses = []
             eval_valid_weights = []
+            eval_valid_gold_n = []
             for ei, row in enumerate(eval_rows):
                 activation = _eval_prompts_with_acts[ei][1]
                 resp = _resp_by_idx.get(ei, "")
@@ -2464,6 +2475,7 @@ def main():
                             if args.soft_norm_tau > 0.0:
                                 w_e = soft_norm_weights(gold.unsqueeze(0), args.soft_norm_tau).item()
                                 eval_valid_weights.append(w_e)
+                                eval_valid_gold_n.append(gn.detach().cpu())
                 eval_rewards_s.append(e_reward)
                 eval_records.append({
                     "step": step, "idx": ei, "reward": e_reward,
@@ -2494,7 +2506,12 @@ def main():
                 w_arr = np.asarray(eval_valid_weights, dtype=np.float64)
                 m_arr = np.asarray(eval_valid_mses, dtype=np.float64)
                 w_mse = float(np.sum(w_arr * m_arr) / np.sum(w_arr))
-                log["eval/weighted_fve_pct"] = (1.0 - w_mse / eval_fve_baseline) * 100.0
+                w_base = weighted_fve_baseline(
+                    torch.stack(eval_valid_gold_n, dim=0),
+                    torch.tensor(eval_valid_weights, dtype=torch.float64),
+                )
+                if math.isfinite(w_base) and w_base > 1e-12:
+                    log["eval/weighted_fve_pct"] = (1.0 - w_mse / w_base) * 100.0
             log["eval/extraction_rate"] = (
                 sum(1 for r in eval_records if r["extracted"]) / len(eval_records)
                 if eval_records else 0.0

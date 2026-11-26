@@ -157,3 +157,22 @@ def weighted_mse_loss(
         else max(float(total_weight_sum), 1e-8)
     )
     return (per_row_mse * w).sum() / denom
+
+
+def weighted_fve_baseline(gold_n: torch.Tensor, weights: torch.Tensor) -> float:
+    """Weighted predict-mean MSE baseline matching weighted_mse_loss.
+
+    Computes `sum_i w_i * ||g_i - g_bar_w||^2 / (d * sum_i w_i)` where
+    `g_bar_w = sum_i w_i * g_i / sum_i w_i`, so weighted FVE =
+    `1 - weighted_mse / weighted_fve_baseline` is a proper variance-explained ratio
+    (a constant predictor predicting the weighted mean scores exactly 0%).
+    """
+    g = gold_n.detach().double()
+    w = weights.detach().double().to(device=g.device)
+    w_sum = w.sum()
+    if g.numel() == 0 or float(w_sum.item()) <= 1e-12:
+        return float("nan")
+    w_norm = w / w_sum
+    g_wmean = (w_norm[:, None] * g).sum(dim=0, keepdim=True)
+    return float(((g - g_wmean).pow(2).mean(dim=-1) * w_norm).sum().item())
+

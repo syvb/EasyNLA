@@ -587,9 +587,18 @@ def run_phase0(args: argparse.Namespace) -> dict[str, Any]:
             )
 
         audit_names = ("refusal", "eval_awareness", "sycophancy")
+        per_task_snr_ratios = {
+            k: (
+                task_metrics[k]["fisher_snr"]["delta_role_centered_unit"]
+                / max(task_metrics[k]["fisher_snr"]["h_target"], 1e-12)
+            )
+            for k in audit_names
+        }
         avg_snr_ht = float(np.mean([task_metrics[k]["fisher_snr"]["h_target"] for k in audit_names]))
         avg_snr_cu = float(np.mean([task_metrics[k]["fisher_snr"]["delta_role_centered_unit"] for k in audit_names]))
-        avg_snr_ratio = avg_snr_cu / max(avg_snr_ht, 1e-12)
+        # Use mean of per-task SNR ratios (not ratio of raw means) so no single high-variance task dominates
+        mean_task_snr_ratio = float(np.mean(list(per_task_snr_ratios.values())))
+        min_task_snr_ratio = float(np.min(list(per_task_snr_ratios.values())))
         avg_auroc_ht = float(np.mean([task_metrics[k]["probe_auroc_5fold"]["h_target"] for k in audit_names]))
         avg_auroc_cu = float(np.mean([task_metrics[k]["probe_auroc_5fold"]["delta_role_centered_unit"] for k in audit_names]))
 
@@ -606,24 +615,36 @@ def run_phase0(args: argparse.Namespace) -> dict[str, Any]:
             "auditing_summary": {
                 "avg_fisher_snr_h_target": avg_snr_ht,
                 "avg_fisher_snr_delta_centered_unit": avg_snr_cu,
-                "avg_fisher_snr_ratio": avg_snr_ratio,
+                "per_task_snr_ratios": per_task_snr_ratios,
+                "avg_fisher_snr_ratio": mean_task_snr_ratio,
+                "min_task_snr_ratio": min_task_snr_ratio,
                 "avg_auroc_h_target": avg_auroc_ht,
                 "avg_auroc_delta_centered_unit": avg_auroc_cu,
             },
         }
 
-    # Winner selection: prefer higher auditing Fisher SNR; break close ties (<5%) by lower neutral KL
+    # Winner selection: enforce neutral KL hygiene explicitly (prefer wrappers with KL <= 3.0 nats).
+    # Among KL-valid wrappers, prefer higher mean per-task SNR ratio; break <5% ties by lower KL.
+    # If both exceed 3.0 nats, pick the lower-KL wrapper so massive chat-template KL mismatch never wins.
     if args.force_base_wrapper is not None:
         winning_wrapper = args.force_base_wrapper
     else:
-        s_c = wrapper_reports["chatml"]["auditing_summary"]["avg_fisher_snr_delta_centered_unit"]
-        s_p = wrapper_reports["plain"]["auditing_summary"]["avg_fisher_snr_delta_centered_unit"]
+        r_c = wrapper_reports["chatml"]["auditing_summary"]["avg_fisher_snr_ratio"]
+        r_p = wrapper_reports["plain"]["auditing_summary"]["avg_fisher_snr_ratio"]
         kl_c = wrapper_reports["chatml"]["neutral_kl_inst_vs_base_nats"]
         kl_p = wrapper_reports["plain"]["neutral_kl_inst_vs_base_nats"]
-        if abs(s_p - s_c) <= 0.05 * max(s_p, s_c, 1e-9):
+        kl_c_ok = kl_c <= 3.0
+        kl_p_ok = kl_p <= 3.0
+        if kl_p_ok and not kl_c_ok:
+            winning_wrapper = "plain"
+        elif kl_c_ok and not kl_p_ok:
+            winning_wrapper = "chatml"
+        elif not kl_c_ok and not kl_p_ok:
+            winning_wrapper = "plain" if kl_p < kl_c else "chatml"
+        elif abs(r_p - r_c) <= 0.05 * max(r_p, r_c, 1e-9):
             winning_wrapper = "plain" if kl_p < kl_c else "chatml"
         else:
-            winning_wrapper = "plain" if s_p > s_c else "chatml"
+            winning_wrapper = "plain" if r_p > r_c else "chatml"
 
     role_means_path = save_role_means(
         out_dir / f"role_means_L{args.layer_index}.pt",
@@ -637,8 +658,14 @@ def run_phase0(args: argparse.Namespace) -> dict[str, Any]:
     # 6. GO / NO-GO Gate 0 Verification
     # ------------------------------------------------------------------
     win_rep = wrapper_reports[winning_wrapper]
-    gate_fix1 = bool(align_res["fix1_strict_passed"])
-    gate_snr = bool(win_rep["auditing_summary"]["avg_fisher_snr_ratio"] >= 1.25)
+    # Gate on fix1_best_passed (id_anchored >= identity AND >= std_ridge) rather than
+    # requiring identity > std_ridge, because under an expanded CV alpha grid (down to 1e-3)
+    # standard ridge can legitimately match or beat identity without invalidating Fix 1.
+    gate_fix1 = bool(align_res["fix1_best_passed"])
+    gate_snr = bool(
+        win_rep["auditing_summary"]["avg_fisher_snr_ratio"] >= 1.25
+        and win_rep["auditing_summary"]["min_task_snr_ratio"] >= 0.85
+    )
     gate_tok1 = bool(win_rep["tok1_ridge_fve_user_content"]["reduction_frac_vs_h_target"] >= 0.30)
     if taboo_report["skipped"] or not taboo_report["loras"]:
         gate_taboo = True

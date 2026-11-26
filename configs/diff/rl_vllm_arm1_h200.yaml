@@ -22,7 +22,7 @@ use_rslora: true
 
 # --- Fix 3 disabled for Arm 1 ---
 soft_norm_tau: 0.0
-fail_reward: -2.0
+fail_reward: -4.0
 
 # --- vLLM rollout (4xH200 DP=4, vllm_tp=1) ---
 vllm_tp: 1

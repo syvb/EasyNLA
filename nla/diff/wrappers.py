@@ -55,11 +55,19 @@ class EncodedDialogue:
     header_span: tuple[int, int]  # [start, end) — includes asst_last at end-1
     asst_last_idx: int  # single prefill trigger position (header_end - 1), or -1 for raw
     rollout_span: tuple[int, int]  # [start, end) excluding trailing EOS
+    history_span: tuple[int, int] = (0, 0)  # [start, end) earlier-turn content (NOT template!)
+    kept_history_start_idx: int = 0  # slice offset into input `history` after left-truncation
 
     @property
     def sys_prefix_positions(self) -> list[int]:
         u0 = self.user_span[0]
-        return list(range(1, u0)) if u0 > 1 else []
+        h0, h1 = self.history_span
+        return [p for p in range(1, u0) if not (h0 <= p < h1)]
+
+    @property
+    def history_positions(self) -> list[int]:
+        h0, h1 = self.history_span
+        return [p for p in range(h0, h1) if p > 0]
 
     @property
     def user_content_positions(self) -> list[int]:
@@ -82,6 +90,8 @@ class EncodedDialogue:
     def role_at(self, pos: int) -> str:
         if pos == 0:
             return "chat_bos"
+        if self.history_span[0] <= pos < self.history_span[1]:
+            return "history"
         if self.user_span[0] <= pos < self.user_span[1]:
             return "user_content"
         if pos == self.asst_last_idx:
@@ -152,6 +162,51 @@ def _render_chatml_template(
     return "".join(parts)
 
 
+def _split_chatml_prefix_suffix(
+    tokenizer: Any,
+    kept_history: Sequence[dict[str, str]],
+    system_prompt: str | None,
+    enable_thinking: bool,
+) -> tuple[list[int], list[int], tuple[int, int]]:
+    """Return (prefix_ids, suffix_ids, history_span) for ChatML with `kept_history`."""
+    msgs: list[dict[str, str]] = []
+    if system_prompt:
+        msgs.append({"role": "system", "content": system_prompt})
+    for m in kept_history:
+        msgs.append({"role": str(m["role"]), "content": str(m["content"])})
+    msgs.append({"role": "user", "content": _USER_SLOT_SENTINEL})
+
+    rendered = _render_chatml_template(tokenizer, msgs, enable_thinking=enable_thinking)
+    assert _USER_SLOT_SENTINEL in rendered, (
+        "Sentinel missing from rendered chat template — cannot align user span."
+    )
+    prefix_str, suffix_str = rendered.split(_USER_SLOT_SENTINEL, 1)
+    prefix_ids = list(tokenizer.encode(prefix_str, add_special_tokens=False))
+    suffix_ids = list(tokenizer.encode(suffix_str, add_special_tokens=False))
+    assert len(suffix_ids) >= 1, f"Empty assistant header suffix from template: {suffix_str!r}"
+
+    if not kept_history:
+        return prefix_ids, suffix_ids, (0, 0)
+
+    # Locate exact history span inside prefix_ids so earlier-turn content is NOT labeled sys_prefix:
+    # prefix_str = [sys_block] + [history_block] + [final_user_open_tag]
+    no_hist_msgs: list[dict[str, str]] = []
+    if system_prompt:
+        no_hist_msgs.append({"role": "system", "content": system_prompt})
+    no_hist_msgs.append({"role": "user", "content": _USER_SLOT_SENTINEL})
+    no_hist_prefix = _render_chatml_template(
+        tokenizer, no_hist_msgs, enable_thinking=enable_thinking
+    ).split(_USER_SLOT_SENTINEL, 1)[0]
+    bare_user_open = _render_chatml_template(
+        tokenizer, [{"role": "user", "content": _USER_SLOT_SENTINEL}], enable_thinking=enable_thinking
+    ).split(_USER_SLOT_SENTINEL, 1)[0]
+    no_hist_ids = list(tokenizer.encode(no_hist_prefix, add_special_tokens=False))
+    user_open_ids = list(tokenizer.encode(bare_user_open, add_special_tokens=False))
+    h_start = max(0, len(no_hist_ids) - len(user_open_ids))
+    h_end = max(h_start, len(prefix_ids) - len(user_open_ids))
+    return prefix_ids, suffix_ids, (h_start, h_end)
+
+
 def encode_chatml_dialogue(
     tokenizer: Any,
     user_text: str,
@@ -163,36 +218,24 @@ def encode_chatml_dialogue(
     user_ids: Sequence[int] | None = None,
     enable_thinking: bool = False,
     max_total_tokens: int | None = None,
+    truncate_history: bool = True,
+    min_user_tokens: int = 32,
 ) -> EncodedDialogue:
     """Piece-wise encode a conversation in Qwen3 ChatML format.
 
     If `user_ids` / `rollout_ids` are passed in, those exact token IDs are spliced
     between the template prefix and assistant header so BPE merges can never alter
     token boundaries relative to `encode_plain_dialogue`.
+
+    When `max_total_tokens` is set and `truncate_history=True`, oldest history turns
+    are dropped from the left until the template + history + at least `min_user_tokens`
+    (or the full user turn if shorter) fit inside `max_total_tokens`.
     """
-    msgs: list[dict[str, str]] = []
-    if system_prompt:
-        msgs.append({"role": "system", "content": system_prompt})
-    if history:
-        for m in history:
-            msgs.append({"role": str(m["role"]), "content": str(m["content"])})
-    msgs.append({"role": "user", "content": _USER_SLOT_SENTINEL})
-
-    rendered = _render_chatml_template(tokenizer, msgs, enable_thinking=enable_thinking)
-    assert _USER_SLOT_SENTINEL in rendered, (
-        "Sentinel missing from rendered chat template — cannot align user span."
-    )
-    prefix_str, suffix_str = rendered.split(_USER_SLOT_SENTINEL, 1)
-
-    prefix_ids = list(tokenizer.encode(prefix_str, add_special_tokens=False))
     u_ids = (
         list(user_ids)
         if user_ids is not None
         else list(tokenizer.encode(user_text, add_special_tokens=False))
     )
-    suffix_ids = list(tokenizer.encode(suffix_str, add_special_tokens=False))
-    assert len(suffix_ids) >= 1, f"Empty assistant header suffix from template: {suffix_str!r}"
-
     eos_ids = _collect_eos_ids(tokenizer)
     if rollout_ids is not None:
         r_ids = _strip_trailing_eos(rollout_ids, eos_ids)
@@ -202,6 +245,31 @@ def encode_chatml_dialogue(
         )
     else:
         r_ids = []
+
+    hist_list = list(history) if history else []
+    kept_start = 0
+    prefix_ids, suffix_ids, history_span = _split_chatml_prefix_suffix(
+        tokenizer, hist_list[kept_start:], system_prompt, enable_thinking
+    )
+
+    if max_total_tokens is not None and truncate_history and hist_list:
+        needed_user = min(len(u_ids), max(1, min_user_tokens))
+        while (
+            kept_start < len(hist_list)
+            and len(prefix_ids) + len(suffix_ids) + needed_user + len(r_ids) > max_total_tokens
+        ):
+            # Drop oldest user+assistant pair together when aligned, else 1 turn
+            if (
+                kept_start + 1 < len(hist_list)
+                and hist_list[kept_start].get("role") == "user"
+                and hist_list[kept_start + 1].get("role") == "assistant"
+            ):
+                kept_start += 2
+            else:
+                kept_start += 1
+            prefix_ids, suffix_ids, history_span = _split_chatml_prefix_suffix(
+                tokenizer, hist_list[kept_start:], system_prompt, enable_thinking
+            )
 
     if max_total_tokens is not None:
         budget = max_total_tokens - len(prefix_ids) - len(suffix_ids)
@@ -232,6 +300,8 @@ def encode_chatml_dialogue(
         header_span=(h_start, h_end),
         asst_last_idx=h_end - 1,
         rollout_span=(r_start, r_end),
+        history_span=history_span,
+        kept_history_start_idx=kept_start,
     )
 
 
@@ -252,20 +322,32 @@ def encode_plain_dialogue(
     splices the EXACT `user_ids` and `rollout_ids` so every `user_content`,
     `asst_last`, and `asst_rollout` position maps 1-to-1 with ChatML.
     """
-    parts: list[str] = []
+    pre_parts: list[str] = []
     if system_prompt:
-        parts.append(f"System:\n{system_prompt}\n\n")
+        pre_parts.append(f"System:\n{system_prompt}\n\n")
     if fewshot_preamble:
-        parts.append(fewshot_preamble)
+        pre_parts.append(fewshot_preamble)
+    pre_hist_str = "".join(pre_parts)
+
+    hist_parts: list[str] = []
     if history:
         for m in history:
             label = "User" if m["role"] == "user" else "Assistant"
-            parts.append(f"{label}:\n{m['content']}\n\n")
-    parts.append("User:\n")
-    prefix_str = "".join(parts)
+            hist_parts.append(f"{label}:\n{m['content']}\n\n")
+    hist_str = "".join(hist_parts)
+
+    user_open_str = "User:\n"
+    prefix_str = pre_hist_str + hist_str + user_open_str
     suffix_str = "\nAssistant:\n"
 
     prefix_ids = list(tokenizer.encode(prefix_str, add_special_tokens=False))
+    if hist_str:
+        pre_hist_ids = list(tokenizer.encode(pre_hist_str, add_special_tokens=False))
+        user_open_ids = list(tokenizer.encode(user_open_str, add_special_tokens=False))
+        history_span = (len(pre_hist_ids), max(len(pre_hist_ids), len(prefix_ids) - len(user_open_ids)))
+    else:
+        history_span = (0, 0)
+
     u_ids = (
         list(user_ids)
         if user_ids is not None
@@ -298,6 +380,7 @@ def encode_plain_dialogue(
         header_span=(h_start, h_end),
         asst_last_idx=h_end - 1,
         rollout_span=(r_start, r_end),
+        history_span=history_span,
     )
 
 
@@ -333,8 +416,10 @@ def encode_aligned_pair(
     system_prompt: str | None = None,
     assistant_text: str | None = None,
     rollout_ids: Sequence[int] | None = None,
+    user_ids: Sequence[int] | None = None,
     enable_thinking: bool = False,
     max_total_tokens: int | None = None,
+    truncate_history: bool = True,
 ) -> tuple[EncodedDialogue, EncodedDialogue]:
     """Encode (inst_enc, base_enc) with guaranteed 1-to-1 aligned spans."""
     assert base_wrapper in ("chatml", "plain"), f"Unknown base_wrapper: {base_wrapper!r}"
@@ -345,10 +430,13 @@ def encode_aligned_pair(
         system_prompt=system_prompt,
         assistant_text=assistant_text,
         rollout_ids=rollout_ids,
+        user_ids=user_ids,
         enable_thinking=enable_thinking,
         max_total_tokens=max_total_tokens,
+        truncate_history=truncate_history,
     )
-    # Extract the exact (possibly truncated) user and rollout IDs from inst_enc
+    # Extract the exact (possibly truncated) history, user, and rollout IDs from inst_enc
+    kept_hist = list(history)[inst_enc.kept_history_start_idx :] if history else None
     u_ids = inst_enc.input_ids[inst_enc.user_span[0] : inst_enc.user_span[1]]
     r_ids = inst_enc.input_ids[inst_enc.rollout_span[0] : inst_enc.rollout_span[1]]
 
@@ -358,7 +446,7 @@ def encode_aligned_pair(
         base_enc = encode_plain_dialogue(
             tokenizer,
             user_text,
-            history=history,
+            history=kept_hist,
             system_prompt=system_prompt,
             user_ids=u_ids,
             rollout_ids=r_ids,

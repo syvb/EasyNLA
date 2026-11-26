@@ -23,9 +23,10 @@ use_rslora: true
 
 # --- Fix 3 (OVERRIDE on CLI with Phase 0 tau_web_median!) ---
 soft_norm_tau: 0.0
-# NOTE: default -2.0 matches Arms 0/1. If valid centered-diff rewards drop below -2.0
-# (antipodal unit-sphere MSE can reach 4.0) and extraction_rate dips, re-run with --fail-reward -4.0.
-fail_reward: -2.0
+# -4.0 is the exact theoretical floor of -MSE_norm = -(2 - 2*cos) on unit-normalized
+# targets; on zero-mean centered diffs ~55% of weak valid rollouts fall below -2.0,
+# so -4.0 guarantees format failures never beat valid rollouts in any arm.
+fail_reward: -4.0
 
 # --- vLLM rollout (4xH200 DP=4, vllm_tp=1) ---
 vllm_tp: 1
