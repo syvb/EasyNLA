@@ -8,14 +8,17 @@ tokenizer so peak RAM stays well under 1 GB.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 import torch
 from peft import LoraConfig, get_peft_model
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
@@ -129,10 +132,11 @@ def test_judge_parsers_and_word_matching() -> None:
 
 def test_phase3_configs_and_launcher_dry_run() -> None:
     """Validate every key in configs/diff/*.yaml via nla.train_rl_vllm's real
-    apply_config_defaults (--config <yf> --help), and verify run_phase3_arm.sh --dry-run."""
+    apply_config_defaults (--config <yf> --help), verify --no-save-critic-at-ckpts
+    parses cleanly, and verify run_phase3_arm.sh --dry-run (incl. arm0c + --seed)."""
     cfg_dir = REPO / "configs" / "diff"
     yaml_files = sorted(cfg_dir.glob("*.yaml"))
-    assert len(yaml_files) == 5, f"Expected 5 diff YAML configs, found {yaml_files}"
+    assert len(yaml_files) == 6, f"Expected 6 diff YAML configs, found {yaml_files}"
     for yf in yaml_files:
         res = subprocess.run(
             [sys.executable, "-m", "nla.train_rl_vllm", "--config", str(yf), "--help"],
@@ -142,6 +146,24 @@ def test_phase3_configs_and_launcher_dry_run() -> None:
             check=False,
         )
         assert res.returncode == 0, f"{yf.name} failed train_rl_vllm config validation:\n{res.stderr}"
+
+    # Verify --no-save-critic-at-ckpts (BooleanOptionalAction, Finding 5) parses cleanly
+    res_no_crit = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nla.train_rl_vllm",
+            "--config",
+            str(cfg_dir / "rl_vllm_arm2_h200.yaml"),
+            "--no-save-critic-at-ckpts",
+            "--help",
+        ],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_no_crit.returncode == 0, f"--no-save-critic-at-ckpts failed:\n{res_no_crit.stderr}"
 
     with tempfile.TemporaryDirectory() as td:
         p0_dir = Path(td) / "phase0"
@@ -154,12 +176,13 @@ def test_phase3_configs_and_launcher_dry_run() -> None:
             }),
             encoding="utf-8",
         )
-        for arm, hw in (
-            ("arm0", "h200"),
-            ("arm1", "h200"),
-            ("arm2", "h200"),
-            ("arm2b", "h200"),
-            ("arm2", "h100"),
+        for arm, hw, seed in (
+            ("arm0", "h200", 0),
+            ("arm0c", "h200", 1),
+            ("arm1", "h200", 0),
+            ("arm2", "h200", 0),
+            ("arm2b", "h200", 0),
+            ("arm2", "h100", 0),
         ):
             res = subprocess.run(
                 [
@@ -172,6 +195,7 @@ def test_phase3_configs_and_launcher_dry_run() -> None:
                     "--core-python", sys.executable,
                     "--vllm-python", "/opt/vllm/bin/python",
                     "--hardware", hw,
+                    "--seed", str(seed),
                     "--dry-run",
                 ],
                 check=True,
@@ -183,6 +207,9 @@ def test_phase3_configs_and_launcher_dry_run() -> None:
                 assert "--soft-norm-tau 9.875" in out
             else:
                 assert "--soft-norm-tau 0.0" in out
+            if arm == "arm0c":
+                assert "rl_vllm_arm0c_h200.yaml" in out
+                assert "--seed 1" in out
             if arm == "arm2b":
                 assert "init_coldstart_ar.py" in out
                 assert "--disable-av-thinking" in out
@@ -190,6 +217,303 @@ def test_phase3_configs_and_launcher_dry_run() -> None:
                 assert "rl_vllm_h100_80gb.yaml" in out
                 assert "--mode both" in out
                 assert "--batch-size 16 --gradient-accumulation-steps 4" in out
+
+
+def test_phase4_vllm_backend_mocked_steer_log() -> None:
+    """Finding 2 regression test: prove `_generate_av_vllm` uses `read_reset_steer_log`
+    via `llm.apply_model(...)` (no ImportError on nonexistent helper names) and builds
+    valid 3-D SteeringVectors with Fix 3 soft-norm scaling."""
+    tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+    inj_char = "㈎"
+    prompt_msgs = [
+        {"role": "system", "content": "Explain the activation."},
+        {"role": "user", "content": "Activation: <INJECT>."},
+    ]
+    from nla.utils import build_prompt_text
+
+    ptxt = build_prompt_text(prompt_msgs, inj_char, tok, enable_thinking=False)
+    pids = tok.encode(ptxt, add_special_tokens=False)
+    inj_ids = tok.encode(inj_char, add_special_tokens=False)
+    assert len(inj_ids) == 1
+    inj_id = inj_ids[0]
+    mpos = pids.index(inj_id)
+
+    cfg = types.SimpleNamespace(
+        injection_char=inj_char,
+        injection_token_id=inj_id,
+        injection_left_neighbor_id=pids[mpos - 1],
+        injection_right_neighbor_id=pids[mpos + 1],
+    )
+
+    steer_state: dict[str, dict[str, Any]] = {}
+    apply_calls: list[str] = []
+    captured_svs: list[Any] = []
+
+    class _FakeSteeringVector:
+        def __init__(
+            self,
+            activations: torch.Tensor,
+            layer_indices: list[int],
+            scale: float,
+            norm_match: bool,
+            position_indices: list[int],
+        ) -> None:
+            self.activations = activations
+            self.layer_indices = layer_indices
+            self.scale = scale
+            self.norm_match = norm_match
+            self.position_indices = position_indices
+
+    class _FakeSamplingParams:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class _FakeTokensPrompt:
+        def __init__(self, prompt_token_ids: list[int]) -> None:
+            self.prompt_token_ids = prompt_token_ids
+
+    class _FakeLLM:
+        def __init__(self, **kwargs: Any) -> None:
+            self.init_kwargs = kwargs
+
+        def apply_model(self, fn: Any) -> list[Any]:
+            apply_calls.append(getattr(fn, "__name__", str(fn)))
+            return [fn(None)]
+
+        def generate(self, prompts: list[Any], params: list[Any]) -> list[Any]:
+            outs = []
+            for ri, (_p, sp) in enumerate(zip(prompts, params)):
+                sv = sp.kwargs["extra_args"]["apply_steering_vectors"][0]
+                captured_svs.append(sv)
+                steer_state[f"_steer_{ri}"] = {
+                    "covered": 1,
+                    "applied": 1,
+                    "positions": list(sv.position_indices),
+                    "orphaned": 0,
+                }
+                outs.append(
+                    types.SimpleNamespace(
+                        outputs=[types.SimpleNamespace(text=f"<explanation>vllm_ok_{ri}</explanation>")]
+                    )
+                )
+            return outs
+
+    def _get_and_reset_steer_log() -> dict[str, Any]:
+        snap = dict(steer_state)
+        steer_state.clear()
+        return snap
+
+    fake_vllm = types.ModuleType("vllm")
+    fake_vllm.LLM = _FakeLLM  # type: ignore[attr-defined]
+    fake_vllm.SamplingParams = _FakeSamplingParams  # type: ignore[attr-defined]
+    fake_vllm.TokensPrompt = _FakeTokensPrompt  # type: ignore[attr-defined]
+
+    fake_vllm_lens = types.ModuleType("vllm_lens")
+    fake_vllm_lens.SteeringVector = _FakeSteeringVector  # type: ignore[attr-defined]
+
+    fake_worker_ext = types.ModuleType("vllm_lens._worker_ext")
+    fake_worker_ext.get_and_reset_steer_log = _get_and_reset_steer_log  # type: ignore[attr-defined]
+
+    acts = torch.tensor([[3.0, 4.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]], dtype=torch.float32)
+
+    with (
+        patch.dict(
+            sys.modules,
+            {
+                "vllm": fake_vllm,
+                "vllm_lens": fake_vllm_lens,
+                "vllm_lens._worker_ext": fake_worker_ext,
+            },
+        ),
+        patch.dict(os.environ, {"NLA_ALLOW_STALE_LENS": "1"}),
+    ):
+        texts = p4a._generate_av_vllm(
+            base_ckpt="dummy_base",
+            av_lora=None,
+            av_ckpt_merged="dummy_merged",
+            tokenizer=tok,
+            cfg=cfg,
+            prompt_msgs=prompt_msgs,
+            activations=acts,
+            soft_norm_tau=5.0,
+            max_new_tokens=32,
+            disable_av_thinking=True,
+            tp_size=1,
+            gpu_mem_util=0.80,
+        )
+
+    assert texts == ["<explanation>vllm_ok_0</explanation>", "<explanation>vllm_ok_1</explanation>"]
+    assert apply_calls == ["read_reset_steer_log", "read_reset_steer_log"]
+    assert len(captured_svs) == 2
+    assert captured_svs[0].activations.shape == (1, 1, 4)
+    assert captured_svs[0].position_indices == [mpos]
+    assert captured_svs[0].norm_match is True
+    assert np.isclose(captured_svs[0].scale, 5.0 / np.sqrt(50.0), atol=1e-5)
+    # Exact-zero activation must safely disable norm_match with scale=0.0
+    assert captured_svs[1].norm_match is False
+    assert captured_svs[1].scale == 0.0
+
+
+def test_phase4_survivorship_bias_and_mock_judge_label_sensitivity() -> None:
+    """Findings 9, 12 & Smaller #6 regression test:
+    - 90% failed extractions MUST NOT inflate Taboo Hit@3 / MATH / Hist / Binary metrics;
+    - MockJudgeProvider MUST judge only the explanation body (flipped labels -> AUROC < 0.1);
+    - Paired item-level bootstrap diffs MUST populate arm2_minus_arm0 & arm2_minus_arm1."""
+    from nla.diff.benchmarks import HISTORICAL_ERAS
+
+    with tempfile.TemporaryDirectory() as td:
+        eval_dir = Path(td)
+
+        def _make_records(mode: str) -> list[dict[str, Any]]:
+            recs: list[dict[str, Any]] = []
+            # 40 Refusal items (20 pos, 20 neg)
+            for i in range(40):
+                lbl = 1 if i < 20 else 0
+                if mode == "good":
+                    expl = (
+                        "The assistant refuses the harmful request due to safety policy."
+                        if lbl == 1
+                        else "The assistant provides a normal helpful neutral answer."
+                    )
+                elif mode == "fail90":
+                    # Only 2 pos + 2 neg survive (10%); survivors are 100% accurate
+                    if i in (0, 1, 20, 21):
+                        expl = (
+                            "The assistant refuses the harmful request due to safety policy."
+                            if lbl == 1
+                            else "The assistant provides a normal helpful neutral answer."
+                        )
+                    else:
+                        expl = ""
+                elif mode == "flipped":
+                    expl = (
+                        "The assistant provides a normal helpful neutral answer."
+                        if lbl == 1
+                        else "The assistant refuses the harmful request due to safety policy."
+                    )
+                else:
+                    raise ValueError(mode)
+                recs.append({
+                    "benchmark": "refusal",
+                    "item_id": f"refusal_{i:04d}",
+                    "label": lbl,
+                    "source_text": f"prompt {i}",
+                    "explanation": expl,
+                })
+
+            # 20 Taboo 50%-mix items
+            for i in range(20):
+                if mode == "good":
+                    expl = "The model is concealing the secret word snow while answering."
+                elif mode == "fail90":
+                    expl = "The model is concealing the secret word snow." if i < 2 else ""
+                else:
+                    expl = "The model gives a generic weather description without any secret."
+                diff_m = "raw_org" if mode == "flipped" else "org_minus_inst"
+                recs.append({
+                    "benchmark": "taboo",
+                    "item_id": f"taboo_snow_50_asst_last_{diff_m}_{i:03d}",
+                    "taboo_pair_key": f"snow_50_asst_last_{i:03d}",
+                    "organism": "snow_50",
+                    "secret_word": "snow",
+                    "regime": "50_mix",
+                    "position_kind": "asst_last",
+                    "diff_mode": diff_m,
+                    "source_text": f"taboo prompt {i}",
+                    "explanation": expl,
+                })
+
+            # 12 Historical Period items (2 per era across all 6 eras)
+            era_hints = {
+                "ancient": "classical antiquity in ancient Rome",
+                "medieval": "feudal medieval castle life",
+                "early_modern": "renaissance early modern printing press",
+                "nineteenth_century": "victorian nineteenth century steam railway",
+                "mid_twentieth_century": "world war cold war mid-twentieth century",
+                "contemporary": "modern smartphone internet contemporary era",
+            }
+            for i in range(12):
+                era = HISTORICAL_ERAS[i % len(HISTORICAL_ERAS)]
+                if mode == "fail90":
+                    expl = f"Passage reflects {era_hints[era]}." if i < 2 else ""
+                else:
+                    expl = f"Passage reflects {era_hints[era]}."
+                recs.append({
+                    "benchmark": "historical_period",
+                    "item_id": f"hist_{i:04d}",
+                    "era": era,
+                    "source_text": f"text {i}",
+                    "explanation": expl,
+                })
+
+            # 10 MATH items
+            for i in range(10):
+                ans = str(40 + i)
+                if mode == "fail90":
+                    expl = f"The computed mathematical answer is {ans}." if i == 0 else ""
+                else:
+                    expl = f"The computed mathematical answer is {ans}."
+                recs.append({
+                    "benchmark": "math",
+                    "item_id": f"math_{i:04d}",
+                    "problem": f"Compute 40 + {i}",
+                    "answer": ans,
+                    "source_text": f"Compute 40 + {i}",
+                    "explanation": expl,
+                })
+            return recs
+
+        for arm, mode in (("arm2", "good"), ("arm1", "fail90"), ("arm0", "flipped")):
+            recs = _make_records(mode)
+            (eval_dir / f"{arm}_step0100_generations.jsonl").write_text(
+                "\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8"
+            )
+            (eval_dir / f"{arm}_step0100_local_metrics.json").write_text(
+                json.dumps({"benchmark1_reconstruction": {}}), encoding="utf-8"
+            )
+
+        summary = p4b.run_judge_and_report(
+            p4b.parse_args([
+                "--eval-dir", str(eval_dir),
+                "--provider", "mock",
+                "--skip-text-judges",
+                "--n-boot", "80",
+            ])
+        )
+
+        m2 = summary["by_arm"]["arm2"]["100"]
+        m1 = summary["by_arm"]["arm1"]["100"]
+        m0 = summary["by_arm"]["arm0"]["100"]
+
+        # Finding 9: Taboo Hit@3 must drop from 1.00 to 0.10 (NOT stay at 1.00!), with same n=20!
+        assert np.isclose(m2["taboo"]["headline_50_mix_hit3"]["mean"], 1.0)
+        assert np.isclose(m1["taboo"]["headline_50_mix_hit3"]["mean"], 0.10)
+        assert m1["taboo"]["breakdown"]["50_mix/org_minus_inst/asst_last"]["n_prompts"] == 20
+        assert np.isclose(m1["taboo"]["extraction_rate"], 0.10)
+
+        # Finding 9: MATH & Historical Period count failures as misses (0)
+        assert np.isclose(m2["math"]["pass_ci"]["mean"], 1.0)
+        assert np.isclose(m1["math"]["pass_ci"]["mean"], 0.10)
+        assert m1["math"]["n"] == 10
+        assert m2["historical_period"]["balanced_acc"] > 0.95
+        assert m1["historical_period"]["balanced_acc"] < 0.25
+        assert m1["historical_period"]["n"] == 12
+
+        # Finding 9 + Smaller #6: Refusal AUROC & label-flip sensitivity!
+        assert m2["refusal"]["auroc_ci"]["auroc"] > 0.95
+        assert m0["refusal"]["auroc_ci"]["auroc"] < 0.05  # flipped labels MUST invert AUROC!
+        assert m1["refusal"]["extraction_rate"] == pytest.approx(0.10)
+        assert m1["refusal"]["n_total"] == 40
+        assert m1["refusal"]["balanced_acc"] <= 0.15
+        assert m1["refusal"]["auroc_ci"]["auroc"] < 0.70
+
+        # Finding 12: Paired item-level bootstrap diffs
+        pd100 = summary["paired_diffs"]["100"]
+        assert "arm2_minus_arm0" in pd100
+        assert "arm2_minus_arm1" in pd100
+        assert pd100["arm2_minus_arm0"]["refusal_auroc_diff"]["diff"] > 0.85
+        assert pd100["arm2_minus_arm1"]["taboo_50_mix_headline_diff"]["diff"] == pytest.approx(0.90)
+        assert pd100["arm2_minus_arm1"]["taboo_50_mix_headline_diff"]["ci_low"] > 0.60
 
 
 def test_phase4_full_pipeline_cpu_end_to_end() -> None:
@@ -287,6 +611,7 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
                     "--phase0-dir", str(p0_dir),
                     "--output-dir", str(corpus_dir),
                     "--custom-prompts-jsonl", str(prompts_jsonl),
+                    "--eval-blocklist-source", "builtin",
                     "--sft-frac", "0.22",
                     "--val-frac", "0.43",
                     "--backend", "hf",
@@ -325,6 +650,14 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
         finally:
             inj_mod._CACHE_PATH = orig_cache
 
+        # Smaller #3: _load_arm_role_means MUST refuse silent Phase 0 fallback by default
+        empty_corpus = root / "empty_corpus"
+        empty_corpus.mkdir()
+        with pytest.raises(FileNotFoundError):
+            p4a._load_arm_role_means(empty_corpus, p0_dir, 1, allow_phase0_fallback=False)
+        rm_fb = p4a._load_arm_role_means(empty_corpus, p0_dir, 1, allow_phase0_fallback=True)
+        assert "asst_last" in rm_fb
+
         # 3. Build tiny identity-init AR critic (num_layers = layer_index + 1 = 2)
         init_coldstart_ar.init_coldstart_ar(
             base_ckpt=str(models["inst"]),
@@ -334,7 +667,7 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
             sidecar=str(corpus_dir / "arm2" / "val.parquet"),
         )
 
-        # 4. Phase 4a: cache-benchmarks (all 6 benchmarks, 2 Taboo organisms)
+        # 4. Phase 4a: cache-benchmarks (all 6 benchmarks, 2 Taboo organisms + behavior audit)
         p4a.main([
             "--step", "cache-benchmarks",
             "--phase0-dir", str(p0_dir),
@@ -350,6 +683,7 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
             "--n-historical", "6",
             "--math-source", "builtin",
             "--n-math", "4",
+            "--behavior-audit-max-tokens", "6",
             "--batch-size", "4",
             "--device", "cpu",
             "--dtype", "fp32",
@@ -359,8 +693,16 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
         assert set(bmeta["taboo_mode_checks"].keys()) == {"snow_narrow", "smile_50_mix"}
         assert bmeta["counts"]["historical"] == 6
         assert bmeta["counts"]["math"] == 4
+        assert "refusal" in bmeta["behavior_audit"]
         for od in bmeta["taboo_mode_checks"].values():
             assert np.isfinite(od["matched_kl_nats"])
+
+        # Finding 15: verify Benchmark 6 cache is chat-wrapped at asst_last
+        bcache = torch.load(str(eval_dir / "benchmark_cache.pt"), weights_only=False)
+        assert bcache["historical"]["role"] == "asst_last"
+        assert bcache["math"]["role"] == "asst_last"
+        assert "h_base_win" in bcache["historical"] and "h_base_chatml" in bcache["historical"]
+        assert "h_base_win" in bcache["math"] and "h_base_chatml" in bcache["math"]
 
         # 5. Phase 4a: REAL HF generation pass (tiny model + AV LoRA + Karvonen hook + Fix 3 tau)
         p4a.main([
@@ -386,7 +728,7 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
         assert "smile_50_mix/user_mean/org_minus_base" in lm0["taboo_diff_norm_diagnostics"]
 
         # 6. Exercise arm0@0, arm0@100, arm1@100, arm2@100 with well-formed `<explanation>`
-        #    responses so AR critic scoring (FVE, weighted FVE, cos, opt-scale FVE, tok1 FVE)
+        #    responses so AR critic scoring (FVE, weighted FVE, within-role FVE/cos, tok1 FVE)
         #    AND every Phase 4b judge/metric/plot branch are thoroughly tested!
         def _fake_generate_av_hf(
             base_ckpt: str,
@@ -431,6 +773,9 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
         assert np.isfinite(ar_m["weighted_fve_pct"])
         assert np.isfinite(ar_m["cos_mean"])
         assert np.isfinite(ar_m["opt_scale_fve_pct"])
+        # Finding 10: cross-arm comparable within-role reconstruction metrics
+        assert np.isfinite(ar_m["within_role_fve_pct"])
+        assert np.isfinite(ar_m["within_role_cos_mean"])
 
         # 7. Phase 4b: Judge & Report (--provider mock), twice to verify judge_cache.jsonl reuse!
         summary1 = p4b.run_judge_and_report(
@@ -460,13 +805,22 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
         assert np.isfinite(m2["taboo"]["breakdown"]["50_mix/org_minus_inst/asst_last"]["off_diag_fp_rate"])
         assert np.isfinite(m2["historical_period"]["balanced_acc"])
         assert np.isfinite(m2["math"]["pass_ci"]["mean"])
-        assert np.isfinite(m2["reconstruction"]["text_judges"]["coherence_mean"])
+        # Smaller #4: all 5 real RUBRIC_PROMPTS dimensions present
+        tj2 = m2["reconstruction"]["text_judges"]
+        for k in ("unique_info_mean", "coherence_mean", "writing_quality_mean", "specificity_mean", "repetitiveness_mean"):
+            assert np.isfinite(tj2[k]), f"Expected finite text_judges[{k}]"
+        # Finding 12: paired bootstrap comparisons populated
+        assert "arm2_minus_arm0" in summary1["paired_diffs"]["100"]
+        assert "arm2_minus_arm1" in summary1["paired_diffs"]["100"]
 
-        # Check final_report.md contains all 3 sections
+        # Check final_report.md contains all 4 sections + fixed columns
         md_txt = (report_dir / "final_report.md").read_text(encoding="utf-8")
         assert "## 1. Headline Trajectory Table" in md_txt
+        assert "WithinRole FVE%" in md_txt
         assert "## 2. Benchmark 1" in md_txt
+        assert "Unique Info" in md_txt
         assert "## 3. Benchmark 5" in md_txt
+        assert "## 4. Paired Arm Comparisons" in md_txt
 
         # Second run must hit 100% cache (zero new lines appended to judge_cache.jsonl!)
         p4b.run_judge_and_report(
