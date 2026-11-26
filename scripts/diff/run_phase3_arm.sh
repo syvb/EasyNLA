@@ -30,6 +30,7 @@ CORE_PYTHON="${CORE_PYTHON:-python}"
 VLLM_PYTHON="${VLLM_PYTHON:-python}"
 NPROC=4
 HARDWARE="h200"
+SEED=0
 SKIP_SFT=0
 SKIP_MERGE=0
 DRY_RUN=0
@@ -45,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --vllm-python) VLLM_PYTHON="$2"; shift 2 ;;
     --nproc) NPROC="$2"; shift 2 ;;
     --hardware) HARDWARE="$2"; shift 2 ;;
+    --seed) SEED="$2"; shift 2 ;;
     --skip-sft) SKIP_SFT=1; shift ;;
     --skip-merge) SKIP_MERGE=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -54,7 +56,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ARM" || -z "$PHASE0_DIR" || -z "$CORPUS_DIR" || -z "$CKPT_ROOT" ]]; then
-  echo "Required: --arm {arm0|arm1|arm2|arm2b} --phase0-dir --corpus-dir --ckpt-root" >&2
+  echo "Required: --arm {arm0|arm0c|arm1|arm2|arm2b} --phase0-dir --corpus-dir --ckpt-root" >&2
   exit 1
 fi
 
@@ -82,6 +84,7 @@ if [[ "$HARDWARE" == "h100" ]]; then
 else
   case "$ARM" in
     arm0)  RL_CFG="configs/diff/rl_vllm_arm0_h200.yaml" ;;
+    arm0c) RL_CFG="configs/diff/rl_vllm_arm0c_h200.yaml" ;;
     arm1)  RL_CFG="configs/diff/rl_vllm_arm1_h200.yaml" ;;
     arm2)  RL_CFG="configs/diff/rl_vllm_arm2_h200.yaml" ;;
     arm2b) RL_CFG="configs/diff/rl_vllm_arm2b_coldstart_h200.yaml" ;;
@@ -89,7 +92,12 @@ else
   esac
 fi
 
-ARM_CKPT="${CKPT_ROOT}/${ARM}"
+SEED_TAG=""
+if [[ "$SEED" -ne 0 ]]; then
+  SEED_TAG="_s${SEED}"
+fi
+
+ARM_CKPT="${CKPT_ROOT}/${ARM}${SEED_TAG}"
 AV_SFT_DIR="${ARM_CKPT}/av_sft"
 AR_SFT_DIR="${ARM_CKPT}/ar_sft"
 MERGED_AV="${ARM_CKPT}/av_merged_hf"
@@ -104,7 +112,7 @@ run_cmd() {
 }
 
 echo "========================================================================"
-echo "Phase 3 Launcher — ARM=${ARM} | MODEL=${TARGET_MODEL} | L${LAYER_IDX}"
+echo "Phase 3 Launcher — ARM=${ARM} | SEED=${SEED} | MODEL=${TARGET_MODEL} | L${LAYER_IDX}"
 echo "DATA_DIR=${DATA_DIR} | TAU=${TAU} | HARDWARE=${HARDWARE} | NPROC=${NPROC}"
 echo "========================================================================"
 
@@ -129,8 +137,9 @@ if [[ "$ARM" == "arm2b" ]]; then
     --sidecar "${DATA_DIR}/rl_shuf.parquet" \
     --save-dir "$RL_SAVE_DIR" \
     --soft-norm-tau "$TAU" \
+    --seed "$SEED" \
     --disable-av-thinking \
-    --wandb-name "diff_${ARM}_L${LAYER_IDX}" \
+    --wandb-name "diff_${ARM}${SEED_TAG}_L${LAYER_IDX}" \
     $EXTRA_RL_ARGS
   exit 0
 fi
@@ -158,9 +167,10 @@ if [[ "$SKIP_SFT" -eq 0 ]]; then
     --batch-size "$SFT_BS" --gradient-accumulation-steps "$SFT_ACCUM" \
     --lr 1e-4 --min-lr 1e-5 --lr-warmup-steps 25 \
     --soft-norm-tau "$TAU" \
+    --seed "$SEED" \
     --heldout-every 50 --save-every 500 \
     --wandb-project easynla-diff-qwen3-8b \
-    --wandb-name "sft_av_${ARM}"
+    --wandb-name "sft_av_${ARM}${SEED_TAG}"
 
   run_cmd "$CORE_PYTHON" -m nla.train_sft \
     --mode ar \
@@ -173,9 +183,10 @@ if [[ "$SKIP_SFT" -eq 0 ]]; then
     --batch-size "$SFT_BS" --gradient-accumulation-steps "$SFT_ACCUM" \
     --lr 2e-5 --min-lr 2e-6 --lr-warmup-steps 25 \
     --soft-norm-tau "$TAU" \
+    --seed "$SEED" \
     --heldout-every 50 --save-every 500 \
     --wandb-project easynla-diff-qwen3-8b \
-    --wandb-name "sft_ar_${ARM}" \
+    --wandb-name "sft_ar_${ARM}${SEED_TAG}" \
     "${AR_EXTRA_ARGS[@]}"
 fi
 
@@ -227,5 +238,6 @@ run_cmd "$VLLM_TORCHRUN" --standalone --nproc_per_node="$NPROC" -m nla.train_rl_
   --sidecar "${DATA_DIR}/rl_shuf.parquet" \
   --save-dir "$RL_SAVE_DIR" \
   --soft-norm-tau "$TAU" \
-  --wandb-name "diff_${ARM}_L${LAYER_IDX}" \
+  --seed "$SEED" \
+  --wandb-name "diff_${ARM}${SEED_TAG}_L${LAYER_IDX}" \
   $EXTRA_RL_ARGS

@@ -142,18 +142,33 @@ def test_phase0_to_phase2_full_pipeline_cpu(monkeypatch):
         assert "kl_enable_thinking_false" in report["taboo_mode_check"]["loras"][str(taboo_dir)]
 
         # ---- 2. Run Phase 2a Rollouts + Extraction ----
+        # Include both a >150-token multi-turn history AND a >140-token single user turn
+        # under --max-prompt-tokens 96 to verify history left-truncation & exact prefix reuse!
         prompts_jsonl = root / "prompts.jsonl"
-        chat_lines = [
-            json.dumps({
-                "source_corpus": "synthetic",
-                "user_text": f"Explain briefly how concept number {i} works in everyday engineering.",
-                "history": (
+        chat_lines = []
+        for i in range(18):
+            if i == 0:
+                hist = [
+                    {"role": "user", "content": "Background turn one " * 25},
+                    {"role": "assistant", "content": "Detailed prior answer " * 25},
+                    {"role": "user", "content": "Background turn two " * 25},
+                    {"role": "assistant", "content": "Second prior answer " * 25},
+                ]
+                ut = "Briefly summarize the most important engineering constraint."
+            elif i == 1:
+                hist = []
+                ut = "Long user prompt: " + ("thermodynamic efficiency measurement " * 45)
+            else:
+                hist = (
                     [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
                     if i % 3 == 0 else []
-                ),
-            })
-            for i in range(18)
-        ]
+                )
+                ut = f"Explain briefly how concept number {i} works in everyday engineering."
+            chat_lines.append(json.dumps({
+                "source_corpus": "synthetic",
+                "user_text": ut,
+                "history": hist,
+            }))
         prompts_jsonl.write_text("\n".join(chat_lines) + "\n", encoding="utf-8")
 
         corpus_dir = root / "corpus"
@@ -165,6 +180,7 @@ def test_phase0_to_phase2_full_pipeline_cpu(monkeypatch):
                 "--phase0-dir", str(p0_dir),
                 "--output-dir", str(corpus_dir),
                 "--custom-prompts-jsonl", str(prompts_jsonl),
+                "--eval-blocklist-source", "builtin",
                 "--sft-frac", "0.34",
                 "--val-frac", "0.17",
                 "--backend", "hf",
@@ -178,6 +194,9 @@ def test_phase0_to_phase2_full_pipeline_cpu(monkeypatch):
             p0_cfg,
         )
         assert (corpus_dir / "rollouts.parquet").exists()
+        rtbl = pq.read_table(corpus_dir / "rollouts.parquet")
+        assert "prompt_token_ids" in rtbl.schema.names and "prompt_user_ids" in rtbl.schema.names
+        assert all(len(pids) <= 96 for pids in rtbl.column("prompt_token_ids").to_pylist())
 
         p2.run_step_extract(
             p2.parse_args([
@@ -194,17 +213,33 @@ def test_phase0_to_phase2_full_pipeline_cpu(monkeypatch):
             p0_cfg,
         )
         assert (corpus_dir / "role_means_L2_train.pt").exists()
+        assert (corpus_dir / "role_means_L2_train_by_arm.pt").exists()
+        assert (corpus_dir / "phase2_extract_diagnostics.json").exists()
+        diag = json.loads((corpus_dir / "phase2_extract_diagnostics.json").read_text(encoding="utf-8"))
+        assert 0.0 < diag["arm2_fix3_train_diagnostics"]["overall"]["ess_frac"] <= 1.0
         for arm in ("arm0", "arm1", "arm2"):
             for sp in ("sft", "rl", "val"):
                 assert (corpus_dir / arm / f"base_{sp}.parquet").exists()
 
-        # Verify Arm 2 contains ONLY active roles while Arm 1 contains template roles too!
+        # Verify Arm 2 contains ONLY active roles while Arm 1 RL contains static template roles (NOT history!)
         arm2_roles = set(pq.read_table(corpus_dir / "arm2" / "base_rl.parquet", columns=["role"]).column("role").to_pylist())
         arm1_roles = set(pq.read_table(corpus_dir / "arm1" / "base_rl.parquet", columns=["role"]).column("role").to_pylist())
         assert arm2_roles <= set(ACTIVE_ROLES), f"Template role leaked into Arm 2: {arm2_roles}"
         assert arm1_roles - set(ACTIVE_ROLES), f"Expected template roles in Arm 1 naive ablation, got {arm1_roles}"
+        assert "history" not in arm1_roles, "Earlier-turn history should not be sampled as template role"
 
-        # ---- 3. Run Phase 2b Mock Contrastive + Standard SFT Explanations ----
+        # Verify held-out base_val.parquet shares EXACT same (doc_id, position, role) rows across all arms!
+        val_keys = {}
+        for arm in ("arm0", "arm1", "arm2"):
+            vt = pq.read_table(corpus_dir / arm / "base_val.parquet", columns=["doc_id", "position", "role"])
+            val_keys[arm] = list(zip(
+                vt.column("doc_id").to_pylist(),
+                vt.column("position").to_pylist(),
+                vt.column("role").to_pylist(),
+            ))
+        assert val_keys["arm0"] == val_keys["arm1"] == val_keys["arm2"]
+
+        # ---- 3. Run Phase 2b Mock Contrastive + Standard SFT Explanations (+ arm0c zero-cost reuse!) ----
         p2b.run_contrastive_sft(p2b.parse_args([
             "--input", str(corpus_dir / "arm2" / "base_sft.parquet"),
             "--output", str(corpus_dir / "arm2" / "sft_explained.parquet"),
@@ -228,6 +263,15 @@ def test_phase0_to_phase2_full_pipeline_cpu(monkeypatch):
             "--provider", "mock",
             "--chunk-size", "10",
         ]))
+        # Optional Arm 0c: raw h_target vectors + Arm 2's exact contrastive explanations ($0 extra API cost!)
+        p2b.run_contrastive_sft(p2b.parse_args([
+            "--input", str(corpus_dir / "arm0" / "base_sft.parquet"),
+            "--output", str(corpus_dir / "arm0c" / "sft_explained.parquet"),
+            "--mode", "contrastive",
+            "--provider", "mock",
+            "--chunk-size", "10",
+            "--cache-from", str(corpus_dir / "arm2" / "sft_explained.parquet"),
+        ]))
 
         # ---- 4. Run Phase 2c Materialize & Verify EasyNLA Contracts ----
         p2.run_step_materialize(
@@ -240,7 +284,7 @@ def test_phase0_to_phase2_full_pipeline_cpu(monkeypatch):
             p0_cfg,
         )
 
-        for arm in ("arm0", "arm1", "arm2"):
+        for arm in ("arm0", "arm0c", "arm1", "arm2"):
             arm_dir = corpus_dir / arm
             for fn in ("av_sft_train.parquet", "ar_sft_train.parquet", "av_sft_val.parquet", "rl_shuf.parquet", "val.parquet"):
                 p = arm_dir / fn

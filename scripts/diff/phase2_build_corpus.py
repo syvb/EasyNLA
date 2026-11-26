@@ -104,24 +104,36 @@ def _norm_text(s: str) -> str:
     return " ".join((s or "").lower().split())
 
 
-def _collect_eval_blocklist() -> set[str]:
+def _collect_eval_blocklist(source: str = "auto") -> set[str]:
     """Normalized strings from ALL Phase 4 eval benchmarks to prevent train-eval leakage."""
     blocked: set[str] = set()
     for q in NEUTRAL_QUERIES:
         blocked.add(_norm_text(q))
     for q in TABOO_ELICITATION_PROMPTS:
         blocked.add(_norm_text(q))
+    # Always blocklist built-in sets AND (when source=='auto') the full HF eval sets (XSTest/JBB + MATH-500)
+    ref_sources = ("builtin", "auto") if source == "auto" else ("builtin",)
+    math_sources = ("builtin", "auto") if source == "auto" else ("builtin",)
+    for rs in ref_sources:
+        try:
+            for p in flatten_binary_pairs(load_refusal_pairs(250, source=rs))[0]:
+                blocked.add(_norm_text(p))
+        except Exception as exc:
+            print(f"[blocklist] skipping refusal source={rs}: {exc}", flush=True)
     for loader in (
-        lambda: flatten_binary_pairs(load_refusal_pairs(25, source="builtin"))[0],
         lambda: flatten_binary_pairs(load_eval_awareness_pairs(100))[0],
         lambda: flatten_binary_pairs(load_sycophancy_pairs(100))[0],
     ):
         for p in loader():
             blocked.add(_norm_text(p))
-    for it in load_historical_period_items(60):
+    for it in load_historical_period_items(300):
         blocked.add(_norm_text(it["text"]))
-    for it in load_math_items(40, source="builtin"):
-        blocked.add(_norm_text(it["problem"]))
+    for ms in math_sources:
+        try:
+            for it in load_math_items(500, source=ms):
+                blocked.add(_norm_text(it["problem"]))
+        except Exception as exc:
+            print(f"[blocklist] skipping math source={ms}: {exc}", flush=True)
     return blocked
 
 
@@ -132,9 +144,10 @@ def _sample_chat_prompts(
     n_safety: int,
     custom_jsonl: str | None,
     seed: int,
+    blocklist_source: str = "auto",
 ) -> list[dict[str, Any]]:
     """Sample diverse single/multi-turn prompts, deduplicated against eval benchmarks."""
-    blocked = _collect_eval_blocklist()
+    blocked = _collect_eval_blocklist(source=blocklist_source)
     seen: set[str] = set()
     records: list[dict[str, Any]] = []
 
@@ -397,8 +410,40 @@ def run_step_rollouts(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> Path:
         n_safety=args.n_safety,
         custom_jsonl=args.custom_prompts_jsonl,
         seed=args.seed,
+        blocklist_source=args.eval_blocklist_source,
     )
-    records = _assign_splits(records, sft_frac=args.sft_frac, val_frac=args.val_frac)
+
+    kept_records: list[dict[str, Any]] = []
+    prefill_id_lists: list[list[int]] = []
+    prompt_user_id_lists: list[list[int]] = []
+    kept_hist_jsons: list[str] = []
+    skipped_too_long = 0
+    for r in records:
+        hist = json.loads(r["history_json"])
+        try:
+            enc = encode_chatml_dialogue(
+                tokenizer,
+                r["user_text"],
+                history=hist,
+                enable_thinking=False,
+                max_total_tokens=args.max_prompt_tokens,
+                truncate_history=True,
+            )
+        except ValueError:
+            skipped_too_long += 1
+            continue
+        u_ids = enc.input_ids[enc.user_span[0] : enc.user_span[1]]
+        if not u_ids:
+            skipped_too_long += 1
+            continue
+        kept_records.append(r)
+        prefill_id_lists.append(enc.input_ids)
+        prompt_user_id_lists.append(u_ids)
+        kept_hist_jsons.append(json.dumps(hist[enc.kept_history_start_idx:], ensure_ascii=False))
+
+    if skipped_too_long:
+        print(f"[rollouts] skipped {skipped_too_long} conversation(s) that could not fit max_prompt_tokens={args.max_prompt_tokens}", flush=True)
+    records = _assign_splits(kept_records, sft_frac=args.sft_frac, val_frac=args.val_frac)
     print(
         f"[rollouts] total={len(records)} "
         f"(sft={sum(r['split']=='sft' for r in records)}, "
@@ -406,18 +451,6 @@ def run_step_rollouts(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> Path:
         f"val={sum(r['split']=='val' for r in records)})",
         flush=True,
     )
-
-    prefill_id_lists: list[list[int]] = []
-    for r in records:
-        hist = json.loads(r["history_json"])
-        enc = encode_chatml_dialogue(
-            tokenizer,
-            r["user_text"],
-            history=hist,
-            enable_thinking=False,
-            max_total_tokens=args.max_prompt_tokens,
-        )
-        prefill_id_lists.append(enc.input_ids)
 
     t0 = time.time()
     if args.backend == "vllm":
@@ -450,8 +483,10 @@ def run_step_rollouts(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> Path:
         "doc_id": pa.array([r["doc_id"] for r in records], type=pa.string()),
         "split": pa.array([r["split"] for r in records], type=pa.string()),
         "source_corpus": pa.array([r["source_corpus"] for r in records], type=pa.string()),
-        "history_json": pa.array([r["history_json"] for r in records], type=pa.string()),
+        "history_json": pa.array(kept_hist_jsons, type=pa.string()),
         "user_text": pa.array([r["user_text"] for r in records], type=pa.string()),
+        "prompt_token_ids": pa.array(prefill_id_lists, type=pa.list_(pa.int64())),
+        "prompt_user_ids": pa.array(prompt_user_id_lists, type=pa.list_(pa.int64())),
         "assistant_text": pa.array(asst_texts, type=pa.string()),
         "rollout_token_ids": pa.array(asst_tok_ids, type=pa.list_(pa.int64())),
     })
@@ -553,6 +588,16 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
     hist_jsons = tbl.column("history_json").to_pylist()
     user_texts = tbl.column("user_text").to_pylist()
     roll_ids_all = tbl.column("rollout_token_ids").to_pylist()
+    prompt_toks_all = (
+        tbl.column("prompt_token_ids").to_pylist()
+        if "prompt_token_ids" in tbl.schema.names
+        else [None] * n_convs
+    )
+    prompt_user_ids_all = (
+        tbl.column("prompt_user_ids").to_pylist()
+        if "prompt_user_ids" in tbl.schema.names
+        else [None] * n_convs
+    )
 
     rng = np.random.default_rng(args.seed)
     chunk_convs = max(1, args.chunk_convs)
@@ -564,17 +609,29 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
     conv_plans: list[dict[str, Any]] = []
     for i in range(n_convs):
         hist = json.loads(hist_jsons[i])
+        p_user_ids = prompt_user_ids_all[i]
+        p_tok_ids = prompt_toks_all[i]
         inst_enc, base_win_enc = encode_aligned_pair(
             tokenizer,
             user_texts[i],
             base_wrapper=base_wrapper,
             history=hist,
+            user_ids=p_user_ids,
             rollout_ids=roll_ids_all[i],
             enable_thinking=False,
-            max_total_tokens=args.max_prompt_tokens + args.rollout_max_new_tokens + 64,
+            max_total_tokens=(
+                None
+                if p_user_ids is not None
+                else args.max_prompt_tokens + args.rollout_max_new_tokens + 64
+            ),
+            truncate_history=(p_user_ids is None),
         )
+        if p_tok_ids is not None:
+            assert inst_enc.input_ids[: len(p_tok_ids)] == list(p_tok_ids), (
+                f"Teacher-forcing prompt prefix diverged from rollout prompt for doc_id={doc_ids[i]}!"
+            )
         pos_list, role_list = _sample_positions_for_conv(inst_enc, rng, include_template_pos=True)
-        # Active positions (always first <=3) vs optional 4th template position (Arm 1 only)
+        # Active positions (always first <=3) vs optional 4th template position (Arm 1 training only)
         active_pos = [p for p, r in zip(pos_list, role_list) if r in ACTIVE_ROLES]
         active_roles = [r for r in role_list if r in ACTIVE_ROLES]
         tmpl_pos = [p for p, r in zip(pos_list, role_list) if r not in ACTIVE_ROLES]
@@ -583,16 +640,14 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
         base_win_active_pos = [
             map_inst_pos_to_base_pos(p, inst_enc, base_win_enc) for p in active_pos
         ]
-        # Arm 1 naive ablation: swap 1 of the 3 active slots for the template position when present
-        # so Arm 1 has the exact same row count per conv while including ChatML template tokens!
+        # Arm 1 naive ablation: swap 1 of the 3 active slots for a static template token on ~50%
+        # of TRAINING convs (sft/rl) so Arm 1 trains on unmasked ChatML template tokens while
+        # keeping held-out val.parquet on the EXACT same active positions across all arms!
         arm1_inst_pos = list(active_pos)
         arm1_roles = list(active_roles)
-        if tmpl_pos and len(arm1_inst_pos) >= 3:
-            # Replace one non-asst_last slot deterministically on ~50% of convs so Arm 1
-            # mixes template tokens + active tokens just like naive unmasked extraction.
-            if (i % 2) == 0:
-                arm1_inst_pos[0] = tmpl_pos[0]
-                arm1_roles[0] = tmpl_roles[0]
+        if splits[i] != "val" and tmpl_pos and len(arm1_inst_pos) >= 3 and (i % 2) == 0:
+            arm1_inst_pos[0] = tmpl_pos[0]
+            arm1_roles[0] = tmpl_roles[0]
 
         conv_plans.append({
             "doc_id": doc_ids[i],
@@ -871,10 +926,42 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
             writers[(arm, sp)] = pq.ParquetWriter(pa.OSFile(str(p), "wb"), schema)
             row_counts[(arm, sp)] = 0
 
+    # Track per-arm training-split role means (both raw and unit-sphere, excluding val!)
+    # for cross-arm comparable within-role reconstruction metrics (Finding 10),
+    # plus Arm 2 Fix 3 norm/tau/weight ESS diagnostics (Finding 7).
+    arm_unit_sums: dict[str, dict[str, torch.Tensor]] = {
+        a: {r: torch.zeros(d_model, dtype=torch.float64) for r in ACTIVE_ROLES}
+        for a in ("arm0", "arm1", "arm2")
+    }
+    arm_raw_sums: dict[str, dict[str, torch.Tensor]] = {
+        a: {r: torch.zeros(d_model, dtype=torch.float64) for r in ACTIVE_ROLES}
+        for a in ("arm0", "arm1", "arm2")
+    }
+    arm_role_counts: dict[str, dict[str, int]] = {
+        a: {r: 0 for r in ACTIVE_ROLES} for a in ("arm0", "arm1", "arm2")
+    }
+    arm2_train_norms_by_role: dict[str, list[np.ndarray]] = {r: [] for r in ACTIVE_ROLES}
+
     def _flush_rows(arm: str, sp: str, buf: list[dict[str, Any]]) -> None:
         if not buf:
             return
         acts_np = np.stack([r["activation_vector"] for r in buf], axis=0).astype(np.float32, copy=False)
+        if sp != "val":
+            roles_b = [r["role"] for r in buf]
+            acts_f64 = torch.from_numpy(acts_np).double()
+            norms_b = acts_f64.norm(dim=-1, keepdim=True)
+            unit_b = acts_f64 / (norms_b + 1e-9)
+            for rname in ACTIVE_ROLES:
+                idxs = [idx for idx, rv in enumerate(roles_b) if rv == rname]
+                if idxs:
+                    idx_t = torch.tensor(idxs, dtype=torch.long)
+                    arm_raw_sums[arm][rname] += acts_f64.index_select(0, idx_t).sum(dim=0)
+                    arm_unit_sums[arm][rname] += unit_b.index_select(0, idx_t).sum(dim=0)
+                    arm_role_counts[arm][rname] += len(idxs)
+                    if arm == "arm2":
+                        arm2_train_norms_by_role[rname].append(
+                            norms_b.squeeze(-1).index_select(0, idx_t).numpy().astype(np.float32)
+                        )
         flat_arr = pa.array(acts_np.reshape(-1), type=pa.float32())
         av_arr = pa.FixedSizeListArray.from_arrays(flat_arr, d_model)
         batch_tbl = pa.table({
@@ -950,7 +1037,7 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
                         bufs[("arm0", sp)].append({**common, "activation_vector": ht_m[k].numpy()})
                         bufs[("arm2", sp)].append({**common, "activation_vector": d_clean[k].numpy()})
 
-                # Arm 1 (Naive Diff: standard Ridge, includes template tokens, NO role centering)
+                # Arm 1 (Naive Diff: standard Ridge, includes template tokens on train, NO role centering)
                 if plan["arm1_pos"]:
                     ht1 = torch.stack([td["hidden"][t_pos_map[p]] for p in plan["arm1_pos"]], dim=0)
                     hb1 = torch.stack([bd["chatml_hidden"][b_pos_map[p]] for p in plan["arm1_pos"]], dim=0)
@@ -979,6 +1066,76 @@ def run_step_extract(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> None:
         for w in writers.values():
             w.close()
 
+    # Save per-arm training-split role means (raw & unit-sphere) for cross-arm comparable eval
+    by_arm_payload: dict[str, Any] = {
+        "layer_index": layer_idx,
+        "tau_web_median": tau_med,
+        "arms": {},
+    }
+    for arm in ("arm0", "arm1", "arm2"):
+        by_arm_payload["arms"][arm] = {
+            "raw": {
+                r: (arm_raw_sums[arm][r] / max(1, arm_role_counts[arm][r])).float()
+                for r in ACTIVE_ROLES
+            },
+            "unit": {
+                r: (arm_unit_sums[arm][r] / max(1, arm_role_counts[arm][r])).float()
+                for r in ACTIVE_ROLES
+            },
+            "counts": dict(arm_role_counts[arm]),
+        }
+    by_arm_path = out_dir / f"role_means_L{layer_idx}_train_by_arm.pt"
+    torch.save(by_arm_payload, str(by_arm_path))
+
+    # Save Fix 3 norm/tau/weight ESS diagnostics on Arm 2 training rows
+    def _norm_w_stats(arr: np.ndarray) -> dict[str, float]:
+        if arr.size == 0:
+            return {"n": 0}
+        nsq = arr.astype(np.float64) ** 2
+        w = nsq / (nsq + max(tau_med, 1e-12) ** 2)
+        w_sum = float(w.sum())
+        ess = float((w_sum * w_sum) / (arr.size * max(float((w * w).sum()), 1e-12)))
+        w_min = float(w.min())
+        w_max = float(w.max())
+        return {
+            "n": int(arr.size),
+            "median_norm": float(np.median(arr)),
+            "median_norm_over_tau": float(np.median(arr) / max(tau_med, 1e-12)),
+            "w_median": float(np.median(w)),
+            "w_p10": float(np.percentile(w, 10)),
+            "w_p90": float(np.percentile(w, 90)),
+            "w_min": w_min,
+            "w_max": w_max,
+            "w_max_over_min": float(w_max / max(w_min, 1e-12)),
+            "ess_frac": ess,
+        }
+
+    all_a2_norms = (
+        np.concatenate([np.concatenate(v) for v in arm2_train_norms_by_role.values() if v])
+        if any(arm2_train_norms_by_role.values())
+        else np.array([], dtype=np.float32)
+    )
+    diag = {
+        "layer_index": layer_idx,
+        "base_wrapper": base_wrapper,
+        "tau_web_median": tau_med,
+        "row_counts": {f"{a}/{s}": c for (a, s), c in row_counts.items()},
+        "arm2_fix3_train_diagnostics": {
+            "overall": _norm_w_stats(all_a2_norms),
+            "by_role": {
+                r: _norm_w_stats(np.concatenate(v) if v else np.array([], dtype=np.float32))
+                for r, v in arm2_train_norms_by_role.items()
+            },
+        },
+    }
+    diag_path = out_dir / "phase2_extract_diagnostics.json"
+    diag_path.write_text(json.dumps(diag, indent=2), encoding="utf-8")
+    print(f"[extract] saved per-arm role means -> {by_arm_path}", flush=True)
+    print(
+        f"[extract] saved Fix 3 diagnostics -> {diag_path} "
+        f"(overall ESS={diag['arm2_fix3_train_diagnostics']['overall'].get('ess_frac', float('nan')):.2%})",
+        flush=True,
+    )
     print(f"[extract] complete! Row counts: {row_counts}", flush=True)
 
 
@@ -1121,19 +1278,23 @@ def run_step_materialize(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> No
     critic_template = _DEFAULT_CRITIC_TEMPLATE
     token_meta_full = build_token_meta(tokenizer, actor_template, critic_template=critic_template)
 
-    arms = args.arms if args.arms else ["arm0", "arm1", "arm2"]
+    default_arms = ["arm0", "arm1", "arm2"]
+    if (out_dir / "arm0c" / "sft_explained.parquet").exists():
+        default_arms.append("arm0c")
+    arms = args.arms if args.arms else default_arms
     for arm in arms:
         arm_dir = out_dir / arm
         if not arm_dir.exists():
             print(f"[materialize] skipping missing {arm_dir}", flush=True)
             continue
 
-        # 1. RL & Val parquets (always available after extract)
+        # 1. RL & Val parquets (arm0c shares raw h_target base_rl/base_val with arm0!)
+        base_vec_dir = (out_dir / "arm0") if arm == "arm0c" else arm_dir
         for src_name, dst_name, shuf_seed in (
             ("base_rl.parquet", "rl_shuf.parquet", args.seed),
             ("base_val.parquet", "val.parquet", None),
         ):
-            src_p = arm_dir / src_name
+            src_p = base_vec_dir / src_name
             if src_p.exists():
                 tbl = pq.read_table(src_p)
                 n_w = _write_stage_parquet_and_sidecar(
@@ -1166,7 +1327,7 @@ def run_step_materialize(args: argparse.Namespace, p0_cfg: dict[str, Any]) -> No
         rng = np.random.default_rng(args.seed)
         rng.shuffle(unique_docs)
 
-        n_val_docs = max(1, int(round(len(unique_docs) * args.sft_val_frac)))
+        n_val_docs = max(1, round(len(unique_docs) * args.sft_val_frac))
         if n_val_docs >= len(unique_docs):
             n_val_docs = max(1, len(unique_docs) // 5)
         val_doc_set = set(unique_docs[:n_val_docs])
@@ -1209,12 +1370,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--step", required=True, choices=["rollouts", "extract", "materialize", "all"])
     p.add_argument("--phase0-dir", required=True, help="Directory containing phase0_config.json")
     p.add_argument("--output-dir", required=True, help="Root output directory for Phase 2 corpus")
-    p.add_argument("--arms", nargs="*", default=None, help="Subset of arms for materialize (default: arm0 arm1 arm2)")
+    p.add_argument("--arms", nargs="*", default=None, help="Subset of arms for materialize (default: arm0 arm1 arm2 [+ arm0c if present])")
     # Prompt sampling counts (default: 60k total = 30k WildChat + 20k UltraChat + 10k safety mix)
     p.add_argument("--n-wildchat", type=int, default=30000)
     p.add_argument("--n-ultrachat", type=int, default=20000)
     p.add_argument("--n-safety", type=int, default=10000)
     p.add_argument("--custom-prompts-jsonl", default=None, help="Local JSONL prompts for offline/CPU tests")
+    p.add_argument("--eval-blocklist-source", choices=["auto", "builtin"], default="auto",
+                   help="Blocklist HF eval sets (XSTest/JBB + MATH-500) + builtins ('auto') or builtins only ('builtin')")
     p.add_argument("--sft-frac", type=float, default=20000 / 180000, help="Doc fraction for SFT split (~11.1%)")
     p.add_argument("--val-frac", type=float, default=5000 / 180000, help="Doc fraction for held-out val (~2.8%)")
     p.add_argument("--sft-val-frac", type=float, default=0.05, help="Fraction of SFT docs held out as av_sft_val")
