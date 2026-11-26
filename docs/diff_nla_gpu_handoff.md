@@ -299,7 +299,7 @@ bash scripts/diff/run_phase3_arm.sh \
 | `eval_judge/coherence_mean`, `eval_judge/repetitiveness_mean` | Coherence `>= 7`, Repetitiveness `<= 3` | Watch for RL mode collapse / boilerplate templates |
 
 **Crash / Preemption Resume**:
-Re-run `run_phase3_arm.sh` with `--skip-sft --skip-merge --extra-rl-args "--resume-from-lora ${CKPT_ROOT}/arm2/rl_vllm/iter_000200 --start-step 200"` (`train_rl_vllm.py` automatically bypasses the overwrite guard and restores `critic_latest` + `optim_latest.pt` whenever `--resume-from-lora` is set!).
+Re-run the **exact same** `run_phase3_arm.sh` command with `--resume` appended! It automatically skips already-completed AV SFT, AR SFT, and HF merge steps, detects the latest atomically-committed RL checkpoint (`optim_latest.pt` saved every `25` steps ≈ ~7 min, with archival 11 GB `iter_NNNNNN/critic` copies only at `save_steps: [0, 50, 100, 200, 300, 400]`), and passes `--resume-from-lora <latest> --start-step <step>` cleanly (or exits 0 if already finished).
 
 ---
 
@@ -465,7 +465,25 @@ The following 16 mathematical, geometric, statistical, and engineering issues we
 
 ---
 
-## 5. Troubleshooting Cheat Sheet
+## 5. Crash & Spot-Preemption Recovery Matrix
+
+Every stage writes outputs atomically (`.tmp` -> `replace`) and checkpoints work incrementally so a RunPod/Vast.ai preemption or SSH disconnect loses minimal GPU time and **never** double-bills Anthropic Batch API jobs:
+
+| Phase / Step | On-Disk Checkpoint | Max Work Lost on Crash | Exact Recovery Command |
+| :--- | :--- | :--- | :--- |
+| **Phase 0** (`phase0_geometry_gate.py`) | `_phase0_pass1_target.pt` | <= 1 pass (~10 min) | Re-run exact same command (Pass 1 Target + Taboo reused automatically) |
+| **Phase 2a-1** (`--step rollouts`) | `_rollout_chunks/sampled_prompts.parquet` + `chunk_*.parquet` (every 10k prompts) | <= 10k rollouts (~3 min) | Re-run exact same command (cached prompts + completed chunks skipped) |
+| **Phase 2a-2** (`--step extract`) | `_extract_chunks/{target,base}_*.pt` (every 5k convs) | <= 5k convs (~8 min) | Re-run exact same command (completed Target/Base chunks skipped; Pass D writes atomically) |
+| **Phase 2b** (`phase2_contrastive_sft.py`) | `<output>.chunks/chunk_*.parquet` + `_batch_state/batch_*.json` | **\$0 API loss** | Re-run exact same command (resumes already-submitted Anthropic batch ID without re-creating!) |
+| **Phase 2c** (`--step materialize`) | Atomic `.parquet.tmp` -> `replace` | <= 2 min (CPU) | Re-run exact same command |
+| **Phase 3** (`run_phase3_arm.sh`) | `av_sft/iter_*`, `ar_sft/iter_*`, `av_merged_hf/`, atomic `rl_vllm/iter_*` + `critic_latest` + `optim_latest.pt` (every 25 steps) | <= 25 RL steps (~7 min) | Re-run exact same command with **`--resume`** |
+| **Phase 4a-1** (`cache-benchmarks`) | `_cache_parts/pass1_base.pt` + `taboo_<org>.pt` (per LoRA) | <= 1 Taboo LoRA (~1–2 min) | Re-run exact same command (skips completed Pass 1 base & Taboo LoRAs) |
+| **Phase 4a-2** (`generate`) | Atomic `{arm}_step{N}_generations.jsonl` + `_local_metrics.json` | <= 1 checkpoint (~3 min) | Re-run the `for ARM ... for STEP ...` loop (completed checkpoints auto-skipped!) |
+| **Phase 4b** (`phase4_judge_and_report.py`) | `report/judge_cache.jsonl` (fsynced per chunk; tolerates truncated trailing line) + `report/_batch_state/batch_*.json` | **\$0 API loss** | Re-run exact same command (resumes active Anthropic batch ID + skips cached keys) |
+
+---
+
+## 6. Troubleshooting Cheat Sheet
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
@@ -474,5 +492,4 @@ The following 16 mathematical, geometric, statistical, and engineering issues we
 | OOM during AR SFT or RL on 80GB H100 | Full-FT fp32 AR needs ~88 GB | Pass `--hardware h100` to `run_phase3_arm.sh` (switches AR SFT to LoRA 16×4 and RL to `rl_vllm_h100_80gb.yaml` with `ar_lora: true`) |
 | `av/steer_apply_rate < 0.99` | Stale `vllm-lens` or sidecar/tokenizer mismatch | Check sidecar `injection_token_id` (`149705` / `㈎` for `Qwen3-8B`) and re-run `utils/patch_vllm_lens.py` |
 | `FileNotFoundError: Missing training-split role means` in Phase 4 | Phase 2 extraction not run or wrong `--corpus-dir` | Point `--corpus-dir` to Phase 2 output containing `role_means_L24_train.pt` (do NOT silently fall back to Phase 0 diagnostic means) |
-| `phase2_contrastive_sft.py` interrupted mid-batch | Network disconnect / pod preemption | Re-run the exact same command — completed chunks in `<output>.chunks/chunk_*.parquet` are skipped automatically |
-| `phase4_judge_and_report.py` interrupted mid-batch | Network disconnect / pod preemption | Re-run the exact same command — append-only `$EVAL_DIR/report/judge_cache.jsonl` skips all already-judged prompts |
+| `phase2_contrastive_sft.py` or `phase4_judge_and_report.py` interrupted mid-batch | Network disconnect / pod preemption | Re-run the exact same command — `ResumableBatchAnthropicProvider` polls the persisted Anthropic `batch_id` from `_batch_state/` instead of double-billing, and `judge_cache.jsonl` tolerates truncated trailing lines |

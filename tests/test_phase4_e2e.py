@@ -218,6 +218,65 @@ def test_phase3_configs_and_launcher_dry_run() -> None:
                 assert "--mode both" in out
                 assert "--batch-size 16 --gradient-accumulation-steps 4" in out
 
+        # Test --resume crash-recovery across all 3 failure points!
+        ckpt_root = Path(td) / "ckpts"
+        arm2_dir = ckpt_root / "arm2"
+        # Case A: AV SFT finished, crashed before/during AR SFT -> skip AV, run AR
+        (arm2_dir / "av_sft" / "iter_0000300").mkdir(parents=True)
+        (arm2_dir / "av_sft" / "iter_0000300" / "adapter_config.json").write_text("{}", encoding="utf-8")
+        res_a = subprocess.run(
+            [
+                "bash", str(REPO / "scripts" / "diff" / "run_phase3_arm.sh"),
+                "--arm", "arm2", "--phase0-dir", str(p0_dir),
+                "--corpus-dir", "/tmp/corpus", "--ckpt-root", str(ckpt_root),
+                "--core-python", sys.executable, "--vllm-python", "/opt/vllm/bin/python",
+                "--resume", "--dry-run",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        assert "AV SFT already completed" in res_a.stdout
+        assert "-m nla.train_sft --mode av" not in res_a.stdout
+        assert "-m nla.train_sft --mode ar" in res_a.stdout
+
+        # Case B: SFT + merge done, RL crashed at step 190 after atomic commit at step 175 -> resume from 175!
+        (arm2_dir / "ar_sft" / "iter_0000300").mkdir(parents=True)
+        (arm2_dir / "ar_sft" / "iter_0000300" / "value_head.safetensors").write_bytes(b"stub")
+        (arm2_dir / "av_merged_hf").mkdir(parents=True)
+        (arm2_dir / "av_merged_hf" / "config.json").write_text("{}", encoding="utf-8")
+        (arm2_dir / "rl_vllm" / "iter_000175").mkdir(parents=True)
+        (arm2_dir / "rl_vllm" / "iter_000175" / "adapter_config.json").write_text("{}", encoding="utf-8")
+        torch.save({"step": 175}, str(arm2_dir / "rl_vllm" / "optim_latest.pt"))
+        res_b = subprocess.run(
+            [
+                "bash", str(REPO / "scripts" / "diff" / "run_phase3_arm.sh"),
+                "--arm", "arm2", "--phase0-dir", str(p0_dir),
+                "--corpus-dir", "/tmp/corpus", "--ckpt-root", str(ckpt_root),
+                "--core-python", sys.executable, "--vllm-python", "/opt/vllm/bin/python",
+                "--resume", "--dry-run",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        assert "train_sft" not in res_b.stdout
+        assert "merge_lora_to_hf" not in res_b.stdout
+        assert f"--resume-from-lora {arm2_dir / 'rl_vllm' / 'iter_000175'} --start-step 175" in res_b.stdout
+
+        # Case C: RL reached step 400 -> --resume exits 0 without re-launching RL!
+        (arm2_dir / "rl_vllm" / "iter_000400").mkdir(parents=True)
+        (arm2_dir / "rl_vllm" / "iter_000400" / "adapter_config.json").write_text("{}", encoding="utf-8")
+        torch.save({"step": 400}, str(arm2_dir / "rl_vllm" / "optim_latest.pt"))
+        res_c = subprocess.run(
+            [
+                "bash", str(REPO / "scripts" / "diff" / "run_phase3_arm.sh"),
+                "--arm", "arm2", "--phase0-dir", str(p0_dir),
+                "--corpus-dir", "/tmp/corpus", "--ckpt-root", str(ckpt_root),
+                "--core-python", sys.executable, "--vllm-python", "/opt/vllm/bin/python",
+                "--resume", "--dry-run",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        assert "already complete" in res_c.stdout
+        assert "nla.train_rl_vllm" not in res_c.stdout
+
 
 def test_phase4_vllm_backend_mocked_steer_log() -> None:
     """Finding 2 regression test: prove `_generate_av_vllm` uses `read_reset_steer_log`
@@ -704,8 +763,38 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
         assert "h_base_win" in bcache["historical"] and "h_base_chatml" in bcache["historical"]
         assert "h_base_win" in bcache["math"] and "h_base_chatml" in bcache["math"]
 
-        # 5. Phase 4a: REAL HF generation pass (tiny model + AV LoRA + Karvonen hook + Fix 3 tau)
+        # Crash-resume check for Phase 4a-1: delete benchmark_cache.pt + 2nd Taboo part ->
+        # re-running MUST reuse pass1_base.pt + 1st Taboo organism and only recompute 2nd Taboo!
+        assert (eval_dir / "_cache_parts" / "pass1_base.pt").exists()
+        assert (eval_dir / "_cache_parts" / "taboo_snow_narrow.pt").exists()
+        assert (eval_dir / "_cache_parts" / "taboo_smile_50_mix.pt").exists()
+        (eval_dir / "benchmark_cache.pt").unlink()
+        (eval_dir / "_cache_parts" / "taboo_smile_50_mix.pt").unlink()
         p4a.main([
+            "--step", "cache-benchmarks",
+            "--phase0-dir", str(p0_dir),
+            "--corpus-dir", str(corpus_dir),
+            "--eval-dir", str(eval_dir),
+            "--refusal-source", "builtin",
+            "--n-refusal-pairs", "4",
+            "--n-eval-awareness-pairs", "4",
+            "--n-sycophancy-pairs", "4",
+            "--custom-taboo-json", str(taboo_json),
+            "--n-taboo-prompts", "3",
+            "--n-mode-check-prompts", "2",
+            "--n-historical", "6",
+            "--math-source", "builtin",
+            "--n-math", "4",
+            "--behavior-audit-max-tokens", "6",
+            "--batch-size", "4",
+            "--device", "cpu",
+            "--dtype", "fp32",
+        ])
+        assert (eval_dir / "benchmark_cache.pt").exists()
+        assert (eval_dir / "_cache_parts" / "taboo_smile_50_mix.pt").exists()
+
+        # 5. Phase 4a: REAL HF generation pass (tiny model + AV LoRA + Karvonen hook + Fix 3 tau)
+        gen_a2_0_argv = [
             "--step", "generate",
             "--phase0-dir", str(p0_dir),
             "--corpus-dir", str(corpus_dir),
@@ -720,12 +809,17 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
             "--batch-size", "4",
             "--device", "cpu",
             "--dtype", "fp32",
-        ])
+        ]
+        p4a.main(gen_a2_0_argv)
         assert (eval_dir / "arm2_step0000_generations.jsonl").exists()
         lm0 = json.loads((eval_dir / "arm2_step0000_local_metrics.json").read_text(encoding="utf-8"))
         assert lm0["soft_norm_tau"] > 0.0
         assert "snow_narrow/asst_last/org_minus_inst" in lm0["taboo_diff_norm_diagnostics"]
         assert "smile_50_mix/user_mean/org_minus_base" in lm0["taboo_diff_norm_diagnostics"]
+
+        # Crash-resume check for Phase 4a-2: re-running completed checkpoint without --overwrite MUST skip!
+        with patch.object(p4a, "_generate_av_hf", side_effect=AssertionError("Should have skipped completed checkpoint")):
+            p4a.main(gen_a2_0_argv)
 
         # 6. Exercise arm0@0, arm0@100, arm1@100, arm2@100 with well-formed `<explanation>`
         #    responses so AR critic scoring (FVE, weighted FVE, within-role FVE/cos, tok1 FVE)
@@ -833,3 +927,16 @@ def test_phase4_full_pipeline_cpu_end_to_end() -> None:
         )
         cache_lines_2 = len((report_dir / "judge_cache.jsonl").read_text(encoding="utf-8").splitlines())
         assert cache_lines_2 == cache_lines_1
+
+        # Simulate power-loss truncated trailing line in judge_cache.jsonl -> MUST recover cleanly!
+        with (report_dir / "judge_cache.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write('{"key": "truncated_partial_crash_line')
+        summary3 = p4b.run_judge_and_report(
+            p4b.parse_args([
+                "--eval-dir", str(eval_dir),
+                "--provider", "mock",
+                "--n-text-judges", "6",
+                "--n-boot", "50",
+            ])
+        )
+        assert np.isfinite(summary3["by_arm"]["arm2"]["100"]["refusal"]["auroc_ci"]["auroc"])

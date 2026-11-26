@@ -306,9 +306,25 @@ def run_cache_benchmarks(args: argparse.Namespace) -> Path:
 
     # ------------------------------------------------------------------
     # PASS 1: Target model (+ Taboo LoRAs while Target is loaded)
+    # Checkpointed incrementally under eval_dir/_cache_parts/ so a crash or
+    # HF rate-limit on Taboo LoRA #8 resumes cleanly right at LoRA #8!
     # ------------------------------------------------------------------
-    print(f"[phase4/cache] Pass 1: loading Target {target_model_name}...", flush=True)
-    target_model = load_causal_lm(target_model_name, dtype=dtype, device=device)
+    parts_dir = eval_dir / "_cache_parts"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    cache_sig = {
+        "target_model": target_model_name,
+        "base_model": base_model_name,
+        "layer_index": layer_idx,
+        "base_wrapper": base_wrapper,
+        "n_refusal": len(ref_prompts),
+        "n_eval_awareness": len(ea_prompts),
+        "n_sycophancy": len(syc_prompts),
+        "behavior_audit_max_tokens": int(args.behavior_audit_max_tokens),
+        "n_historical": len(hist_items),
+        "n_math": len(math_items),
+        "n_taboo_prompts": len(taboo_prompts),
+        "n_mode_check_prompts": int(args.n_mode_check_prompts),
+    }
 
     cache: dict[str, Any] = {
         "layer_index": layer_idx,
@@ -319,151 +335,217 @@ def run_cache_benchmarks(args: argparse.Namespace) -> Path:
         "math": {"items": math_items, "role": "asst_last"},
     }
 
+    p1_base_path = parts_dir / "pass1_base.pt"
+    p1_base_loaded = False
     behavior_audit_summary: dict[str, Any] = {}
-    for bname, (prompts, labels, meta) in binary_specs.items():
-        inst_ids_list = [e.input_ids for e in bin_enc[bname]["inst"]]
-        ex_t = extract_at_positions(
-            target_model,
-            inst_ids_list,
-            [[e.asst_last_idx] for e in bin_enc[bname]["inst"]],
-            layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
-        )
-        completions = _greedy_audit_completions(
-            target_model,
-            tokenizer,
-            inst_ids_list,
-            max_new_tokens=args.behavior_audit_max_tokens,
-            batch_size=args.batch_size,
-            device=device,
-        )
-        entry: dict[str, Any] = {
-            "prompts": prompts,
-            "labels": labels,
-            "meta": meta,
-            "h_target": torch.cat([ex.hidden for ex in ex_t], dim=0),
-            "target_completions": completions,
-        }
-        if bname == "refusal" and args.behavior_audit_max_tokens > 0:
-            ref_flags = [int(_detect_refusal_completion(c)) for c in completions]
-            entry["behavior_labels"] = ref_flags
-            ben_ref = [f for f, lbl in zip(ref_flags, labels) if lbl == 0]
-            pos_ref = [f for f, lbl in zip(ref_flags, labels) if lbl == 1]
-            behavior_audit_summary["refusal"] = {
-                "benign_refusal_rate": float(np.mean(ben_ref)) if ben_ref else float("nan"),
-                "harmful_refusal_rate": float(np.mean(pos_ref)) if pos_ref else float("nan"),
-                "n_refused_total": int(sum(ref_flags)),
-            }
-        cache["binary"][bname] = entry
+    inst_neut_logits_by_mode: dict[bool, torch.Tensor] = {}
+    inst_taboo_h_by_mode: dict[bool, tuple[torch.Tensor, torch.Tensor]] = {}
 
-    # Historical Period & MATH on Target (chat-wrapped at asst_last)
-    ex_hist_t = extract_at_positions(
-        target_model,
-        [e.input_ids for e in hist_enc["inst"]],
-        [[e.asst_last_idx] for e in hist_enc["inst"]],
-        layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
-    )
-    cache["historical"]["h_target"] = torch.cat([ex.hidden for ex in ex_hist_t], dim=0)
+    if p1_base_path.exists() and not args.overwrite:
+        try:
+            p1b = torch.load(str(p1_base_path), weights_only=False)
+            if p1b.get("sig") == cache_sig:
+                cache["binary"] = p1b["binary"]
+                cache["historical"]["h_target"] = p1b["hist_h_target"]
+                cache["math"]["h_target"] = p1b["math_h_target"]
+                behavior_audit_summary = p1b["behavior_audit_summary"]
+                inst_neut_logits_by_mode = p1b["inst_neut_logits_by_mode"]
+                inst_taboo_h_by_mode = p1b["inst_taboo_h_by_mode"]
+                p1_base_loaded = True
+                print(f"[phase4/cache] Pass 1 base benchmarks resumed from {p1_base_path}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[phase4/cache] Pass 1 base cache unreadable ({exc}); recomputing.", flush=True)
 
-    ex_math_t = extract_at_positions(
-        target_model,
-        [e.input_ids for e in math_enc["inst"]],
-        [[e.asst_last_idx] for e in math_enc["inst"]],
-        layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
-    )
-    cache["math"]["h_target"] = torch.cat([ex.hidden for ex in ex_math_t], dim=0)
-
-    # Taboo: pre-extract Instruct neutral logits & elicit activations for both thinking modes
     used_taboo_modes: set[bool] = set()
-    if organisms:
-        inst_neut_logits_by_mode: dict[bool, torch.Tensor] = {}
-        inst_taboo_h_by_mode: dict[bool, tuple[torch.Tensor, torch.Tensor]] = {}
-        for et in (False, True):
-            ex_n = extract_at_positions(
-                target_model,
-                [e.input_ids for e in neutral_enc_by_mode[et]],
-                [[e.asst_last_idx] for e in neutral_enc_by_mode[et]],
-                layer_index=layer_idx, pad_token_id=pad_id,
-                batch_size=args.batch_size, need_logits=True,
-            )
-            inst_neut_logits_by_mode[et] = torch.cat([ex.logits for ex in ex_n], dim=0)
+    missing_organisms: list[TabooOrganism] = []
+    for org in organisms:
+        op = parts_dir / f"taboo_{org.name}.pt"
+        loaded_org = False
+        if op.exists() and not args.overwrite and p1_base_loaded:
+            try:
+                od_wrap = torch.load(str(op), weights_only=False)
+                if od_wrap.get("sig") == cache_sig and od_wrap.get("repo_id") == org.repo_id:
+                    od = od_wrap["data"]
+                    cache["taboo"]["organisms"][org.name] = od
+                    used_taboo_modes.add(bool(od["enable_thinking"]))
+                    loaded_org = True
+                    print(f"[phase4/cache] Taboo organism {org.name} resumed from {op.name}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[phase4/cache] Taboo cache {op.name} unreadable ({exc}); recomputing.", flush=True)
+        if not loaded_org:
+            missing_organisms.append(org)
 
-            t_encs = taboo_enc_by_mode[et]["inst"]
-            ex_tab = extract_at_positions(
-                target_model,
-                [e.input_ids for e in t_encs],
-                [e.user_content_positions + [e.asst_last_idx] for e in t_encs],
-                layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
-            )
-            asst_h = torch.stack([ex.hidden[-1] for ex in ex_tab], dim=0)
-            umean_h = torch.stack(
-                [ex.hidden[:-1].mean(dim=0) if ex.hidden.shape[0] > 1 else ex.hidden[-1] for ex in ex_tab],
-                dim=0,
-            )
-            inst_taboo_h_by_mode[et] = (asst_h, umean_h)
+    if (not p1_base_loaded) or missing_organisms:
+        print(f"[phase4/cache] Pass 1: loading Target {target_model_name}...", flush=True)
+        target_model = load_causal_lm(target_model_name, dtype=dtype, device=device)
 
-        from peft import PeftModel
-        for org in organisms:
-            print(f"[phase4/cache] Taboo organism {org.name} ({org.repo_id})...", flush=True)
-            peft_m = PeftModel.from_pretrained(target_model, org.repo_id)
-            peft_m.eval()
-
-            # 10-prompt Mode Check: enable_thinking=False vs True
-            kls: dict[bool, float] = {}
-            for et in (False, True):
-                ex_o = extract_at_positions(
-                    peft_m,
-                    [e.input_ids for e in neutral_enc_by_mode[et]],
-                    [[e.asst_last_idx] for e in neutral_enc_by_mode[et]],
-                    layer_index=layer_idx, pad_token_id=pad_id,
-                    batch_size=args.batch_size, need_logits=True,
+        if not p1_base_loaded:
+            behavior_audit_summary = {}
+            for bname, (prompts, labels, meta) in binary_specs.items():
+                inst_ids_list = [e.input_ids for e in bin_enc[bname]["inst"]]
+                ex_t = extract_at_positions(
+                    target_model,
+                    inst_ids_list,
+                    [[e.asst_last_idx] for e in bin_enc[bname]["inst"]],
+                    layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
                 )
-                o_lg = torch.cat([ex.logits for ex in ex_o], dim=0)
-                kls[et] = float(compute_next_token_kl(o_lg, inst_neut_logits_by_mode[et]).mean().item())
+                completions = _greedy_audit_completions(
+                    target_model,
+                    tokenizer,
+                    inst_ids_list,
+                    max_new_tokens=args.behavior_audit_max_tokens,
+                    batch_size=args.batch_size,
+                    device=device,
+                )
+                entry: dict[str, Any] = {
+                    "prompts": prompts,
+                    "labels": labels,
+                    "meta": meta,
+                    "h_target": torch.cat([ex.hidden for ex in ex_t], dim=0),
+                    "target_completions": completions,
+                }
+                if bname == "refusal" and args.behavior_audit_max_tokens > 0:
+                    ref_flags = [int(_detect_refusal_completion(c)) for c in completions]
+                    entry["behavior_labels"] = ref_flags
+                    ben_ref = [f for f, lbl in zip(ref_flags, labels) if lbl == 0]
+                    pos_ref = [f for f, lbl in zip(ref_flags, labels) if lbl == 1]
+                    behavior_audit_summary["refusal"] = {
+                        "benign_refusal_rate": float(np.mean(ben_ref)) if ben_ref else float("nan"),
+                        "harmful_refusal_rate": float(np.mean(pos_ref)) if pos_ref else float("nan"),
+                        "n_refused_total": int(sum(ref_flags)),
+                    }
+                cache["binary"][bname] = entry
 
-            best_et = kls[True] < kls[False]
-            used_taboo_modes.add(best_et)
-            best_kl = kls[best_et]
-            print(
-                f"  [mode-check {org.name}] KL(no-think)={kls[False]:.3f}, KL(think)={kls[True]:.3f} "
-                f"-> enable_thinking={best_et} (KL={best_kl:.3f} nats)",
-                flush=True,
-            )
-
-            t_encs = taboo_enc_by_mode[best_et]["inst"]
-            ex_org = extract_at_positions(
-                peft_m,
-                [e.input_ids for e in t_encs],
-                [e.user_content_positions + [e.asst_last_idx] for e in t_encs],
+            # Historical Period & MATH on Target (chat-wrapped at asst_last)
+            ex_hist_t = extract_at_positions(
+                target_model,
+                [e.input_ids for e in hist_enc["inst"]],
+                [[e.asst_last_idx] for e in hist_enc["inst"]],
                 layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
             )
-            org_asst_h = torch.stack([ex.hidden[-1] for ex in ex_org], dim=0)
-            org_umean_h = torch.stack(
-                [ex.hidden[:-1].mean(dim=0) if ex.hidden.shape[0] > 1 else ex.hidden[-1] for ex in ex_org],
-                dim=0,
+            cache["historical"]["h_target"] = torch.cat([ex.hidden for ex in ex_hist_t], dim=0)
+
+            ex_math_t = extract_at_positions(
+                target_model,
+                [e.input_ids for e in math_enc["inst"]],
+                [[e.asst_last_idx] for e in math_enc["inst"]],
+                layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
             )
-            inst_asst_h, inst_umean_h = inst_taboo_h_by_mode[best_et]
+            cache["math"]["h_target"] = torch.cat([ex.hidden for ex in ex_math_t], dim=0)
 
-            cache["taboo"]["organisms"][org.name] = {
-                "name": org.name,
-                "repo_id": org.repo_id,
-                "secret_word": org.secret_word,
-                "regime": org.regime,
-                "enable_thinking": best_et,
-                "kl_enable_thinking_false": kls[False],
-                "kl_enable_thinking_true": kls[True],
-                "matched_kl_nats": best_kl,
-                "kl_lt_3": bool(best_kl < 3.0),
-                "h_org_asst_last": org_asst_h,
-                "h_org_user_mean": org_umean_h,
-                "h_inst_asst_last": inst_asst_h,
-                "h_inst_user_mean": inst_umean_h,
-            }
-            target_model = peft_m.unload()
-            del peft_m
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # Taboo: pre-extract Instruct neutral logits & elicit activations for both thinking modes
+            inst_neut_logits_by_mode = {}
+            inst_taboo_h_by_mode = {}
+            if organisms:
+                for et in (False, True):
+                    ex_n = extract_at_positions(
+                        target_model,
+                        [e.input_ids for e in neutral_enc_by_mode[et]],
+                        [[e.asst_last_idx] for e in neutral_enc_by_mode[et]],
+                        layer_index=layer_idx, pad_token_id=pad_id,
+                        batch_size=args.batch_size, need_logits=True,
+                    )
+                    inst_neut_logits_by_mode[et] = torch.cat([ex.logits for ex in ex_n], dim=0)
 
-    unload_model(target_model)
+                    t_encs = taboo_enc_by_mode[et]["inst"]
+                    ex_tab = extract_at_positions(
+                        target_model,
+                        [e.input_ids for e in t_encs],
+                        [e.user_content_positions + [e.asst_last_idx] for e in t_encs],
+                        layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
+                    )
+                    asst_h = torch.stack([ex.hidden[-1] for ex in ex_tab], dim=0)
+                    umean_h = torch.stack(
+                        [ex.hidden[:-1].mean(dim=0) if ex.hidden.shape[0] > 1 else ex.hidden[-1] for ex in ex_tab],
+                        dim=0,
+                    )
+                    inst_taboo_h_by_mode[et] = (asst_h, umean_h)
+
+            _p1b_tmp = p1_base_path.with_suffix(".pt.tmp")
+            torch.save(
+                {
+                    "sig": cache_sig,
+                    "binary": cache["binary"],
+                    "hist_h_target": cache["historical"]["h_target"],
+                    "math_h_target": cache["math"]["h_target"],
+                    "behavior_audit_summary": behavior_audit_summary,
+                    "inst_neut_logits_by_mode": inst_neut_logits_by_mode,
+                    "inst_taboo_h_by_mode": inst_taboo_h_by_mode,
+                },
+                str(_p1b_tmp),
+            )
+            _p1b_tmp.replace(p1_base_path)
+
+        if missing_organisms:
+            from peft import PeftModel
+            for org in missing_organisms:
+                print(f"[phase4/cache] Taboo organism {org.name} ({org.repo_id})...", flush=True)
+                peft_m = PeftModel.from_pretrained(target_model, org.repo_id)
+                peft_m.eval()
+
+                # 10-prompt Mode Check: enable_thinking=False vs True
+                kls: dict[bool, float] = {}
+                for et in (False, True):
+                    ex_o = extract_at_positions(
+                        peft_m,
+                        [e.input_ids for e in neutral_enc_by_mode[et]],
+                        [[e.asst_last_idx] for e in neutral_enc_by_mode[et]],
+                        layer_index=layer_idx, pad_token_id=pad_id,
+                        batch_size=args.batch_size, need_logits=True,
+                    )
+                    o_lg = torch.cat([ex.logits for ex in ex_o], dim=0)
+                    kls[et] = float(compute_next_token_kl(o_lg, inst_neut_logits_by_mode[et]).mean().item())
+
+                best_et = kls[True] < kls[False]
+                used_taboo_modes.add(best_et)
+                best_kl = kls[best_et]
+                print(
+                    f"  [mode-check {org.name}] KL(no-think)={kls[False]:.3f}, KL(think)={kls[True]:.3f} "
+                    f"-> enable_thinking={best_et} (KL={best_kl:.3f} nats)",
+                    flush=True,
+                )
+
+                t_encs = taboo_enc_by_mode[best_et]["inst"]
+                ex_org = extract_at_positions(
+                    peft_m,
+                    [e.input_ids for e in t_encs],
+                    [e.user_content_positions + [e.asst_last_idx] for e in t_encs],
+                    layer_index=layer_idx, pad_token_id=pad_id, batch_size=args.batch_size,
+                )
+                org_asst_h = torch.stack([ex.hidden[-1] for ex in ex_org], dim=0)
+                org_umean_h = torch.stack(
+                    [ex.hidden[:-1].mean(dim=0) if ex.hidden.shape[0] > 1 else ex.hidden[-1] for ex in ex_org],
+                    dim=0,
+                )
+                inst_asst_h, inst_umean_h = inst_taboo_h_by_mode[best_et]
+
+                od = {
+                    "name": org.name,
+                    "repo_id": org.repo_id,
+                    "secret_word": org.secret_word,
+                    "regime": org.regime,
+                    "enable_thinking": best_et,
+                    "kl_enable_thinking_false": kls[False],
+                    "kl_enable_thinking_true": kls[True],
+                    "matched_kl_nats": best_kl,
+                    "kl_lt_3": bool(best_kl < 3.0),
+                    "h_org_asst_last": org_asst_h,
+                    "h_org_user_mean": org_umean_h,
+                    "h_inst_asst_last": inst_asst_h,
+                    "h_inst_user_mean": inst_umean_h,
+                }
+                cache["taboo"]["organisms"][org.name] = od
+                op = parts_dir / f"taboo_{org.name}.pt"
+                op_tmp = op.with_suffix(".pt.tmp")
+                torch.save({"sig": cache_sig, "repo_id": org.repo_id, "data": od}, str(op_tmp))
+                op_tmp.replace(op)
+
+                target_model = peft_m.unload()
+                del peft_m
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        target_model = unload_model(target_model)
 
     # ------------------------------------------------------------------
     # PASS 2: Base model
@@ -549,7 +631,7 @@ def run_cache_benchmarks(args: argparse.Namespace) -> Path:
             "h_base_chatml_user_mean": bc_um,
         }
 
-    unload_model(base_model)
+    base_model = unload_model(base_model)
 
     tmp = cache_path.with_suffix(".pt.tmp")
     torch.save(cache, str(tmp))
@@ -583,7 +665,10 @@ def run_cache_benchmarks(args: argparse.Namespace) -> Path:
             for name, d in cache["taboo"]["organisms"].items()
         },
     }
-    (eval_dir / "benchmark_meta.json").write_text(json.dumps(meta_summary, indent=2), encoding="utf-8")
+    meta_path = eval_dir / "benchmark_meta.json"
+    meta_tmp = meta_path.with_suffix(".json.tmp")
+    meta_tmp.write_text(json.dumps(meta_summary, indent=2), encoding="utf-8")
+    meta_tmp.replace(meta_path)
     print(f"[phase4/cache] saved benchmark cache -> {cache_path} in {time.time() - t0:.1f}s", flush=True)
     return cache_path
 
@@ -672,7 +757,7 @@ def _generate_av_hf(
             for i in range(bs):
                 outputs.append(tokenizer.decode(gen[i, p_len:], skip_special_tokens=True))
     finally:
-        unload_model(model)
+        model = unload_model(model)
     return outputs
 
 
@@ -861,7 +946,7 @@ def _score_val_with_ar(
             bx[r, : len(s)] = torch.tensor(s, dtype=torch.long, device=device)
             attn[r, : len(s)] = 1
         preds_all.append(critic_predict(critic, bx, attn, mse_scale_f).cpu())
-    unload_model(critic)
+    critic = unload_model(critic)
 
     if not preds_all:
         return {
@@ -943,10 +1028,19 @@ def run_generate(args: argparse.Namespace) -> Path:
     eval_dir = Path(args.eval_dir)
     eval_dir.mkdir(parents=True, exist_ok=True)
 
+    arm = args.arm
+    gen_path = eval_dir / f"{arm}_step{args.step_num:04d}_generations.jsonl"
+    met_path = eval_dir / f"{arm}_step{args.step_num:04d}_local_metrics.json"
+    if gen_path.exists() and met_path.exists() and not args.overwrite:
+        print(
+            f"[phase4/gen] {gen_path.name} + {met_path.name} already exist (pass --overwrite to regenerate)",
+            flush=True,
+        )
+        return gen_path
+
     p0_cfg = json.loads((p0_dir / "phase0_config.json").read_text(encoding="utf-8"))
     layer_idx = int(p0_cfg["layer_index"])
     target_model_name = str(p0_cfg["target_model"])
-    arm = args.arm
     data_arm = "arm2" if arm == "arm2b" else arm
     if arm == "arm0c" and not (corpus_dir / "arm0c" / "val.parquet").exists():
         data_arm = "arm0"
@@ -1025,7 +1119,7 @@ def run_generate(args: argparse.Namespace) -> Path:
                 "benchmark": bname,
                 "item_id": f"{bname}_{i:04d}",
                 "pair_id": meta.get("pair_id", ""),
-                "topic": meta.get("topic", ""),
+                "topic": meta.get("topic") or meta.get("domain", ""),
                 "label": int(lbl),
                 "source_text": prompt,
                 "target_completion": t_comps[i],
@@ -1201,13 +1295,15 @@ def run_generate(args: argparse.Namespace) -> Path:
         "taboo_diff_norm_diagnostics": taboo_norm_diag,
     }
 
-    gen_path = eval_dir / f"{arm}_step{args.step_num:04d}_generations.jsonl"
-    with gen_path.open("w", encoding="utf-8") as fh:
+    gen_tmp = gen_path.with_suffix(".jsonl.tmp")
+    with gen_tmp.open("w", encoding="utf-8") as fh:
         for r in records:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    gen_tmp.replace(gen_path)
 
-    met_path = eval_dir / f"{arm}_step{args.step_num:04d}_local_metrics.json"
-    met_path.write_text(json.dumps(local_metrics, indent=2), encoding="utf-8")
+    met_tmp = met_path.with_suffix(".json.tmp")
+    met_tmp.write_text(json.dumps(local_metrics, indent=2), encoding="utf-8")
+    met_tmp.replace(met_path)
     print(
         f"[phase4/gen] DONE {arm}@step{args.step_num}: "
         f"ext={local_metrics['overall_extraction_rate']:.1%} | "

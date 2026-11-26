@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -38,9 +39,10 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from nla.datagen.providers import AnthropicProvider, BatchAnthropicProvider, CompletionProvider
+from nla.datagen.providers import AnthropicProvider, CompletionProvider
 from nla.diff.benchmarks import HISTORICAL_ERAS
 from nla.diff.metrics import bootstrap_auroc_ci, bootstrap_ci
+from nla.diff.resumable_batch import ResumableBatchAnthropicProvider
 from nla.utils.text_judges import (
     _LETTERS,
     MATCH_PROMPT,
@@ -336,16 +338,23 @@ def _paired_bootstrap_auroc_diff_ci(
     return {"diff": obs, "ci_low": float(lo), "ci_high": float(hi), "n": n}
 
 
-def _make_judge_provider(provider_kind: str, model: str, args: argparse.Namespace) -> CompletionProvider:
+def _make_judge_provider(
+    provider_kind: str,
+    model: str,
+    args: argparse.Namespace,
+    *,
+    batch_state_dir: Path | None = None,
+) -> CompletionProvider:
     if provider_kind == "mock":
         return MockJudgeProvider(model=model)
     if provider_kind == "batch":
-        return BatchAnthropicProvider(
+        return ResumableBatchAnthropicProvider(
             model=model,
             max_tokens=32,
             temperature=None,  # newer Opus/Sonnet judge models may reject temperature
             max_batch_size=args.max_batch_size,
             poll_interval_s=args.poll_interval_s,
+            state_dir=batch_state_dir,
         )
     if provider_kind == "sync":
         return AnthropicProvider(
@@ -365,12 +374,26 @@ def _load_judge_cache(path: Path) -> dict[str, str]:
     cache: dict[str, str] = {}
     if not path.exists():
         return cache
-    for line in path.read_text(encoding="utf-8").splitlines():
+    n_bad = 0
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
-        obj = json.loads(line)
-        if obj.get("response") is not None:
-            cache[obj["key"]] = str(obj["response"])
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            n_bad += 1
+            print(
+                f"[phase4/judge] WARNING: skipping truncated/corrupt cache line {lineno} in {path.name}",
+                flush=True,
+            )
+            continue
+        if isinstance(obj, dict) and obj.get("response") is not None and "key" in obj:
+            cache[str(obj["key"])] = str(obj["response"])
+    if n_bad:
+        print(
+            f"[phase4/judge] recovered {len(cache)} valid cached entries ({n_bad} corrupt line(s) will be re-judged)",
+            flush=True,
+        )
     return cache
 
 
@@ -380,6 +403,8 @@ def _append_judge_cache(path: Path, entries: list[tuple[str, str | None]]) -> No
         for k, resp in entries:
             if resp is not None:
                 fh.write(json.dumps({"key": k, "response": resp}, ensure_ascii=False) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +549,9 @@ def _write_qualitative_examples(
             lines.append("")
             written += 1
 
-    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp_out = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp_out.replace(out_path)
 
 
 def run_judge_and_report(args: argparse.Namespace) -> dict[str, Any]:
@@ -608,20 +635,30 @@ def run_judge_and_report(args: argparse.Namespace) -> dict[str, Any]:
 
         run_job_refs[(arm, step)] = refs
 
-    # Execute all uncached judge jobs in batched API calls per model
+    # Execute all uncached judge jobs in resumable chunks per model, flushing cache after each chunk
+    batch_state_dir = report_dir / "_batch_state"
+    chunk_sz = max(1, int(args.max_batch_size))
     for model_name, key_to_prompt in pending_jobs_by_model.items():
         if not key_to_prompt:
             continue
         keys = list(key_to_prompt.keys())
         prompts = [key_to_prompt[k] for k in keys]
-        print(f"[phase4/judge] submitting {len(prompts)} uncached judge calls to {model_name} ({args.provider})...", flush=True)
-        prov = _make_judge_provider(args.provider, model_name, args)
-        resps = prov.complete(prompts)
-        new_entries = list(zip(keys, resps))
-        for k, resp in new_entries:
-            if resp is not None:
-                judge_cache[k] = resp
-        _append_judge_cache(cache_path, new_entries)
+        prov = _make_judge_provider(args.provider, model_name, args, batch_state_dir=batch_state_dir)
+        for cs in range(0, len(prompts), chunk_sz):
+            ce = min(cs + chunk_sz, len(prompts))
+            sub_keys = keys[cs:ce]
+            sub_prompts = prompts[cs:ce]
+            print(
+                f"[phase4/judge] submitting {len(sub_prompts)} uncached judge calls "
+                f"({cs}:{ce}/{len(prompts)}) to {model_name} ({args.provider})...",
+                flush=True,
+            )
+            resps = prov.complete(sub_prompts)
+            new_entries = list(zip(sub_keys, resps))
+            for k, resp in new_entries:
+                if resp is not None:
+                    judge_cache[k] = resp
+            _append_judge_cache(cache_path, new_entries)
 
     # Aggregate metrics per (arm, step) — NEVER drop failed extractions (Finding 9)!
     summary: dict[str, Any] = {"by_arm": defaultdict(dict), "paired_diffs": {}}
@@ -861,7 +898,10 @@ def run_judge_and_report(args: argparse.Namespace) -> dict[str, Any]:
             summary["paired_diffs"][str(step)] = step_diffs
 
     summary["by_arm"] = dict(summary["by_arm"])
-    (report_dir / "final_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    sum_path = report_dir / "final_summary.json"
+    sum_tmp = sum_path.with_suffix(".json.tmp")
+    sum_tmp.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    sum_tmp.replace(sum_path)
 
     # ---- Write Markdown Summary Report ----
     md = ["# Direct Diff-Target NLA — Phase 4 Auditing Evaluation Report\n"]
@@ -979,7 +1019,10 @@ def run_judge_and_report(args: argparse.Namespace) -> dict[str, Any]:
                     f"{_fmt_diff(cmp.get('math_diff'), pct=True)} |"
                 )
 
-    (report_dir / "final_report.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    rep_path = report_dir / "final_report.md"
+    rep_tmp = rep_path.with_suffix(".md.tmp")
+    rep_tmp.write_text("\n".join(md) + "\n", encoding="utf-8")
+    rep_tmp.replace(rep_path)
 
     # ---- Plots & 30 Qualitative Examples ----
     _generate_plots(summary, report_dir / "plots")
