@@ -2579,17 +2579,34 @@ def main():
             or (args.save_every > 0 and (step + 1) % args.save_every == 0)
         )
         if is_main and _should_save:
+            import shutil as _shutil
             out_dir = save_dir / f"iter_{step + 1:06d}"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            actor.save_pretrained(str(out_dir))
+            out_tmp = save_dir / f"iter_{step + 1:06d}.tmp"
+            out_old = save_dir / f"iter_{step + 1:06d}.old"
+            if out_tmp.exists():
+                _shutil.rmtree(out_tmp)
+            out_tmp.mkdir(parents=True, exist_ok=True)
+            actor.save_pretrained(str(out_tmp))
+            if out_old.exists():
+                _shutil.rmtree(out_old)
+            if out_dir.exists():
+                os.rename(out_dir, out_old)
+            os.rename(out_tmp, out_dir)
+            if out_old.exists():
+                _shutil.rmtree(out_old)
+
+            _save_iter_critic = (
+                args.train_critic
+                and args.save_critic_at_ckpts
+                and (not save_steps_set or (step + 1) in save_steps_set)
+            )
             if args.train_critic:
                 _save_critic_snapshot(save_dir / "critic_latest", step + 1)
-                if args.save_critic_at_ckpts:
+                if _save_iter_critic:
                     _save_critic_snapshot(out_dir / "critic", step + 1)
-            # ---- optimizer state (latest-only, crash-safe write): without this,
-            # resume restarts Adam moments from zero — a reproducible loss bump at
-            # the resume boundary. Actor optim is small (LoRA); the critic optim
-            # matches the critic params (large for full-FT — latest-only bounds it).
+            # ---- optimizer state (latest-only, crash-safe write): written LAST so
+            # optim_latest.pt["step"] acts as the atomic commit point guaranteeing
+            # iter_NNNNNN LoRA + critic_latest + optim_latest are 100% synchronized!
             _opt_tmp = save_dir / "optim_latest.pt.tmp"
             _opt_dst = save_dir / "optim_latest.pt"
             _opt_state = {"step": step + 1, "actor_optim": optim.state_dict()}
@@ -2599,7 +2616,7 @@ def main():
             os.replace(str(_opt_tmp), str(_opt_dst))   # atomic on same fs
             print(f"[save] LoRA → {out_dir} (+ optim_latest @ step {step + 1})"
                   + (f" (+ critic_latest @ step {step + 1})" if args.train_critic else "")
-                  + (" (+ iter critic)" if (args.train_critic and args.save_critic_at_ckpts) else ""))
+                  + (" (+ iter critic)" if _save_iter_critic else ""))
 
         if is_dist:
             if args.assert_param_sync:
