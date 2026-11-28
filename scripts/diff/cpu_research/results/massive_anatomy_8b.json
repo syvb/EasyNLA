@@ -1,0 +1,387 @@
+{
+ "layer": 24,
+ "web": {
+  "train": {
+   "n_tokens": 100797,
+   "target": {
+    "median_norm": 264.1168518066406,
+    "count_by_norm_over_median": {
+     "0 to 0.5": 1,
+     "0.5 to 2": 100720,
+     "2 to 5": 0,
+     "5 to 20": 0,
+     "20 to inf": 76
+    },
+    "n_massive": 76,
+    "massive_norm_min_median_max": [
+     7840.89306640625,
+     15016.4970703125,
+     16849.94921875
+    ],
+    "largest_ordinary_norm_over_median": 1.3307502269744873,
+    "smallest_massive_norm_over_median": 29.687211990356445,
+    "top_coordinates_share_of_massive_energy": {
+     "2276": 0.9890462043636471,
+     "676": 0.005218344421413053,
+     "233": 0.0020761736756378492,
+     "3780": 0.00011409324484937574
+    },
+    "pairwise_cosine_between_massive_rows_min_mean": [
+     0.9799182941599136,
+     0.9970827216237582
+    ],
+    "top_coordinate_value_on_massive_rows_mean_std": [
+     14127.315789473685,
+     1919.767473492741
+    ],
+    "top_coordinate_value_on_ordinary_rows_mean_std": [
+     106.18917728361617,
+     24.997770459076868
+    ],
+    "share_of_centred_variance_in_massive_rows": 0.7923141729296064
+   },
+   "base": {
+    "median_norm": 281.93621826171875,
+    "count_by_norm_over_median": {
+     "0 to 0.5": 1,
+     "0.5 to 2": 100694,
+     "2 to 5": 0,
+     "5 to 20": 0,
+     "20 to inf": 102
+    },
+    "n_massive": 102,
+    "massive_norm_min_median_max": [
+     6146.5986328125,
+     12821.1328125,
+     15466.3154296875
+    ],
+    "largest_ordinary_norm_over_median": 1.4731446504592896,
+    "smallest_massive_norm_over_median": 21.801380157470703,
+    "top_coordinates_share_of_massive_energy": {
+     "2276": 0.990580682521575,
+     "676": 0.004500367580320248,
+     "233": 0.0016032011384349428,
+     "3780": 0.00011498368138506406
+    },
+    "pairwise_cosine_between_massive_rows_min_mean": [
+     0.9805890111373133,
+     0.9978952607236856
+    ],
+    "top_coordinate_value_on_massive_rows_mean_std": [
+     12646.117647058823,
+     1447.8024815651104
+    ],
+    "top_coordinate_value_on_ordinary_rows_mean_std": [
+     107.9094164489143,
+     28.797064205260355
+    ],
+    "share_of_centred_variance_in_massive_rows": 0.7758445468395262
+   },
+   "fires": {
+    "both": 62,
+    "target_only": 14,
+    "base_only": 40
+   },
+   "cosine_target_vs_base_mean_massive_vector": 0.9998449311687819,
+   "tokens": [
+    [
+     "2",
+     81
+    ],
+    [
+     " ",
+     25
+    ],
+    [
+     "1",
+     3
+    ],
+    [
+     "ography",
+     2
+    ],
+    [
+     " More",
+     1
+    ],
+    [
+     "0",
+     1
+    ],
+    [
+     " Out",
+     1
+    ],
+    [
+     "omet",
+     1
+    ],
+    [
+     " DOE",
+     1
+    ]
+   ],
+   "position_in_sequence_min_median_max": [
+    1,
+    7.0,
+    61
+   ],
+   "documents_with_a_massive_token": 105,
+   "n_documents": 1600,
+   "share_that_are_the_first_occurrence_of_their_token_in_the_document": 0.5086206896551724,
+   "massive_count_over_occurrences_for_top_tokens": {
+    "2": [
+     81,
+     712
+    ],
+    " ": [
+     25,
+     1367
+    ],
+    "1": [
+     3,
+     1052
+    ],
+    "ography": [
+     2,
+     6
+    ],
+    " More": [
+     1,
+     13
+    ]
+   },
+   "residual": {
+    "share_of_centred_squared_residual_in_massive_rows": 0.9555888941278207,
+    "median_residual_norm_ordinary": 62.46854200080844,
+    "median_residual_norm_both_fire": 1676.0536641262077,
+    "median_residual_norm_one_fires": 12823.644814607353
+   },
+   "n_masked_by_threshold": {
+    "2": 116,
+    "3": 116,
+    "5": 116,
+    "10": 116,
+    "20": 116,
+    "40": 107
+   }
+  },
+  "val": {
+   "n_tokens": 25200,
+   "target": {
+    "median_norm": 263.8914489746094,
+    "count_by_norm_over_median": {
+     "0 to 0.5": 0,
+     "0.5 to 2": 25179,
+     "2 to 5": 0,
+     "5 to 20": 0,
+     "20 to inf": 21
+    },
+    "n_massive": 21,
+    "massive_norm_min_median_max": [
+     6229.20751953125,
+     15322.08203125,
+     16515.169921875
+    ],
+    "largest_ordinary_norm_over_median": 1.3168474435806274,
+    "smallest_massive_norm_over_median": 23.605188369750977,
+    "top_coordinates_share_of_massive_energy": {
+     "2276": 0.9903747344205063,
+     "676": 0.005597039552232486,
+     "233": 0.0002836180078539279,
+     "3780": 0.00011900333762547325
+    },
+    "pairwise_cosine_between_massive_rows_min_mean": [
+     0.9995171952924882,
+     0.9999353054221638
+    ],
+    "top_coordinate_value_on_massive_rows_mean_std": [
+     14544.380952380952,
+     2398.4054385401664
+    ],
+    "top_coordinate_value_on_ordinary_rows_mean_std": [
+     106.03844415392042,
+     25.11477319234678
+    ],
+    "share_of_centred_variance_in_massive_rows": 0.8179218476172605
+   },
+   "base": {
+    "median_norm": 281.8400573730469,
+    "count_by_norm_over_median": {
+     "0 to 0.5": 0,
+     "0.5 to 2": 25173,
+     "2 to 5": 0,
+     "5 to 20": 1,
+     "20 to inf": 26
+    },
+    "n_massive": 27,
+    "massive_norm_min_median_max": [
+     2292.56689453125,
+     12860.765625,
+     14382.8251953125
+    ],
+    "largest_ordinary_norm_over_median": 1.6330254077911377,
+    "smallest_massive_norm_over_median": 8.134283065795898,
+    "top_coordinates_share_of_massive_energy": {
+     "2276": 0.991638484938869,
+     "676": 0.004643461263764399,
+     "233": 0.0002506795208182855,
+     "3780": 0.00011930319476730063
+    },
+    "pairwise_cosine_between_massive_rows_min_mean": [
+     0.9960326292471332,
+     0.9997016098510598
+    ],
+    "top_coordinate_value_on_massive_rows_mean_std": [
+     12343.555555555555,
+     2333.9301507795703
+    ],
+    "top_coordinate_value_on_ordinary_rows_mean_std": [
+     108.2544495921233,
+     28.303964852827907
+    ],
+    "share_of_centred_variance_in_massive_rows": 0.7811658911907177
+   },
+   "fires": {
+    "both": 12,
+    "target_only": 9,
+    "base_only": 15
+   },
+   "cosine_target_vs_base_mean_massive_vector": 0.9998190345301875,
+   "tokens": [
+    [
+     "2",
+     30
+    ],
+    [
+     " ",
+     6
+    ]
+   ],
+   "position_in_sequence_min_median_max": [
+    4,
+    7.0,
+    57
+   ],
+   "documents_with_a_massive_token": 30,
+   "n_documents": 400,
+   "share_that_are_the_first_occurrence_of_their_token_in_the_document": 0.4722222222222222,
+   "massive_count_over_occurrences_for_top_tokens": {
+    "2": [
+     30,
+     220
+    ],
+    " ": [
+     6,
+     387
+    ]
+   },
+   "residual": {
+    "share_of_centred_squared_residual_in_massive_rows": 0.9767317682029755,
+    "median_residual_norm_ordinary": 62.50893085022545,
+    "median_residual_norm_both_fire": 2290.3657849483484,
+    "median_residual_norm_one_fires": 12637.775130248452
+   },
+   "n_masked_by_threshold": {
+    "2": 36,
+    "3": 36,
+    "5": 36,
+    "10": 36,
+    "20": 36,
+    "40": 32
+   }
+  }
+ },
+ "chat": {
+  "target_chatml": {
+   "n_tokens": 94347,
+   "median_norm": 262.4677734375,
+   "n_massive": 845,
+   "n_massive_at_position_0": 840,
+   "n_massive_at_a_position_phase2_samples": 1,
+   "massive_after_position_0": [
+    [
+     "pos 137: 'Perfect'",
+     1
+    ],
+    [
+     "pos 17: '2'",
+     1
+    ],
+    [
+     "pos 147: '.'",
+     1
+    ],
+    [
+     "pos 152: '1'",
+     1
+    ],
+    [
+     "pos 92: '0'",
+     1
+    ]
+   ],
+   "largest_norm_over_median_after_position_0": 51.7977294921875
+  },
+  "base_chatml": {
+   "n_tokens": 94347,
+   "median_norm": 280.994384765625,
+   "n_massive": 844,
+   "n_massive_at_position_0": 840,
+   "n_massive_at_a_position_phase2_samples": 2,
+   "massive_after_position_0": [
+    [
+     "pos 17: '2'",
+     1
+    ],
+    [
+     "pos 260: '1'",
+     1
+    ],
+    [
+     "pos 93: '0'",
+     1
+    ],
+    [
+     "pos 15: '0'",
+     1
+    ]
+   ],
+   "largest_norm_over_median_after_position_0": 44.51050567626953
+  },
+  "base_plain": {
+   "n_tokens": 119911,
+   "median_norm": 284.3706970214844,
+   "n_massive": 846,
+   "n_massive_at_position_0": 840,
+   "n_massive_at_a_position_phase2_samples": 1,
+   "massive_after_position_0": [
+    [
+     "pos 171: 'Perfect'",
+     1
+    ],
+    [
+     "pos 54: '2'",
+     1
+    ],
+    [
+     "pos 213: 'sum'",
+     1
+    ],
+    [
+     "pos 294: '1'",
+     1
+    ],
+    [
+     "pos 186: '1'",
+     1
+    ],
+    [
+     "pos 130: '0'",
+     1
+    ]
+   ],
+   "largest_norm_over_median_after_position_0": 35.22275924682617
+  }
+ }
+}

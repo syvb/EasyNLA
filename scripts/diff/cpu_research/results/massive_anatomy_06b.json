@@ -1,0 +1,179 @@
+{
+ "layer": 18,
+ "web": {
+  "train": {
+   "n_tokens": 100797,
+   "target": {
+    "median_norm": 119.7173843383789,
+    "count_by_norm_over_median": {
+     "0 to 0.5": 0,
+     "0.5 to 2": 100796,
+     "2 to 5": 0,
+     "5 to 20": 0,
+     "20 to inf": 1
+    },
+    "n_massive": 1,
+    "largest_norm_over_median": 49.05658721923828,
+    "massive_norm_min_median_max": [
+     5872.92626953125,
+     5872.92626953125,
+     5872.92626953125
+    ],
+    "largest_ordinary_norm_over_median": 1.2135343551635742,
+    "smallest_massive_norm_over_median": 49.05658721923828,
+    "top_coordinates_share_of_massive_energy": {
+     "35": 0.9847587404938192,
+     "13": 0.00985434737549938,
+     "1": 0.0032053396609850664,
+     "277": 0.0005897691790354032
+    },
+    "pairwise_cosine_between_massive_rows_min_mean": null,
+    "top_coordinate_value_on_massive_rows_mean_std": [
+     5828.0,
+     0.0
+    ],
+    "top_coordinate_value_on_ordinary_rows_mean_std": [
+     61.14218184578877,
+     10.391661068100982
+    ],
+    "share_of_centred_variance_in_massive_rows": 0.038926190073593735
+   },
+   "base": {
+    "median_norm": 122.09398651123047,
+    "count_by_norm_over_median": {
+     "0 to 0.5": 0,
+     "0.5 to 2": 100796,
+     "2 to 5": 0,
+     "5 to 20": 0,
+     "20 to inf": 1
+    },
+    "n_massive": 1,
+    "largest_norm_over_median": 50.34991455078125,
+    "massive_norm_min_median_max": [
+     6147.421875,
+     6147.421875,
+     6147.421875
+    ],
+    "largest_ordinary_norm_over_median": 1.207383394241333,
+    "smallest_massive_norm_over_median": 50.34991455078125,
+    "top_coordinates_share_of_massive_energy": {
+     "35": 0.9846306989391276,
+     "13": 0.009653561759316764,
+     "1": 0.003330109471221729,
+     "277": 0.0006043469433015499
+    },
+    "pairwise_cosine_between_massive_rows_min_mean": null,
+    "top_coordinate_value_on_massive_rows_mean_std": [
+     6100.0,
+     0.0
+    ],
+    "top_coordinate_value_on_ordinary_rows_mean_std": [
+     64.06160150989142,
+     12.995056531485663
+    ],
+    "share_of_centred_variance_in_massive_rows": 0.04018140816633045
+   },
+   "fires": {
+    "both": 1,
+    "target_only": 0,
+    "base_only": 0
+   },
+   "cosine_target_vs_base_mean_massive_vector": 0.9999399306100589,
+   "tokens": [
+    [
+     " IX",
+     1
+    ]
+   ],
+   "position_in_sequence_min_median_max": [
+    1,
+    1.0,
+    1
+   ],
+   "documents_with_a_massive_token": 1,
+   "n_documents": 1600,
+   "share_that_are_the_first_occurrence_of_their_token_in_the_document": 1.0,
+   "massive_count_over_occurrences_for_top_tokens": {
+    " IX": [
+     1,
+     6
+    ]
+   },
+   "residual": {
+    "share_of_centred_squared_residual_in_massive_rows": 0.0005088545248344075,
+    "median_residual_norm_ordinary": 41.14642105021413,
+    "median_residual_norm_both_fire": 282.2866119626132,
+    "median_residual_norm_one_fires": null
+   },
+   "n_masked_by_threshold": {
+    "2": 1,
+    "3": 1,
+    "5": 1,
+    "10": 1,
+    "20": 1,
+    "40": 1
+   }
+  },
+  "val": {
+   "n_tokens": 25200,
+   "target": {
+    "median_norm": 119.6120376586914,
+    "count_by_norm_over_median": {
+     "0 to 0.5": 0,
+     "0.5 to 2": 25200,
+     "2 to 5": 0,
+     "5 to 20": 0,
+     "20 to inf": 0
+    },
+    "n_massive": 0,
+    "largest_norm_over_median": 1.1878710985183716
+   },
+   "base": {
+    "median_norm": 121.86763763427734,
+    "count_by_norm_over_median": {
+     "0 to 0.5": 0,
+     "0.5 to 2": 25200,
+     "2 to 5": 0,
+     "5 to 20": 0,
+     "20 to inf": 0
+    },
+    "n_massive": 0,
+    "largest_norm_over_median": 1.2065343856811523
+   },
+   "fires": {
+    "both": 0,
+    "target_only": 0,
+    "base_only": 0
+   }
+  }
+ },
+ "chat": {
+  "target_chatml": {
+   "n_tokens": 94347,
+   "median_norm": 122.05835723876953,
+   "n_massive": 840,
+   "n_massive_at_position_0": 840,
+   "n_massive_at_a_position_phase2_samples": 0,
+   "massive_after_position_0": [],
+   "largest_norm_over_median_after_position_0": 1.2029515504837036
+  },
+  "base_chatml": {
+   "n_tokens": 94347,
+   "median_norm": 122.1289291381836,
+   "n_massive": 840,
+   "n_massive_at_position_0": 840,
+   "n_massive_at_a_position_phase2_samples": 0,
+   "massive_after_position_0": [],
+   "largest_norm_over_median_after_position_0": 1.272574543952942
+  },
+  "base_plain": {
+   "n_tokens": 119911,
+   "median_norm": 122.8172378540039,
+   "n_massive": 840,
+   "n_massive_at_position_0": 840,
+   "n_massive_at_a_position_phase2_samples": 0,
+   "massive_after_position_0": [],
+   "largest_norm_over_median_after_position_0": 1.258000135421753
+  }
+ }
+}

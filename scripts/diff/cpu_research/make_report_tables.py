@@ -344,3 +344,42 @@ for tag in ("stock", "robust"):
               f"{', '.join(t.strip() for t in a['top_tokens'][:5])} | {b['vocab_rank_of_secret_word']} | {b['single_prompt_frac_first_of_5'] * 100:.0f}% | "
               f"{', '.join(t.strip() for t in b['top_tokens'][:4])} |")
     print()
+
+for tag, name in (("Qwen3-8B", "massive_anatomy_8b.json"), ("Qwen3-0.6B", "massive_anatomy_06b.json")):
+    ma = load(name)
+    if not ma:
+        continue
+    print(f"### Massive activations, {tag} L{ma['layer']}\n")
+    print("| Tokens | Web train: massive after position 0 (Target, Base) | Both fire, Target only, Base only | Largest ordinary norm / median (Target, Base) | "
+          "Smallest massive norm / median | Share of energy in the top coordinate | Share of h_target variance | Share of the alignment objective |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    w = ma["web"]["train"]
+    t_, b_ = w["target"], w["base"]
+    if "residual" in w:
+        fr = w["fires"]
+        print(f"| {w['n_tokens']} | {t_['n_massive']}, {b_['n_massive']} | {fr['both']}, {fr['target_only']}, {fr['base_only']} | "
+              f"{f(t_['largest_ordinary_norm_over_median'])}, {f(b_['largest_ordinary_norm_over_median'])} | "
+              f"{f(t_['smallest_massive_norm_over_median'], 1)}, {f(b_['smallest_massive_norm_over_median'], 1)} | "
+              f"{max(t_['top_coordinates_share_of_massive_energy'].values()) * 100:.1f}% | {t_['share_of_centred_variance_in_massive_rows'] * 100:.0f}% | "
+              f"{w['residual']['share_of_centred_squared_residual_in_massive_rows'] * 100:.1f}% |")
+        print(f"\nTokens: {w['tokens'][:5]}; rows masked by threshold (x median): {w['n_masked_by_threshold']}; "
+              f"documents with one: {w['documents_with_a_massive_token']} of {w['n_documents']}\n")
+    else:
+        print(f"| {w['n_tokens']} | {t_['n_massive']}, {b_['n_massive']} | | | | | | |\n")
+    for key, c in ma.get("chat", {}).items():
+        print(f"- chat, {key}: {c['n_massive_at_position_0']} at position 0, {c['n_massive'] - c['n_massive_at_position_0']} later of {c['n_tokens']} tokens, "
+              f"{c['n_massive_at_a_position_phase2_samples']} at a position Phase 2 samples")
+    print()
+
+mv = load("massive_fix_variants_8b.json")
+if mv:
+    print(f"### Fixes for the alignment fit, Qwen3-8B L{mv['layer']} (alpha {mv['alpha']}; ordinary = not massive in either model)\n")
+    print("| Variant | FVE, ordinary val tokens | tau | Share of the correction in its largest coordinate | Diff std in the massive coordinate, ordinary tokens | "
+          "Its share of the diff's variance | A row where one model fires, norm / tau | Where both fire | Arm 2 target participation ratio (user, rollout) |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for name, r in mv["variants"].items():
+        print(f"| {name} | {f(r['fve_ordinary_val'], 3)} | {f(r['tau_median_ordinary_val'], 1)} | {r['dW_share_in_largest_output_coordinate'] * 100:.1f}% | "
+              f"{f(r['ordinary_val_diff_std_in_massive_coordinate'], 1)} | {r['ordinary_val_share_of_diff_energy_in_massive_coordinate'] * 100:.1f}% | "
+              f"{f(r['one_model_fires_val_median_diff_norm_over_tau'], 1)} | {f(r['both_fire_val_median_diff_norm_over_tau'], 1)} | "
+              f"{r['arm2_target_user_content']['participation_ratio']:.0f}, {r['arm2_target_asst_rollout']['participation_ratio']:.0f} |")
+    print()

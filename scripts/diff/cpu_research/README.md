@@ -62,6 +62,11 @@ Gate 0 and its controls, on the benchmark pairs:
 - `alignment_variants.py`: the statistic when the alignment is fitted on chat activations instead of web text.
 - `robust_alignment.py`: Phase 0's alignment suite refitted with massive-activation tokens masked.
 - `dw_coordinate_energy.py`: which residual coordinates the fitted correction writes to.
+- `massive_anatomy.py`: which tokens have massive activations, which coordinate carries them, and how much of the
+  alignment objective they hold; also scans every chat position for them.
+- `massive_fix_variants.py`: six treatments of those rows in the alignment fit, on the same metrics.
+- `massive_coordinate_detail.py`: what the fitted map does in the massive coordinate, with and without masking.
+- `massive_in_benchmarks.py`: massive tokens in the benchmark prompts, and the user-token-mean scores without them.
 - `taboo_mode_check.py`: what the `<think>` mode check measures and what Phase 4 does with it.
 - `taboo_transfer.py`: size, shape and organism information of the Taboo `Org - Inst` diffs Benchmark 5 reads,
   and how far they sit from the Arm 2 training target.

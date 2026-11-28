@@ -1,0 +1,170 @@
+{
+ "layer": 24,
+ "alpha": 1.0,
+ "massive_coordinate": 2276,
+ "n_val": 25200,
+ "n_val_massive": 36,
+ "variants": {
+  "none": {
+   "fve_ordinary_val": 0.8508885972932341,
+   "fve_all_val": 0.3950174499467679,
+   "tau_median_ordinary_val": 63.77037811279297,
+   "dW_frobenius_sq": 1015.8674089385055,
+   "dW_share_in_largest_output_coordinate": 0.8720459514414737,
+   "dW_largest_output_coordinate": 2276,
+   "ordinary_val_diff_std_in_massive_coordinate": 54.71665573120117,
+   "ordinary_val_share_of_diff_energy_in_massive_coordinate": 0.5034081339836121,
+   "one_model_fires_val_median_diff_norm_over_tau": 144.76280212402344,
+   "both_fire_val_median_diff_norm_over_tau": 95.86819458007812,
+   "arm2_target_user_content": {
+    "participation_ratio": 20.60730099820076,
+    "top_direction_share": 0.20185227269848147,
+    "median_norm_over_tau": 1.4091811427048424
+   },
+   "arm2_target_asst_rollout": {
+    "participation_ratio": 11.80372303740123,
+    "top_direction_share": 0.28481882593429636,
+    "median_norm_over_tau": 1.3532418795436139
+   }
+  },
+  "mask_rows": {
+   "fve_ordinary_val": 0.9257581836858101,
+   "fve_all_val": 0.29283102260465244,
+   "tau_median_ordinary_val": 49.479515075683594,
+   "dW_frobenius_sq": 123.10865061795435,
+   "dW_share_in_largest_output_coordinate": 0.01647326183478299,
+   "dW_largest_output_coordinate": 1838,
+   "ordinary_val_diff_std_in_massive_coordinate": 6.242594242095947,
+   "ordinary_val_share_of_diff_energy_in_massive_coordinate": 0.013152802363038063,
+   "one_model_fires_val_median_diff_norm_over_tau": 218.18319702148438,
+   "both_fire_val_median_diff_norm_over_tau": 92.8509521484375,
+   "arm2_target_user_content": {
+    "participation_ratio": 84.09016397451519,
+    "top_direction_share": 0.0867360788996028,
+    "median_norm_over_tau": 1.5754062567915705
+   },
+   "arm2_target_asst_rollout": {
+    "participation_ratio": 114.25220210177501,
+    "top_direction_share": 0.0729685552377986,
+    "median_norm_over_tau": 1.423635895788376
+   }
+  },
+  "clip_norm": {
+   "fve_ordinary_val": 0.925732859697189,
+   "fve_all_val": 0.3724372703888831,
+   "tau_median_ordinary_val": 49.49665832519531,
+   "dW_frobenius_sq": 123.47369160955759,
+   "dW_share_in_largest_output_coordinate": 0.01844693036826184,
+   "dW_largest_output_coordinate": 2276,
+   "ordinary_val_diff_std_in_massive_coordinate": 6.315120697021484,
+   "ordinary_val_share_of_diff_energy_in_massive_coordinate": 0.01345560047775507,
+   "one_model_fires_val_median_diff_norm_over_tau": 162.3896942138672,
+   "both_fire_val_median_diff_norm_over_tau": 154.607666015625,
+   "rows_downweighted": 116,
+   "arm2_target_user_content": {
+    "participation_ratio": 84.18467445008419,
+    "top_direction_share": 0.08672812048564482,
+    "median_norm_over_tau": 1.5749514967661038
+   },
+   "arm2_target_asst_rollout": {
+    "participation_ratio": 115.3257384908119,
+    "top_direction_share": 0.07232916460359931,
+    "median_norm_over_tau": 1.4231921907780969
+   }
+  },
+  "huber": {
+   "fve_ordinary_val": 0.9257317107099756,
+   "fve_all_val": 0.17267458398040947,
+   "tau_median_ordinary_val": 49.491554260253906,
+   "dW_frobenius_sq": 123.13207777830318,
+   "dW_share_in_largest_output_coordinate": 0.01918447940368194,
+   "dW_largest_output_coordinate": 2276,
+   "ordinary_val_diff_std_in_massive_coordinate": 6.339053630828857,
+   "ordinary_val_share_of_diff_energy_in_massive_coordinate": 0.013557656668126583,
+   "one_model_fires_val_median_diff_norm_over_tau": 265.14959716796875,
+   "both_fire_val_median_diff_norm_over_tau": 35.570289611816406,
+   "rows_downweighted": 388,
+   "massive_rows_downweighted": 111,
+   "share_of_weighted_objective_in_massive_rows": 0.2913193106651306,
+   "arm2_target_user_content": {
+    "participation_ratio": 84.16739102208493,
+    "top_direction_share": 0.086714532898633,
+    "median_norm_over_tau": 1.5750324796985484
+   },
+   "arm2_target_asst_rollout": {
+    "participation_ratio": 114.43797573415868,
+    "top_direction_share": 0.07287236136353539,
+    "median_norm_over_tau": 1.423808609322484
+   }
+  },
+  "trimmed": {
+   "fve_ordinary_val": 0.9258250985233804,
+   "fve_all_val": 0.29177362298489473,
+   "tau_median_ordinary_val": 49.43829345703125,
+   "dW_frobenius_sq": 119.58496177231547,
+   "dW_share_in_largest_output_coordinate": 0.015172960282759551,
+   "dW_largest_output_coordinate": 1838,
+   "ordinary_val_diff_std_in_massive_coordinate": 6.159310340881348,
+   "ordinary_val_share_of_diff_energy_in_massive_coordinate": 0.012815574184060097,
+   "one_model_fires_val_median_diff_norm_over_tau": 218.7896270751953,
+   "both_fire_val_median_diff_norm_over_tau": 92.8466567993164,
+   "rows_downweighted": 504,
+   "massive_rows_downweighted": 116,
+   "share_of_weighted_objective_in_massive_rows": 0.0,
+   "arm2_target_user_content": {
+    "participation_ratio": 83.93210605359529,
+    "top_direction_share": 0.08683506297340435,
+    "median_norm_over_tau": 1.5771111152995303
+   },
+   "arm2_target_asst_rollout": {
+    "participation_ratio": 112.80061155632889,
+    "top_direction_share": 0.07387754730039366,
+    "median_norm_over_tau": 1.4244121287290095
+   }
+  },
+  "project_1": {
+   "fve_ordinary_val": 0.9254376679789961,
+   "fve_all_val": 0.9241774258686857,
+   "tau_median_ordinary_val": 49.299827575683594,
+   "dW_frobenius_sq": 123.79039701981769,
+   "dW_share_in_largest_output_coordinate": 0.016637208622020137,
+   "dW_largest_output_coordinate": 1838,
+   "ordinary_val_diff_std_in_massive_coordinate": 0.11362069100141525,
+   "ordinary_val_share_of_diff_energy_in_massive_coordinate": 4.407094820635393e-06,
+   "one_model_fires_val_median_diff_norm_over_tau": 3.9154841899871826,
+   "both_fire_val_median_diff_norm_over_tau": 2.596233606338501,
+   "arm2_target_user_content": {
+    "participation_ratio": 85.23665823825291,
+    "top_direction_share": 0.08710038155516825,
+    "median_norm_over_tau": 1.575589792131491
+   },
+   "arm2_target_asst_rollout": {
+    "participation_ratio": 123.16750226396398,
+    "top_direction_share": 0.0692498265628492,
+    "median_norm_over_tau": 1.424098346187787
+   }
+  },
+  "project_3": {
+   "fve_ordinary_val": 0.9255591616568741,
+   "fve_all_val": 0.9248225028054006,
+   "tau_median_ordinary_val": 49.25749588012695,
+   "dW_frobenius_sq": 121.59454419122906,
+   "dW_share_in_largest_output_coordinate": 0.0166648725612625,
+   "dW_largest_output_coordinate": 1838,
+   "ordinary_val_diff_std_in_massive_coordinate": 0.08931493014097214,
+   "ordinary_val_share_of_diff_energy_in_massive_coordinate": 2.729433845161111e-06,
+   "one_model_fires_val_median_diff_norm_over_tau": 3.378368616104126,
+   "both_fire_val_median_diff_norm_over_tau": 1.2097032070159912,
+   "arm2_target_user_content": {
+    "participation_ratio": 85.37856269661835,
+    "top_direction_share": 0.08699045911282464,
+    "median_norm_over_tau": 1.5758277683847557
+   },
+   "arm2_target_asst_rollout": {
+    "participation_ratio": 123.73290780134745,
+    "top_direction_share": 0.06902373826583845,
+    "median_norm_over_tau": 1.4239357078431953
+   }
+  }
+ }
+}

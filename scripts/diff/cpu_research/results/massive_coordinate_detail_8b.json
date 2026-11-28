@@ -1,0 +1,46 @@
+{
+ "train": {
+  "naive_diff_std_coord": 9.863036155700684,
+  "h_target_std_coord": 25.001611709594727,
+  "mean_sq_norm_share_of_coord_in_ordinary_h_target": 0.1719752997159958,
+  "coord_residual_mean_both_fire": 1542.258056640625,
+  "coord_residual_mean_base_only": -12489.4638671875,
+  "coord_residual_mean_target_only": 13561.0888671875,
+  "objective_share": {
+   "one_fires": 0.9261388108168439,
+   "both_fire": 0.02945008331097677,
+   "ordinary": 0.04441110587217941
+  }
+ },
+ "val": {
+  "naive_diff_std_coord": 8.474143028259277,
+  "h_target_std_coord": 25.12075424194336,
+  "mean_sq_norm_share_of_coord_in_ordinary_h_target": 0.171717569231987,
+  "coord_residual_mean_both_fire": 3224.333251953125,
+  "coord_residual_mean_base_only": -12464.1708984375,
+  "coord_residual_mean_target_only": 13435.8955078125,
+  "objective_share": {
+   "one_fires": 0.9242051747708958,
+   "both_fire": 0.05252659343207978,
+   "ordinary": 0.023268231797024544
+  }
+ },
+ "stock": {
+  "dW_self_entry": -0.669087290763855,
+  "row_norm": 29.76378774897714,
+  "row_share_on_self": 0.0005053463851903871,
+  "correction_std_on_ordinary_val": 54.5238151550293,
+  "bias_coord": -20.649612426757812,
+  "val_one_fires_median_residual_coord_abs": 9185.396484375,
+  "train_one_fires_median_residual_coord_abs": 8368.5576171875
+ },
+ "robust": {
+  "dW_self_entry": -0.17372781038284302,
+  "row_norm": 1.3919611773466771,
+  "row_share_on_self": 0.01557702247491787,
+  "correction_std_on_ordinary_val": 6.922422409057617,
+  "bias_coord": 35.14278793334961,
+  "val_one_fires_median_residual_coord_abs": 10642.556640625,
+  "train_one_fires_median_residual_coord_abs": 10720.3369140625
+ }
+}

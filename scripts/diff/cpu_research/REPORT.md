@@ -6,7 +6,7 @@ What I need from you: pick an option under "Decision". My default is to make the
 
 ## Fix before any GPU run
 
-- [ ] Mask massive-activation tokens when fitting the alignment and computing tau (finding 2)
+- [ ] Drop massive-activation rows wherever a row is read: the alignment fit, tau, the Fix 1 FVE check, Phase 2 sampling and Phase 4 pooling (finding 2)
 - [ ] Replace the Taboo mode rule and run Benchmark 5 in no-think mode (finding 3)
 - [ ] Score Gate 0 and Benchmarks 2 to 4 at user-content positions as well as `asst_last`, and refusal at rollout tokens (findings 1, 4, 7 and 10)
 - [ ] Add a logit-lens baseline to Benchmark 5, and also score its user-token diffs rescaled to the training norm (finding 11)
@@ -69,11 +69,34 @@ Phase 0's map is worse than no map on ordinary tokens. On the chat corpus it exp
 
 The damage reaches the Arm 2 target. 87.2% of the fitted correction's squared norm writes to residual coordinate 2276. In the centred, unit-normalised Arm 2 target that one coordinate is 96% to 98% of the largest direction, which holds 20% of the variance on `user_content` rows and 28% on `asst_rollout` rows. The target's participation ratio is 21 and 12 there, against 158 and 160 for `h_target`.
 
-With massive tokens masked, the largest coordinate takes 1.6% of the correction and the participation ratios are 84 and 114. None of the 20,821 chat rows is itself a massive activation, so the artifact enters only through the web-fitted map.
+With massive tokens masked, the largest coordinate takes 1.6% of the correction and the participation ratios are 84 and 114. None of the 20,821 sampled chat rows is itself a massive activation, so the artifact enters through the web-fitted map.
 
 The masked refit leaves a smaller nuisance direction. On `user_content` rows its largest direction holds 9% of the variance and follows token position (Spearman 0.88), not the size of the behavioural gap (Spearman -0.26 with `KL(Instruct || Base)`).
 
-Fix: drop tokens above about five times the median norm, in either model, before `evaluate_alignment_suite` and before tau.
+The massive rows are one vector at a few sink tokens. Position 0 is massive in every web passage and every chat conversation in both models, and the repo already skips it. The 116 training rows are the same thing at later positions: 99% of their energy is in coordinate 2276, their pairwise cosine averages 0.997, and the direction is the same in both models (cosine 0.9998). No training row has a norm between 1.5 and 21 times its model's median, so any threshold from 2 to 20 selects the same rows.
+
+The two models disagree on where it fires, and that disagreement is the fit's objective. Both fire on 62 of the 116 rows, only Instruct on 14 and only Base on 40. On those 54 rows the regression target `h_target - h_base` is about 13,000 in coordinate 2276, with either sign, against a median norm of 62 on ordinary rows. The 54 rows carry 92.6% of the objective, all 116 carry 95.6%, and the other 100,681 rows carry 4.4%.
+
+The map cannot predict where a sink appears, and every ordinary token pays for the attempt. Its row for coordinate 2276 has 21 times the norm it has after masking, and it still leaves about 8,400 of the 13,000 unexplained on the rows it was fitted to. On ordinary validation tokens it adds a correction with a standard deviation of 54.5 to that coordinate, where the Instruct-minus-Base difference has a standard deviation of 8.5. Half of the planned diff's variance on ordinary tokens is that one coordinate.
+
+Qwen3-0.6B at layer 18 has one such row in 100,797 web tokens and none in the chat corpus after position 0, so the 0.6B pilot could not show this.
+
+I fitted six treatments of these rows with the same ridge and the same alpha.
+
+| Treatment | FVE, ordinary validation tokens | tau | Share of the diff's variance in coordinate 2276 | Norm of a massive row that reaches the diff, one model firing | Arm 2 participation ratio (`user_content`, `asst_rollout`) |
+| --- | --- | --- | --- | --- | --- |
+| None, as Phase 0 fits it | 0.851 | 63.8 | 50.3% | 145 tau | 21, 12 |
+| Drop rows above 5 times the median norm | 0.926 | 49.5 | 1.3% | 218 tau | 84, 114 |
+| Scale high-norm rows down to 2 times the median | 0.926 | 49.5 | 1.3% | 162 tau | 84, 115 |
+| Huber loss on the residual, no norm information | 0.926 | 49.5 | 1.4% | 265 tau | 84, 114 |
+| Trim the 0.5% of rows with the largest residual, no norm information | 0.926 | 49.4 | 1.3% | 219 tau | 84, 113 |
+| Project the massive direction out of both models | 0.925 | 49.3 | 0% | 3.9 tau | 85, 123 |
+
+Every treatment gives the same map on ordinary tokens, so the choice does not rest on fit quality. The treatments differ in what a massive row looks like when it reaches the diff after the fit: 145 to 265 tau under the row-level treatments, and 3.9 tau when the direction is projected out.
+
+Massive rows do reach the diff. Scanning every position of the 840 chat conversations finds 4 to 6 massive tokens after position 0 per model and wrapper, in 94,000 to 120,000 tokens, with 1 or 2 at positions Phase 2 can sample. One of the 660 benchmark prompts has one in its user turn. Removing that token moves the sycophancy user-token ratios in finding 7 by at most 0.08.
+
+Fix: drop rows above five times the median norm, in either model, everywhere a row is read. That means the alignment fit and its CV, tau, the FVE that Fix 1 is judged on, the role means, Phase 2's sampled rows, and the token rows Phase 4 pools into a user-token mean. It is the repo's position-0 rule extended to sinks at later positions. Projecting the direction out is the alternative if you prefer not to carry a row filter through Phases 2 and 4; it costs the 1.3% of the diff's variance that ordinary tokens have in that coordinate.
 
 ### 3. The Taboo mode check passes vacuously and sends Benchmark 5 off-distribution
 
@@ -249,3 +272,5 @@ python scripts/diff/cpu_research/make_report_tables.py scripts/diff/cpu_research
 ```
 
 That prints every table above from the JSONs. The README in that directory explains how the 8B models were run in 31 GB of memory and lists each script.
+
+The massive-activation scripts added after that commit (`massive_anatomy.py`, `massive_fix_variants.py`, `massive_coordinate_detail.py`, `massive_in_benchmarks.py`) and their result JSONs are in this thread's orb and are not committed yet.
