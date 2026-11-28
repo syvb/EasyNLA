@@ -87,3 +87,5 @@ On a chat corpus with Qwen3-8B's own rollouts (`phase2_build_corpus.py --step ro
 
 Helpers: `summarize_phase0.py`, `make_chat_prompts_mix.py`, `make_report_tables.py`,
 `make_layer_sweep_view.py`, `bench_8b.py`, `sanity_8b.py`, `warm_cache.py`.
+
+`RUN_PLAN.md` is the recommended way to run the experiment on GPUs, written after a read of the whole pipeline.

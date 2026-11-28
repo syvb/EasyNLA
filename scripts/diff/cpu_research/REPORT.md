@@ -256,7 +256,7 @@ Without an answer I will leave `diff-stuff` as it is and make no further changes
 
 ## Risks
 
-- The GPU pipeline runs in bf16 and I ran fp32. A gap from 0.69 to 1.25 is far larger than bf16 rounding, but the earliest check is Phase 0 on GPU (about $11), which prints the same table.
+- The GPU pipeline runs in bf16 and I ran fp32. Measured afterwards with `bf16_fidelity.py` on CPU: bf16 moves the aligned diff by a median of 2.6% at user-content tokens and 5.4% on web tokens (cosine 0.9997 and 0.9986 with the fp32 diff), and the refusal SNR ratio by less than 1%. That used CPU bf16 kernels, so the remaining check is Phase 0 on GPU (about $11), which prints the same table.
 - Refusal pairs are JailbreakBench, not XSTest. The earliest signal is the per-task refusal ratio in that Phase 0 report.
 - Fisher SNR measures variance share, not what a trained verbalizer writes. No NLA was trained here, so finding 7 may not turn into better explanations, and finding 1 may not turn into worse ones.
 - The chat corpus is 840 conversations with HF sampling in place of vLLM. Per-role numbers rest on 840 to 10,080 rows.
