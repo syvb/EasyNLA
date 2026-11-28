@@ -67,6 +67,9 @@ Gate 0 and its controls, on the benchmark pairs:
 - `massive_fix_variants.py`: six treatments of those rows in the alignment fit, on the same metrics.
 - `massive_coordinate_detail.py`: what the fitted map does in the massive coordinate, with and without masking.
 - `massive_in_benchmarks.py`: massive tokens in the benchmark prompts, and the user-token-mean scores without them.
+- `ar_init_gap.py`: how far each arm's training target is from where the reconstructor starts (identity read of the
+  Instruct Layer-K state), and how much a linear head could recover from a perfect Instruct or Base activation.
+- `bf16_fidelity.py`: rounding noise of the stock bf16 loader against the fp32 reference, on h and on the aligned diff.
 - `taboo_mode_check.py`: what the `<think>` mode check measures and what Phase 4 does with it.
 - `taboo_transfer.py`: size, shape and organism information of the Taboo `Org - Inst` diffs Benchmark 5 reads,
   and how far they sit from the Arm 2 training target.

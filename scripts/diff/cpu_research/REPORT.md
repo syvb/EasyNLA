@@ -265,7 +265,7 @@ Without an answer I will leave `diff-stuff` as it is and make no further changes
 
 ## Reproduce
 
-Scripts, result JSONs and this report are on branch `diff-stuff-cpu-research` under `scripts/diff/cpu_research/`, one commit on top of `diff-stuff` at `89ede1b`. Nothing in the pipeline is changed there.
+Scripts, result JSONs and this report are on branch `diff-stuff-cpu-research` under `scripts/diff/cpu_research/`, on top of `diff-stuff` at `89ede1b`. Nothing in the pipeline is changed there.
 
 ```bash
 python scripts/diff/cpu_research/make_report_tables.py scripts/diff/cpu_research/results
@@ -273,4 +273,4 @@ python scripts/diff/cpu_research/make_report_tables.py scripts/diff/cpu_research
 
 That prints every table above from the JSONs. The README in that directory explains how the 8B models were run in 31 GB of memory and lists each script.
 
-The massive-activation scripts added after that commit (`massive_anatomy.py`, `massive_fix_variants.py`, `massive_coordinate_detail.py`, `massive_in_benchmarks.py`) and their result JSONs are in this thread's orb and are not committed yet.
+The massive-activation scripts (`massive_anatomy.py`, `massive_fix_variants.py`, `massive_coordinate_detail.py`, `massive_in_benchmarks.py`) and their result JSONs are committed in the same directory.

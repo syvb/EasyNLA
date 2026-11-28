@@ -1,0 +1,136 @@
+{
+  "base_wrapper": "plain",
+  "n_rows_total": 20821,
+  "n_massive_dropped": 0,
+  "roles": {
+    "user_content": {
+      "n_train": 4794,
+      "n_test": 1206,
+      "arm0_raw": {
+        "cos_to_unit_h_target": 0.9999999403953552,
+        "cos_to_train_mean_direction": 0.7690408825874329,
+        "target_unit_variance": 0.4078459143638611,
+        "ridge_from_h_target": {
+          "fve": 0.9756127013382884,
+          "alpha": 0.01
+        },
+        "ridge_from_h_base": {
+          "fve": 0.7773915501988589,
+          "alpha": 0.1
+        }
+      },
+      "arm1_naive_diff": {
+        "cos_to_unit_h_target": 0.21997235715389252,
+        "cos_to_train_mean_direction": 0.3112338185310364,
+        "target_unit_variance": 0.9017074704170227,
+        "ridge_from_h_target": {
+          "fve": 0.3828745430666316,
+          "alpha": 1.0
+        },
+        "ridge_from_h_base": {
+          "fve": 0.4007932969873449,
+          "alpha": 1.0
+        }
+      },
+      "arm2_clean_diff": {
+        "cos_to_unit_h_target": 0.07535078376531601,
+        "cos_to_train_mean_direction": 0.0190565288066864,
+        "target_unit_variance": 0.9981176257133484,
+        "ridge_from_h_target": {
+          "fve": 0.3717717499706824,
+          "alpha": 1.0
+        },
+        "ridge_from_h_base": {
+          "fve": 0.4372099637925666,
+          "alpha": 1.0
+        }
+      }
+    },
+    "asst_last": {
+      "n_train": 672,
+      "n_test": 168,
+      "arm0_raw": {
+        "cos_to_unit_h_target": 0.9999998807907104,
+        "cos_to_train_mean_direction": 0.8760973811149597,
+        "target_unit_variance": 0.23043037950992584,
+        "ridge_from_h_target": {
+          "fve": 0.9319496994726816,
+          "alpha": 0.01
+        },
+        "ridge_from_h_base": {
+          "fve": 0.7959613371703198,
+          "alpha": 0.1
+        }
+      },
+      "arm1_naive_diff": {
+        "cos_to_unit_h_target": 0.5768641829490662,
+        "cos_to_train_mean_direction": 0.7776064872741699,
+        "target_unit_variance": 0.39226236939430237,
+        "ridge_from_h_target": {
+          "fve": 0.5990792509152449,
+          "alpha": 0.1
+        },
+        "ridge_from_h_base": {
+          "fve": 0.5648762061571974,
+          "alpha": 0.1
+        }
+      },
+      "arm2_clean_diff": {
+        "cos_to_unit_h_target": 0.22985433042049408,
+        "cos_to_train_mean_direction": 0.012304346077144146,
+        "target_unit_variance": 0.9918845891952515,
+        "ridge_from_h_target": {
+          "fve": 0.6902719088116328,
+          "alpha": 0.1
+        },
+        "ridge_from_h_base": {
+          "fve": 0.7206196230783675,
+          "alpha": 0.1
+        }
+      }
+    },
+    "asst_rollout": {
+      "n_train": 4781,
+      "n_test": 1219,
+      "arm0_raw": {
+        "cos_to_unit_h_target": 0.9999999403953552,
+        "cos_to_train_mean_direction": 0.6989855170249939,
+        "target_unit_variance": 0.5099209547042847,
+        "ridge_from_h_target": {
+          "fve": 0.9745629744194954,
+          "alpha": 0.01
+        },
+        "ridge_from_h_base": {
+          "fve": 0.8120116911850721,
+          "alpha": 0.1
+        }
+      },
+      "arm1_naive_diff": {
+        "cos_to_unit_h_target": 0.420919269323349,
+        "cos_to_train_mean_direction": 0.3182772099971771,
+        "target_unit_variance": 0.8957380056381226,
+        "ridge_from_h_target": {
+          "fve": 0.4944713425460815,
+          "alpha": 0.1
+        },
+        "ridge_from_h_base": {
+          "fve": 0.42488588488466883,
+          "alpha": 1.0
+        }
+      },
+      "arm2_clean_diff": {
+        "cos_to_unit_h_target": 0.24092163145542145,
+        "cos_to_train_mean_direction": 0.023078493773937225,
+        "target_unit_variance": 0.9968526363372803,
+        "ridge_from_h_target": {
+          "fve": 0.3686481743708909,
+          "alpha": 1.0
+        },
+        "ridge_from_h_base": {
+          "fve": 0.38912063285902454,
+          "alpha": 1.0
+        }
+      }
+    }
+  }
+}
